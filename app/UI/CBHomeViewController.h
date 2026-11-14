@@ -10,4 +10,6 @@
 - (void)openRow:(NSInteger)r item:(NSInteger)i;
 /// Mở nút thứ i của dải danh mục đầu trang
 - (void)openCategoryAt:(NSInteger)i;
+/// Bấm «Xem thêm ›» của hàng r
+- (void)openMore:(NSInteger)r;
 @end

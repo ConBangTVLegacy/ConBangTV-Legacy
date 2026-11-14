@@ -62,7 +62,7 @@ typedef NS_ENUM(NSInteger, CBSettingsAlert) { CBAlertAdd = 1, CBAlertRename, CBA
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
     switch (section) {
         case CBSecProfile: return [CBPrefs profiles].count > 1 ? 7 : 6;
-        case CBSecSites: return 1 + _sites.count;
+        case CBSecSites: return 2 + _sites.count;  // tổng hợp, hồ sơ trẻ em, từng trang
         case CBSecPlayer: return 3;
         case CBSecNet: return 2;
         case CBSecData: return 2;
@@ -77,6 +77,8 @@ typedef NS_ENUM(NSInteger, CBSettingsAlert) { CBAlertAdd = 1, CBAlertRename, CBA
 
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
     if (section == CBSecSites) return @"Trang chủ tổng hợp gộp phim từ mọi trang. Tắt đi thì trang chủ là của trang đang chọn. "
+                                      @"Hồ sơ trẻ em: trang chủ chỉ có phim hoạt hình hợp trẻ em (thiếu nhi, gia đình, lồng tiếng; bỏ "
+                                      @"kinh dị / hình sự / chiến tranh / 18+) — tắt cần mã PIN phụ huynh nếu đã đặt. "
                                       @"Trên iOS 6 chỉ phát được server có luồng HLS / tệp video (KKPhim, VSMOV, server KK Phim "
                                       @"của phimmois…); trình phát nhúng của trang (NguonC, streamfree…) không chạy được.";
     if (section == CBSecNet) return @"DNS mã hoá và vượt chặn giúp vào được trang bị nhà mạng chặn.";
@@ -157,8 +159,14 @@ typedef NS_ENUM(NSInteger, CBSettingsAlert) { CBAlertAdd = 1, CBAlertRename, CBA
                 }
             }
         case CBSecSites: {
-            if (ip.row == 0) return [self switchCell:tv text:@"Trang chủ tổng hợp" on:[CBPrefs homeMix] tag:2];
-            NSString *url = _sites[ip.row - 1];
+            if (ip.row == 0) {
+                // Hồ sơ trẻ em luôn dùng trang chủ tổng hợp (như bản Windows)
+                UITableViewCell *c = [self switchCell:tv text:@"Trang chủ tổng hợp" on:[CBPrefs homeMix] tag:2];
+                [(UISwitch *)c.accessoryView setEnabled:![CBPrefs kids]];
+                return c;
+            }
+            if (ip.row == 1) return [self switchCell:tv text:@"Hồ sơ trẻ em" on:[CBPrefs kids] tag:7];
+            NSString *url = _sites[ip.row - 2];
             // Tên trang đã kèm tên miền khi cần (vd «CLB Phim Xưa (sc.k-20.xyz)») — không lặp ở cột phải
             NSString *name = [self siteName:url], *host = CBHostOf(url);
             UITableViewCell *c = [self cell:tv text:name detail:(host && [name rangeOfString:host].location == NSNotFound) ? host : nil];
@@ -216,6 +224,23 @@ typedef NS_ENUM(NSInteger, CBSettingsAlert) { CBAlertAdd = 1, CBAlertRename, CBA
         case 4: [CBPrefs setVideoFill:sw.on]; break;
         case 5: [CBPrefs setSecureDns:sw.on]; break;
         case 6: [CBPrefs setUnblock:sw.on]; break;
+        case 7:
+            if (sw.on) {
+                [CBPrefs setKids:YES];
+                [self.tableView reloadData];
+            } else if (![CBPrefs hasParentPin]) {
+                [CBPrefs setKids:NO];
+                [self.tableView reloadData];
+            } else {
+                // Trẻ không tự tắt được: phải nhập mã PIN phụ huynh
+                [CBParental checkParent:@"Nhập mã PIN phụ huynh để tắt hồ sơ trẻ em." done:^(BOOL ok) {
+                    if (ok) [CBPrefs setKids:NO];
+                    CBLog(@"Hồ sơ trẻ em: %@", [CBPrefs kids] ? @"vẫn bật" : @"tắt");
+                    [self.tableView reloadData];
+                }];
+                return;
+            }
+            break;
     }
     CBLog(@"Cài đặt %ld → %d", (long)sw.tag, sw.on);
 }
@@ -276,8 +301,8 @@ typedef NS_ENUM(NSInteger, CBSettingsAlert) { CBAlertAdd = 1, CBAlertRename, CBA
                        tag:CBAlertDelete style:UIAlertViewStyleDefault ok:@"Xoá"] show];
             }];
         }
-    } else if (ip.section == CBSecSites && ip.row > 0) {
-        [CBPrefs setBaseUrl:_sites[ip.row - 1]];
+    } else if (ip.section == CBSecSites && ip.row > 1) {
+        [CBPrefs setBaseUrl:_sites[ip.row - 2]];
         [tv reloadData];
     } else if (ip.section == CBSecPlayer && ip.row == 1) {
         NSArray *steps = @[@5, @10, @15, @30];

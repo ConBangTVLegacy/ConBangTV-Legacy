@@ -3,6 +3,7 @@
 #import "CBDetailViewController.h"
 #import "CBJSON.h"
 #import "CBLog.h"
+#import "CBPlayerViewController.h"
 #import "CBPosterCell.h"
 #import "CBPrefs.h"
 #import "CBRowCell.h"
@@ -27,7 +28,7 @@
 @end
 
 @interface CBGridViewController () <UICollectionViewDataSource, UICollectionViewDelegate, UICollectionViewDelegateFlowLayout,
-                                    UISearchBarDelegate>
+                                    UISearchBarDelegate, UIActionSheetDelegate>
 @end
 
 @implementation CBGridViewController {
@@ -36,6 +37,9 @@
     BOOL _searchMode;
     BOOL _loading;
     NSArray *_sections;  // @[@{title, items}]
+    NSString *_special;  // @"follows" / @"history": dựng từ dữ liệu người xem
+    BOOL _checking;      // đang kiểm tập mới của phim theo dõi
+    NSDictionary *_longItem;
     NSInteger _token;
     UICollectionView *_cv;
     UISearchBar *_searchBar;
@@ -65,6 +69,128 @@
         self.title = title;
     }
     return self;
+}
+
+- (instancetype)initFollows {
+    if ((self = [super initWithNibName:nil bundle:nil])) {
+        _special = @"follows";
+        self.title = @"Phim theo dõi";
+    }
+    return self;
+}
+
+- (instancetype)initHistory {
+    if ((self = [super initWithNibName:nil bundle:nil])) {
+        _special = @"history";
+        self.title = @"Xem tiếp / Lịch sử";
+    }
+    return self;
+}
+
+- (void)viewWillAppear:(BOOL)animated {
+    [super viewWillAppear:animated];
+    if (_special) [self rebuildSpecial];
+}
+
+#pragma mark - Theo dõi / lịch sử
+
+- (void)rebuildSpecial {
+    NSMutableArray *items = [NSMutableArray array];
+    if ([_special isEqualToString:@"follows"]) {
+        // Phim có tập mới lên trước
+        NSMutableArray *fresh = [NSMutableArray array], *rest = [NSMutableArray array];
+        for (NSDictionary *f in [CBPrefs follows]) {
+            if (!CBStr(f, @"filmUrl")) continue;
+            NSInteger n = (NSInteger)CBNum(f, @"count", 0) - (NSInteger)CBNum(f, @"seen", 0);
+            NSMutableDictionary *it = [@{@"url": CBStr(f, @"filmUrl"), @"title": CBStr(f, @"title") ?: @""} mutableCopy];
+            if (CBStr(f, @"poster")) it[@"poster"] = CBStr(f, @"poster");
+            if ([CBStr(f, @"latest") length]) it[@"sub"] = CBStr(f, @"latest");
+            if (n > 0) it[@"badge"] = [NSString stringWithFormat:@"+%ld tập", (long)n];
+            [(n > 0 ? fresh : rest) addObject:it];
+        }
+        [items addObjectsFromArray:fresh];
+        [items addObjectsFromArray:rest];
+        [self showMessage:items.count ? nil : @"Chưa theo dõi phim nào. Mở một phim rồi bấm «Theo dõi» để biết khi có tập mới."];
+    } else {
+        NSDateFormatter *df = [[NSDateFormatter alloc] init];
+        df.dateFormat = @"dd/MM HH:mm";
+        for (NSDictionary *h in [CBPrefs history]) {
+            if (!CBStr(h, @"filmUrl") || !CBStr(h, @"epUrl")) continue;
+            NSMutableDictionary *it = [@{@"url": CBStr(h, @"filmUrl"), @"title": CBStr(h, @"title") ?: @"", @"epUrl": CBStr(h, @"epUrl"),
+                                         @"kind": @"continue"} mutableCopy];
+            if (CBStr(h, @"poster")) it[@"poster"] = CBStr(h, @"poster");
+            double t = CBNum(h, @"time", 0);
+            NSString *when = t > 0 ? [df stringFromDate:[NSDate dateWithTimeIntervalSince1970:t / 1000.0]] : nil;
+            it[@"sub"] = when ? [NSString stringWithFormat:@"%@ · %@", CBStr(h, @"epTitle") ?: @"", when] : (CBStr(h, @"epTitle") ?: @"");
+            [items addObject:it];
+        }
+        [self showMessage:items.count ? nil : @"Chưa xem phim nào."];
+    }
+    _sections = items.count ? @[@{@"items": items}] : @[];
+    [_cv reloadData];
+}
+
+/// Mở trang theo dõi: kiểm lại số tập của từng phim (3 phim cùng lúc), như FollowsPage của bản Windows
+- (void)checkFollows {
+    NSMutableArray *urls = [NSMutableArray array];
+    for (NSDictionary *f in [CBPrefs follows]) if (CBStr(f, @"filmUrl")) [urls addObject:CBStr(f, @"filmUrl")];
+    if (_checking || !urls.count) return;
+    _checking = YES;
+    [_spinner startAnimating];
+    long long t0 = CBNowMs();
+    __block NSUInteger next = 0, done = 0;
+    __weak CBGridViewController *weakSelf = self;
+    __block void (^one)(void);
+    void (^run)(void) = ^{
+        if (next >= urls.count) return;
+        NSString *url = urls[next++];
+        [CBCore call:@"site.detail" args:@{@"url": url} done:^(id ok, NSString *err) {
+            if (CBIsDict(ok)) {
+                [CBPrefs updateFollow:url count:CBDetailEpisodeCount(ok) latest:CBStr(CBDetailLatestEpisode(ok), @"title") seen:NO];
+            }
+            CBGridViewController *s = weakSelf;
+            if (++done >= urls.count) {
+                CBLog(@"Kiểm tập mới %lu phim theo dõi: %lld ms", (unsigned long)urls.count, CBNowMs() - t0);
+                one = nil;  // bỏ vòng giữ khối
+                if (s) {
+                    s->_checking = NO;
+                    [s->_spinner stopAnimating];
+                    [s rebuildSpecial];
+                }
+                return;
+            }
+            if (one) one();
+        }];
+    };
+    one = run;
+    for (int i = 0; i < 3; i++) run();
+}
+
+- (void)longPress:(UILongPressGestureRecognizer *)g {
+    if (g.state != UIGestureRecognizerStateBegan || !_special) return;
+    NSIndexPath *ip = [_cv indexPathForItemAtPoint:[g locationInView:_cv]];
+    if (!ip || ip.section >= (NSInteger)_sections.count) return;
+    [self askRemove:CBArr(_sections[ip.section], @"items")[ip.item]];
+}
+
+/// Nhấn giữ: bỏ theo dõi / xoá khỏi lịch sử (gỡ lỗi: lệnh «pick <số>» trên màn này)
+- (void)askRemove:(NSDictionary *)item {
+    _longItem = item;
+    BOOL follows = [_special isEqualToString:@"follows"];
+    UIActionSheet *sheet = [[UIActionSheet alloc] initWithTitle:CBStr(item, @"title") delegate:self cancelButtonTitle:@"Huỷ"
+                                         destructiveButtonTitle:follows ? @"Bỏ theo dõi" : @"Xoá khỏi lịch sử" otherButtonTitles:nil];
+    [sheet showInView:self.view];
+}
+
+- (void)actionSheet:(UIActionSheet *)sheet clickedButtonAtIndex:(NSInteger)index {
+    if (index != sheet.destructiveButtonIndex || !_longItem) return;
+    NSString *url = CBStr(_longItem, @"url");
+    BOOL follows = [_special isEqualToString:@"follows"];
+    if (follows) [CBPrefs unfollow:url];
+    else [CBPrefs removeHistory:url];
+    CBLog(@"%@: %@", follows ? @"Bỏ theo dõi" : @"Xoá khỏi lịch sử", CBStr(_longItem, @"title"));
+    _longItem = nil;
+    [self rebuildSpecial];
 }
 
 - (void)viewDidLoad {
@@ -103,6 +229,11 @@
         [self showMessage:@"Gõ tên phim rồi bấm Tìm."];
     } else if (_listUrl) {
         [self loadPage:_listUrl];
+    }
+    if (_special) {
+        [_cv addGestureRecognizer:[[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(longPress:)]];
+        [self rebuildSpecial];
+        if ([_special isEqualToString:@"follows"]) [self checkFollows];
     }
 }
 
@@ -261,6 +392,13 @@
 
 - (void)collectionView:(UICollectionView *)cv didSelectItemAtIndexPath:(NSIndexPath *)ip {
     NSDictionary *item = CBArr(_sections[ip.section], @"items")[ip.item];
+    if ([CBStr(item, @"kind") isEqualToString:@"continue"]) {
+        // Lịch sử: bấm là xem tiếp ngay (như «Xem tiếp» ở trang chủ)
+        CBPlayerViewController *p = [[CBPlayerViewController alloc] initWithFilm:CBStr(item, @"url") detail:nil
+                                                                          episode:CBStr(item, @"epUrl") resume:YES];
+        [self presentViewController:p animated:YES completion:nil];
+        return;
+    }
     [self.navigationController pushViewController:[[CBDetailViewController alloc] initWithItem:item] animated:YES];
 }
 

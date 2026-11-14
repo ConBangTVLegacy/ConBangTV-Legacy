@@ -132,7 +132,7 @@
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.6 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ [g search:arg]; });
     } else if ([verb isEqualToString:@"home"]) {
         if (player) [player close];
-        [nav popToRootViewControllerAnimated:YES];
+        [nav popToRootViewControllerAnimated:NO];  // không hiệu ứng: lệnh sau mở màn mới ngay được (đẩy màn lúc đang lùi làm rối thanh tiêu đề iOS 6)
     } else if ([verb isEqualToString:@"back"]) {
         if (player) [player close];
         else if (nav.presentedViewController) [nav dismissViewControllerAnimated:YES completion:nil];
@@ -228,6 +228,20 @@
         id<UIAlertViewDelegate> d = found.delegate;
         if ([d respondsToSelector:@selector(alertView:clickedButtonAtIndex:)]) [d alertView:found clickedButtonAtIndex:idx];
         [found dismissWithClickedButtonIndex:idx animated:YES];
+    } else if ([verb isEqualToString:@"follow"]) {
+        // follow <url phim> — theo dõi như bấm nút «Theo dõi» ở trang phim
+        [CBCore call:@"site.detail" args:@{@"url": arg} done:^(id ok, NSString *err) {
+            if (CBIsDict(ok)) [CBPrefs follow:ok];
+            CBLog(@"[gỡ lỗi] theo dõi %@: %@", arg, CBIsDict(ok) ? @"được" : err);
+        }];
+    } else if ([verb isEqualToString:@"unfollow"]) {
+        [CBPrefs unfollow:arg];
+        CBLog(@"[gỡ lỗi] bỏ theo dõi %@", arg);
+    } else if ([verb isEqualToString:@"more"]) {
+        // more <hàng> — bấm «Xem thêm ›» của hàng trang chủ
+        UIViewController *root = nav.viewControllers.count ? nav.viewControllers[0] : nil;
+        [nav popToRootViewControllerAnimated:NO];
+        if ([root isKindOfClass:[CBHomeViewController class]]) [(CBHomeViewController *)root openMore:[arg integerValue]];
     } else if ([verb isEqualToString:@"unhist"]) {
         // unhist <url phim> — xoá khỏi lịch sử / Xem tiếp (có dấu xoá — máy đã ghép cũng xoá)
         [CBPrefs removeHistory:arg];
@@ -270,8 +284,14 @@
         NSInteger row = [args[0] integerValue];
         if (row < 0) row += [tvc.tableView numberOfRowsInSection:sec];  // âm = đếm từ cuối
         NSIndexPath *ip = [NSIndexPath indexPathForRow:row inSection:sec];
-        CBLog(@"[gỡ lỗi] chọn dòng %ld mục %ld: %@", (long)ip.row, (long)ip.section,
-              [tvc tableView:tvc.tableView cellForRowAtIndexPath:ip].textLabel.text);
+        UITableViewCell *cell = [tvc tableView:tvc.tableView cellForRowAtIndexPath:ip];
+        CBLog(@"[gỡ lỗi] chọn dòng %ld mục %ld: %@", (long)ip.row, (long)ip.section, cell.textLabel.text);
+        if ([cell.accessoryView isKindOfClass:[UISwitch class]]) {  // dòng có công tắc: gạt công tắc
+            UISwitch *sw = (UISwitch *)cell.accessoryView;
+            sw.on = !sw.on;
+            [sw sendActionsForControlEvents:UIControlEventValueChanged];
+            return;
+        }
         [tvc tableView:tvc.tableView didSelectRowAtIndexPath:ip];
     } else if ([verb isEqualToString:@"scroll"]) {
         // scroll <y> — cuộn tới y điểm (âm = cuối danh sách)

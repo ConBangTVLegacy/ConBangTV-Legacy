@@ -78,11 +78,16 @@
     for (NSUInteger i = 0; i < _categories.count; i++) {
         NSString *t = CBStr(_categories[i], @"title") ?: @"";
         if ([t hasSuffix:@"…"]) t = [t substringToIndex:t.length - 1];
+        if ([CBStr(_categories[i], @"kind") isEqualToString:@"follows"]) {
+            NSInteger fresh = 0;
+            for (NSDictionary *f in [CBPrefs follows]) fresh += CBNum(f, @"count", 0) > CBNum(f, @"seen", 0);
+            if (fresh) t = [t stringByAppendingFormat:@" (%ld mới)", (long)fresh];
+        }
         UIButton *b = [UIButton buttonWithType:UIButtonTypeCustom];
         b.tag = (NSInteger)i;
         b.titleLabel.font = font;
         [b setTitle:t forState:UIControlStateNormal];
-        BOOL star = [t hasPrefix:@"★"];
+        BOOL star = [t hasPrefix:@"★"] || [t hasPrefix:@"☆"];
         [b setTitleColor:star ? [CBTheme focus] : [CBTheme text] forState:UIControlStateNormal];
         [b setBackgroundImage:[CBTheme imageWithColor:[CBTheme surface]] forState:UIControlStateNormal];
         [b setBackgroundImage:[CBTheme imageWithColor:[CBTheme surface2]] forState:UIControlStateHighlighted];
@@ -113,6 +118,10 @@
 
 - (void)openCategory:(NSDictionary *)cat {
     NSString *kind = CBStr(cat, @"kind");
+    if ([kind isEqualToString:@"follows"]) {
+        [self.navigationController pushViewController:[[CBGridViewController alloc] initFollows] animated:YES];
+        return;
+    }
     if (kind) {
         [self.navigationController pushViewController:[[CBFilterViewController alloc] initGenres:[kind isEqualToString:@"genres"]]
                                              animated:YES];
@@ -127,11 +136,13 @@
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
     [self updateProfileButton];
-    // Đổi người xem (màn khác) → tải lại cả trang chủ; không thì chỉ làm mới «Xem tiếp» / «Có tập mới»
-    if (_profileShown && ![_profileShown isEqualToString:[CBPrefs profileId]]) {
+    // Đổi người xem / kiểu trang chủ / hồ sơ trẻ em / trang phim (màn khác) → tải lại cả trang chủ; không thì chỉ làm mới
+    // «Xem tiếp» / «Có tập mới»
+    if (_profileShown && ![_profileShown isEqualToString:[self homeSignature]]) {
         [self reload];
     } else {
         [self rebuildHead];
+        [self buildChips];
         [self.tableView reloadData];
     }
 }
@@ -168,7 +179,7 @@
         if (CBStr(f, @"latest")) item[@"sub"] = CBStr(f, @"latest");
         [fresh addObject:item];
     }
-    if (fresh.count) [rows addObject:@{@"id": @"new-eps", @"title": @"Có tập mới", @"items": fresh}];
+    if (fresh.count) [rows addObject:@{@"id": @"new-eps", @"title": @"Có tập mới", @"items": fresh, @"more": @"follows:"}];
     // Xem tiếp: lịch sử (bấm là phát tiếp)
     NSMutableArray *cont = [NSMutableArray array];
     for (NSDictionary *h in [CBPrefs history]) {
@@ -180,13 +191,18 @@
         [cont addObject:item];
         if (cont.count >= 20) break;
     }
-    if (cont.count) [rows addObject:@{@"id": @"continue", @"title": @"Xem tiếp", @"items": cont}];
+    if (cont.count) [rows addObject:@{@"id": @"continue", @"title": @"Xem tiếp", @"items": cont, @"more": @"history:"}];
     _headRows = rows;
+}
+
+/// Những gì quyết định nội dung trang chủ (như HomePage của bản Windows so HomeMixOn / Kids / BaseUrl)
+- (NSString *)homeSignature {
+    return [NSString stringWithFormat:@"%@|%d|%d|%@", [CBPrefs profileId], [CBPrefs homeMix], [CBPrefs kids], [CBPrefs baseUrl]];
 }
 
 - (void)reload {
     NSInteger t = ++_token;
-    _profileShown = [CBPrefs profileId];
+    _profileShown = [self homeSignature];
     [self rebuildHead];
     if (!_feedRows.count) _note = @"Đang tải trang chủ…";
     [self.tableView reloadData];
@@ -283,7 +299,8 @@
 
 /// Danh mục (dải nút đầu trang, giống menu bản Windows): Điểm IMDb cao, Thể loại… / Quốc gia… (trang có bộ lọc), danh mục của trang
 - (NSArray *)menuWith:(id)cats {
-    NSMutableArray *m = [NSMutableArray arrayWithObject:@{@"title": @"★ Điểm IMDb cao", @"url": @"imdb:top"}];
+    NSMutableArray *m = [NSMutableArray arrayWithObjects:@{@"title": @"☆ Theo dõi", @"kind": @"follows"},
+                                                         @{@"title": @"★ Điểm IMDb cao", @"url": @"imdb:top"}, nil];
     if ([CBFilterViewController available]) {
         [m addObject:@{@"title": @"Thể loại…", @"kind": @"genres"}];
         [m addObject:@{@"title": @"Quốc gia…", @"kind": @"countries"}];
@@ -417,10 +434,23 @@
     [self.navigationController pushViewController:[[CBDetailViewController alloc] initWithItem:item] animated:YES];
 }
 
+- (void)openMore:(NSInteger)r {
+    UIButton *b = [UIButton buttonWithType:UIButtonTypeCustom];
+    b.tag = r;
+    [self moreTapped:b];
+}
+
 - (void)moreTapped:(UIButton *)b {
     NSArray *rows = [self allRows];
     if (b.tag >= (NSInteger)rows.count) return;
     NSDictionary *row = rows[b.tag];
+    if ([CBStr(row, @"more") isEqualToString:@"follows:"] || [CBStr(row, @"more") isEqualToString:@"history:"]) {
+        BOOL follows = [CBStr(row, @"more") isEqualToString:@"follows:"];
+        [self.navigationController pushViewController:follows ? [[CBGridViewController alloc] initFollows]
+                                                              : [[CBGridViewController alloc] initHistory]
+                                             animated:YES];
+        return;
+    }
     UIViewController *vc = CBStr(row, @"more")
         ? [[CBGridViewController alloc] initWithListUrl:CBStr(row, @"more") title:CBStr(row, @"title")]
         : [[CBGridViewController alloc] initWithItems:CBArr(row, @"items") title:CBStr(row, @"title")];

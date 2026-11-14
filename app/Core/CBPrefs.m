@@ -530,6 +530,11 @@ static NSString *Sha256Hex(NSString *s) {
     return [self boolKey:[self k:@"kids"] def:NO];
 }
 
++ (void)setKids:(BOOL)on {
+    [self set:[self k:@"kids"] value:@(on)];
+    [CBSync soon:3];
+}
+
 + (BOOL)homeMix {
     return [self boolKey:[self k:@"home_mix"] def:YES] || [self boolKey:[self k:@"kids"] def:NO];
 }

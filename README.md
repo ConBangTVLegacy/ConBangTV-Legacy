@@ -39,7 +39,8 @@ Cổng phát nội bộ 127.0.0.1 (media_proxy: bỏ quảng cáo, cắt PNG ng�
 | Trang phim | thông tin, Xem / Xem tiếp, Theo dõi, chọn bản (Vietsub / Thuyết minh), lưới tập, mô tả, **phim liên quan** (`related.load`) |
 | Trình phát | AVPlayer qua cổng phát nội bộ, tự chọn server phát được trên iOS 6, nhớ chỗ xem, tự chuyển tập, điều khiển trên màn khoá |
 | Người xem | «Ai đang xem?» (thêm người, mã PIN), đổi người xem — cùng khoá dữ liệu với bản Windows |
-| Cài đặt | người xem, trang phim, phát video, mạng (DNS mã hoá, vượt chặn), **Đồng bộ trong nhà**, xoá lịch sử, miễn trừ |
+| Cài đặt | người xem, trang chủ tổng hợp, **hồ sơ trẻ em** (tắt cần mã phụ huynh), trang phim, phát video, mạng, **Đồng bộ trong nhà**, xoá lịch sử, miễn trừ |
+| Theo dõi / Lịch sử | nút «☆ Theo dõi» đầu trang chủ, «Xem thêm» của «Có tập mới» / «Xem tiếp»: lưới phim, kiểm tập mới khi mở, nhấn giữ để bỏ theo dõi / xoá |
 | Giới hạn giờ xem | từng người xem: số phút mỗi ngày, giờ đi ngủ (tới 6 giờ sáng); hết giờ phim dừng, xem thêm cần mã PIN phụ huynh — cùng khoá với bản Windows / TV / iPad |
 | Đồng bộ trong nhà | ghép với tivi / Windows / iPad bằng mã 4 số (lõi `sync_service`, cổng 8791): lịch sử, chỗ xem, theo dõi, người xem, trang phim |
 

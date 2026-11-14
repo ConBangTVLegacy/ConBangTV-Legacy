@@ -60,6 +60,7 @@
 + (BOOL)homeMix;
 /// Hồ sơ trẻ em (khoá kids — đặt từ bản Windows / Android, đồng bộ hồ sơ)
 + (BOOL)kids;
++ (void)setKids:(BOOL)on;
 + (void)setHomeMix:(BOOL)on;
 + (BOOL)autoNext;
 + (void)setAutoNext:(BOOL)on;
