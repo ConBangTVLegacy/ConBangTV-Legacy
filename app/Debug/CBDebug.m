@@ -1,5 +1,6 @@
 #import "CBDebug.h"
 #import "CBAppDelegate.h"
+#import "CBCore.h"
 #import "CBDetailViewController.h"
 #import "CBGridViewController.h"
 #import "CBHomeViewController.h"
@@ -25,6 +26,8 @@
 }
 
 + (void)poll {
+    // Bản thử: app đang mở thì máy không tự khoá (khoá lâu → máy tắt Wi-Fi, mất SSH)
+    [UIApplication sharedApplication].idleTimerDisabled = YES;
     NSString *path = [self cmdPath];
     NSString *text = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:NULL];
     if (!text) return;
@@ -67,7 +70,12 @@
         NSString *film = args.count ? args[0] : @"";
         NSString *ep = args.count > 1 ? args[1] : ([CBPrefs historyFor:film][@"epUrl"] ?: @"");
         CBPlayerViewController *p = [[CBPlayerViewController alloc] initWithFilm:film detail:nil episode:ep resume:YES];
-        [[self top] presentViewController:p animated:YES completion:nil];
+        // Đang có trình phát thì đóng trước (không chồng hai trình phát)
+        double delay = player ? 0.8 : 0;
+        [player close];
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            [[self top] presentViewController:p animated:YES completion:nil];
+        });
     } else if ([verb isEqualToString:@"search"]) {
         CBGridViewController *g = [[CBGridViewController alloc] initSearch];
         [nav pushViewController:g animated:YES];
@@ -83,6 +91,46 @@
         [nav pushViewController:[[CBSettingsViewController alloc] init] animated:YES];
     } else if ([verb isEqualToString:@"profiles"]) {
         [[self top] presentViewController:[[CBProfilesViewController alloc] init] animated:YES completion:nil];
+    } else if ([verb isEqualToString:@"rows"] || [verb isEqualToString:@"row"]) {
+        UIViewController *root = nav.viewControllers.count ? nav.viewControllers[0] : nil;
+        if (![root isKindOfClass:[CBHomeViewController class]]) return;
+        CBHomeViewController *home = (CBHomeViewController *)root;
+        if ([verb isEqualToString:@"row"]) {
+            [nav popToRootViewControllerAnimated:NO];
+            [home openRow:[args[0] integerValue] item:args.count > 1 ? [args[1] integerValue] : 0];
+            return;
+        }
+        NSArray *rows = [home rows];
+        for (NSUInteger r = 0; r < rows.count; r++) {
+            NSArray *items = rows[r][@"items"];
+            NSMutableArray *urls = [NSMutableArray array];
+            for (NSDictionary *it in items) [urls addObject:[NSString stringWithFormat:@"%@ <%@>", it[@"title"], it[@"url"]]];
+            CBLog(@"[hàng %lu] %@ (%lu phim): %@", (unsigned long)r, rows[r][@"title"], (unsigned long)items.count,
+                  [[urls subarrayWithRange:NSMakeRange(0, MIN(urls.count, 6u))] componentsJoinedByString:@" | "]);
+        }
+    } else if ([verb isEqualToString:@"core"]) {
+        // core <hàm> [json tham số] — gọi thẳng lõi, ghi thời gian
+        NSString *method = args.count ? args[0] : @"";
+        NSString *json = arg.length > method.length ? [arg substringFromIndex:method.length + 1] : @"{}";
+        id a = [NSJSONSerialization JSONObjectWithData:[json dataUsingEncoding:NSUTF8StringEncoding] options:0 error:NULL];
+        long long t0 = CBNowMs();
+        [CBCore call:method args:[a isKindOfClass:[NSDictionary class]] ? a : @{} done:^(id ok, NSString *err) {
+            NSString *res = err ? [@"LỖI " stringByAppendingString:err] : nil;
+            if (!res && [ok isKindOfClass:[NSDictionary class]] && ok[@"code"]) {
+                res = [NSString stringWithFormat:@"HTTP %@, %lu ký tự", ok[@"code"], (unsigned long)[ok[@"text"] length]];
+            }
+            if (!res) res = [[ok description] substringToIndex:MIN([[ok description] length], 200u)];
+            CBLog(@"[core] %@ %@ → %@ sau %lld ms", method, json, res, CBNowMs() - t0);
+        }];
+    } else if ([verb isEqualToString:@"pref"]) {
+        // pref <khoá> <giá trị json> — đổi cài đặt rồi báo lõi mạng đổi
+        NSString *key = args.count ? args[0] : @"";
+        NSString *json = arg.length > key.length ? [arg substringFromIndex:key.length + 1] : @"null";
+        id v = [NSJSONSerialization JSONObjectWithData:[json dataUsingEncoding:NSUTF8StringEncoding]
+                                               options:NSJSONReadingAllowFragments error:NULL];
+        [CBPrefs set:key value:v];
+        [CBCore networkSettingsChanged];
+        CBLog(@"[gỡ lỗi] %@ = %@", key, v);
     } else if ([verb isEqualToString:@"reload"]) {
         UIViewController *root = nav.viewControllers.count ? nav.viewControllers[0] : nil;
         if ([root isKindOfClass:[CBHomeViewController class]]) [(CBHomeViewController *)root reload];

@@ -4,4 +4,8 @@
 /// hoặc trang chủ của trang đang dùng (site.homeOf), cuối cùng là danh mục.
 @interface CBHomeViewController : UITableViewController
 - (void)reload;
+/// Các hàng đang hiện: @[@{id, title, items: @[@{url, title, …}]}] (lệnh gỡ lỗi)
+- (NSArray *)rows;
+/// Mở phim thứ i của hàng r như khi chạm (lệnh gỡ lỗi)
+- (void)openRow:(NSInteger)r item:(NSInteger)i;
 @end

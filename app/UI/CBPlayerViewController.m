@@ -31,6 +31,9 @@ static NSString *const kPageServer = @"page";
     NSDictionary *_source;
     NSArray *_servers;
     NSInteger _serverIdx;
+    NSMutableArray *_probeResults;  // kết quả site.videoOf từng server (NSNull = chưa hỏi, {pending} = đang hỏi)
+    NSInteger _probeNext;           // server tiếp theo được xét theo thứ tự ưu tiên
+    BOOL _probing;                  // đang chọn server — đã chọn được (hoặc hết server) thì kết quả về sau không làm phát lại
     NSInteger _token;
     int _resumeAt;
     BOOL _started, _closed, _dragging, _seekedResume;
@@ -367,6 +370,7 @@ static NSString *const kPageServer = @"page";
         }
         self->_source = ok;
         self->_servers = [self orderedServers:ok];
+        self->_probeResults = nil;
         CBLog(@"Tập %@: %lu server (%lld ms) — %@", CBStr(ep, @"title"), (unsigned long)self->_servers.count, CBNowMs() - t0,
               [[self->_servers valueForKey:@"label"] componentsJoinedByString:@", "]);
         if (!self->_servers.count) {
@@ -378,53 +382,90 @@ static NSString *const kPageServer = @"page";
     }];
 }
 
-/// Server của tập (bỏ «Trình phát của trang»), server người xem chọn lần trước lên đầu
+- (NSString *)workedKey:(NSDictionary *)src {
+    return [@"legacy_server@" stringByAppendingString:CBHostOf(CBStr(src, @"epUrl") ?: @"") ?: @""];
+}
+
+/// Server của tập (bỏ «Trình phát của trang»): server người xem chọn lần trước, rồi server bản iOS 6 phát được lần trước
 - (NSArray *)orderedServers:(NSDictionary *)src {
     NSString *pref = [CBPrefs serverTypeForHost:CBHostOf(CBStr(src, @"epUrl") ?: @"")];
     NSMutableArray *list = [NSMutableArray array];
+    // Server bản iOS 6 phát được lần trước trên trang này (khoá riêng, không đè lựa chọn server của bản TV khi đồng bộ)
+    id workedValue = [CBPrefs get:[self workedKey:src]];
+    NSString *worked = CBIsStr(workedValue) ? workedValue : nil;
+    NSMutableArray *first = [NSMutableArray array];
     for (id s in CBArr(src, @"servers") ?: @[]) {
         if (!CBIsDict(s) || [CBStr(s, @"type") isEqualToString:kPageServer]) continue;
-        if (pref && [CBStr(s, @"type") isEqualToString:pref]) [list insertObject:s atIndex:0];
+        NSString *type = CBStr(s, @"type");
+        if (pref && [type isEqualToString:pref]) [first insertObject:s atIndex:0];
+        else if (worked && [type isEqualToString:worked]) [first addObject:s];
         else [list addObject:s];
     }
-    return list;
+    return [first arrayByAddingObjectsFromArray:list];
 }
 
+/// Hỏi link của mọi server cùng lúc (trang chậm + nhiều server nhúng: không phải chờ lần lượt) nhưng vẫn chọn theo thứ tự ưu tiên:
+/// server k chỉ được phát khi các server đứng trước đã trả lời là không phát được.
 - (void)tryServer:(NSInteger)k token:(NSInteger)t {
     if (t != _token || _closed) return;
-    if (k >= (NSInteger)_servers.count) {
-        [self showError:@"Không server nào phát được trên iOS 6 (các server còn lại chỉ có trình phát nhúng của trang).\n"
-                        @"Chọn lại server hoặc xem ở trang phim khác (vd KKPhim)."
-                  retry:_servers.count > 0];
-        return;
+    _probeNext = k;
+    _probing = YES;
+    if (!_probeResults || _probeResults.count != _servers.count) {
+        _probeResults = [NSMutableArray array];
+        for (NSUInteger i = 0; i < _servers.count; i++) [_probeResults addObject:[NSNull null]];
     }
-    _serverIdx = k;
-    NSDictionary *s = _servers[k];
-    [_serverButton setTitle:CBStr(s, @"label") ?: @"Server" forState:UIControlStateNormal];
-    [self showLoading:[NSString stringWithFormat:@"Đang tải %@…", CBStr(s, @"label") ?: @"server"]];
+    [self showLoading:@"Đang tìm server phát được…"];
     long long t0 = CBNowMs();
-    [CBCore call:@"site.videoOf" args:@{@"src": _source, @"server": s} done:^(id v, NSString *err) {
-        if (t != self->_token || self->_closed) return;
+    for (NSInteger i = k; i < (NSInteger)_servers.count; i++) {
+        if (_probeResults[i] != [NSNull null]) continue;
+        _probeResults[i] = @{@"pending": @YES};
+        NSDictionary *s = _servers[i];
+        [CBCore call:@"site.videoOf" args:@{@"src": _source, @"server": s} done:^(id v, NSString *err) {
+            if (t != self->_token || self->_closed || i >= (NSInteger)self->_probeResults.count) return;
+            self->_probeResults[i] = CBIsDict(v) ? v : @{@"err": err ?: @"không có link"};
+            CBLog(@"Server %@: %@ (%lld ms)", CBStr(s, @"label"), CBStr(v, @"url") ?: err, CBNowMs() - t0);
+            [self advanceProbe:t];
+        }];
+    }
+    [self advanceProbe:t];
+}
+
+- (void)advanceProbe:(NSInteger)t {
+    if (t != _token || _closed || !_probing) return;
+    while (_probeNext < (NSInteger)_servers.count) {
+        NSDictionary *v = _probeResults[_probeNext];
+        if (!CBIsDict(v) || CBBool(v, @"pending", NO)) {
+            NSDictionary *s = _servers[_probeNext];
+            [_serverButton setTitle:CBStr(s, @"label") ?: @"Server" forState:UIControlStateNormal];
+            return;  // chờ server đứng trước trả lời
+        }
+        NSDictionary *s = _servers[_probeNext];
         NSString *url = CBStr(v, @"url");
         NSString *path = [[NSURL URLWithString:url].path lowercaseString];
         BOOL playable = url && (CBBool(v, @"file", NO) || [path hasSuffix:@".m3u8"]);
-        if (!playable) {
-            CBLog(@"Server %@: %@ — bỏ qua (%lld ms)", CBStr(s, @"label"), err ?: [NSString stringWithFormat:@"trình phát nhúng %@", url],
-                  CBNowMs() - t0);
-            [self tryServer:k + 1 token:t];
+        NSString *local = nil;
+        if (playable) {
+            NSMutableDictionary *args = [@{@"src": url, @"page": CBStr(_source, @"epUrl") ?: @"", @"hls": @NO} mutableCopy];
+            if (CBStr(v, @"subtitle")) args[@"sub"] = CBStr(v, @"subtitle");
+            local = CBStr([CBCore sync:@"media.open" args:args], @"url");
+        }
+        if (local) {
+            _serverIdx = _probeNext;
+            [_serverButton setTitle:CBStr(s, @"label") ?: @"Server" forState:UIControlStateNormal];
+            [self showLoading:[NSString stringWithFormat:@"Đang tải %@…", CBStr(s, @"label") ?: @"server"]];
+            CBLog(@"Phát %@ qua %@ (server %@, bắt đầu %ds)", url, local, CBStr(s, @"label"), _resumeAt);
+            _probing = NO;
+            [self play:local];
             return;
         }
-        NSMutableDictionary *args = [@{@"src": url, @"page": CBStr(self->_source, @"epUrl") ?: @"", @"hls": @NO} mutableCopy];
-        if (CBStr(v, @"subtitle")) args[@"sub"] = CBStr(v, @"subtitle");
-        NSString *local = CBStr([CBCore sync:@"media.open" args:args], @"url");
-        if (!local) {
-            CBLog(@"Server %@: cổng phát nội bộ không mở được %@", CBStr(s, @"label"), url);
-            [self tryServer:k + 1 token:t];
-            return;
-        }
-        CBLog(@"Phát %@ qua %@ (server %@, bắt đầu %ds, %lld ms)", url, local, CBStr(s, @"label"), self->_resumeAt, CBNowMs() - t0);
-        [self play:local];
-    }];
+        CBLog(@"Server %@: bỏ qua — %@", CBStr(s, @"label"),
+              playable ? @"cổng phát nội bộ không mở được" : (url ? @"chỉ có trình phát nhúng" : CBStr(v, @"err")));
+        _probeNext++;
+    }
+    _probing = NO;
+    [self showError:@"Không server nào phát được trên iOS 6 (các server còn lại chỉ có trình phát nhúng của trang).\n"
+                    @"Chọn lại server hoặc xem ở trang phim khác (vd KKPhim)."
+              retry:_servers.count > 0];
 }
 
 #pragma mark - AVPlayer
@@ -534,6 +575,8 @@ static NSString *const kPageServer = @"page";
         _started = YES;
         [self hideStatus];
         [self setControlsVisible:NO];
+        NSString *type = _serverIdx < (NSInteger)_servers.count ? CBStr(_servers[_serverIdx], @"type") : nil;
+        if (type) [CBPrefs set:[self workedKey:_source] value:type];
     }
     if (!_dragging) {
         _timeLabel.text = [CBTheme time:now];
@@ -654,6 +697,7 @@ static NSString *const kPageServer = @"page";
     [self savePosition];
     [self teardownPlayer];
     _started = NO;
+    _probeResults = nil;  // lượt hỏi cũ (mã cũ) bị bỏ — hỏi lại
     [self tryServer:index token:++_token];
 }
 

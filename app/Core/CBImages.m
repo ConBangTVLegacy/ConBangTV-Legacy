@@ -4,6 +4,7 @@
 #import <ImageIO/ImageIO.h>
 #import <Security/Security.h>
 #import <objc/runtime.h>
+#include "webp/decode.h"
 
 static const void *kUrlKey = &kUrlKey;
 static const NSInteger kMaxActive = 4;
@@ -51,8 +52,45 @@ static NSString *CBMd5(NSString *s) {
     return out;
 }
 
+/// Ảnh WebP (iOS 6 không đọc được): libwebp giải mã thẳng ra cỡ nhỏ (use_scaling) — đỡ RAM, đỡ CPU
+static UIImage *CBDecodeWebP(NSData *data, CGFloat maxPx) {
+    WebPDecoderConfig config;
+    if (!WebPInitDecoderConfig(&config)) return nil;
+    if (WebPGetFeatures(data.bytes, data.length, &config.input) != VP8_STATUS_OK) return nil;
+    int w = config.input.width, h = config.input.height;
+    if (w <= 0 || h <= 0) return nil;
+    double scale = MIN(1.0, MAX(maxPx, 32) / MAX(w, h));
+    if (scale < 1) {
+        config.options.use_scaling = 1;
+        config.options.scaled_width = MAX(1, (int)lround(w * scale));
+        config.options.scaled_height = MAX(1, (int)lround(h * scale));
+    }
+    config.output.colorspace = MODE_bgrA;  // BGRA nhân trước alpha = kCGImageAlphaPremultipliedFirst | ByteOrder32Little
+    if (WebPDecode(data.bytes, data.length, &config) != VP8_STATUS_OK) return nil;
+    int ow = config.output.width, oh = config.output.height;
+    CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
+    CGContextRef ctx = CGBitmapContextCreate(config.output.u.RGBA.rgba, ow, oh, 8, config.output.u.RGBA.stride, cs,
+                                             kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little);
+    CGColorSpaceRelease(cs);
+    UIImage *out = nil;
+    if (ctx) {
+        CGImageRef img = CGBitmapContextCreateImage(ctx);  // chép điểm ảnh ra — rồi trả bộ nhớ của libwebp
+        CGContextRelease(ctx);
+        out = [UIImage imageWithCGImage:img scale:[UIScreen mainScreen].scale orientation:UIImageOrientationUp];
+        CGImageRelease(img);
+    }
+    WebPFreeDecBuffer(&config.output);
+    return out;
+}
+
+static BOOL CBIsWebP(NSData *data) {
+    const unsigned char *b = data.bytes;
+    return data.length > 12 && !memcmp(b, "RIFF", 4) && !memcmp(b + 8, "WEBP", 4);
+}
+
 /// Giải mã ảnh thu nhỏ: cạnh dài tối đa maxPx điểm ảnh (không giải mã cả ảnh 1000 px vào RAM)
 static UIImage *CBDecode(NSData *data, CGFloat maxPx) {
+    if (CBIsWebP(data)) return CBDecodeWebP(data, maxPx);
     CGImageSourceRef src = CGImageSourceCreateWithData((__bridge CFDataRef)data, NULL);
     if (!src) return nil;
     NSDictionary *opts = @{(id)kCGImageSourceCreateThumbnailFromImageAlways: @YES,

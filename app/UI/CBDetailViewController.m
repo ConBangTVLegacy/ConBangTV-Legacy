@@ -116,8 +116,14 @@
 
 - (void)load {
     if (!_detail) [_spinner startAnimating];
-    [CBCore call:@"site.detail" args:@{@"url": CBStr(_item, @"url") ?: @""} done:^(id ok, NSString *err) {
+    long long t0 = CBNowMs();
+    NSString *url = CBStr(_item, @"url") ?: @"";
+    CBLog(@"Mở trang phim %@ (%@)%@", CBStr(_item, @"title"), url, _detail ? @" — có bản lưu" : @"");
+    [CBCore call:@"site.detail" args:@{@"url": url} done:^(id ok, NSString *err) {
         [self->_spinner stopAnimating];
+        CBLog(@"Trang phim %@: %@ sau %lld ms", url,
+              CBIsDict(ok) ? [NSString stringWithFormat:@"%ld tập", (long)CBDetailEpisodeCount(ok)] : [@"LỖI " stringByAppendingString:err ?: @"?"],
+              CBNowMs() - t0);
         if (CBIsDict(ok)) {
             [self applyDetail:ok];
         } else if (!self->_detail) {

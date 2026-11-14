@@ -2,6 +2,7 @@
 #import "CBCore.h"
 #import "CBDetailViewController.h"
 #import "CBJSON.h"
+#import "CBLog.h"
 #import "CBPosterCell.h"
 #import "CBRowCell.h"
 #import "CBTheme.h"
@@ -178,12 +179,19 @@
     [_cv reloadData];
     [self showMessage:nil];
     [_spinner startAnimating];
+    [self showMessage:[NSString stringWithFormat:@"Đang tìm «%@» trên mọi trang…", q]];
     _loading = YES;
+    long long t0 = CBNowMs();
+    CBLog(@"Tìm «%@»", q);
     [CBCore call:@"site.searchAll" args:@{@"query": q} done:^(id ok, NSString *err) {
         if (t != self->_token) return;
         self->_loading = NO;
         [self->_spinner stopAnimating];
         self->_sections = CBIsDict(ok) ? [self sectionsOfPage:ok] : @[];
+        NSUInteger n = 0;
+        for (NSDictionary *s in self->_sections) n += CBArr(s, @"items").count;
+        CBLog(@"Tìm «%@»: %lu phim, %lu nhóm sau %lld ms%@", q, (unsigned long)n, (unsigned long)self->_sections.count,
+              CBNowMs() - t0, err ? [@" — LỖI " stringByAppendingString:err] : @"");
         [self showMessage:self->_sections.count ? nil
                                                : (err ? [NSString stringWithFormat:@"Không tìm được.\n%@", err]
                                                       : [NSString stringWithFormat:@"Không thấy phim nào tên «%@».", q])];
@@ -206,7 +214,8 @@
 - (CGFloat)cellWidth {
     CGFloat w = _cv.bounds.size.width - 24;
     CGFloat target = [CBPosterCell defaultWidth];
-    NSInteger cols = MAX(2, (NSInteger)floor((w + 8) / (target + 8)));
+    // iPhone dọc: 3 cột (bề ngang 296 điểm chỉ vừa 2 ô cỡ mặc định — ô quá to, phải cuộn nhiều)
+    NSInteger cols = MAX(3, (NSInteger)floor((w + 8) / (target + 8)));
     return floor((w - 8 * (cols - 1)) / cols);
 }
 

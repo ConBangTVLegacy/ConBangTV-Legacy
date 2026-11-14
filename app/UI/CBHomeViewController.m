@@ -204,6 +204,17 @@
     return [_headRows arrayByAddingObjectsFromArray:_feedRows ?: @[]];
 }
 
+- (NSArray *)rows {
+    return [self allRows];
+}
+
+- (void)openRow:(NSInteger)r item:(NSInteger)i {
+    NSArray *rows = [self allRows];
+    if (r < 0 || r >= (NSInteger)rows.count) return;
+    NSArray *items = CBArr(rows[r], @"items");
+    if (i >= 0 && i < (NSInteger)items.count) [self open:items[i]];
+}
+
 #pragma mark - Bảng
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {

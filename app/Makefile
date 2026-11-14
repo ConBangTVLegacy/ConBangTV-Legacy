@@ -19,6 +19,17 @@ ConBangTV_FILES += $(wildcard Debug/*.m)
 endif
 ConBangTV_FRAMEWORKS = UIKit Foundation CoreGraphics QuartzCore AVFoundation CoreMedia MediaPlayer ImageIO Security
 ConBangTV_CFLAGS = -fobjc-arc -Wno-deprecated-declarations -ICore -IUI -IDebug
+
+# Giải mã ảnh WebP (iOS 6 không có; ảnh bìa KKPhim / yanhh3d… là WebP): libwebp — tools/vendor-libwebp.sh → vendor/libwebp.
+# Chỉ dựng phần giải mã, danh sách lấy từ makefile.unix của libwebp (DEC_OBJS + DSP_DEC_OBJS + UTILS_DEC_OBJS).
+WEBP = vendor/libwebp
+WEBP_FILES := $(shell sed -n -e '/^DEC_OBJS/,/^$$/p' -e '/^DSP_DEC_OBJS/,/^$$/p' -e '/^UTILS_DEC_OBJS/,/^$$/p' \
+	$(WEBP)/makefile.unix 2>/dev/null | grep -o 'src/[a-z0-9_/]*\.o' | sed 's/\.o$$/.c/')
+ifeq ($(WEBP_FILES),)
+$(error Chưa có libwebp — chạy bash ../tools/vendor-libwebp.sh)
+endif
+ConBangTV_FILES += $(addprefix $(WEBP)/,$(WEBP_FILES))
+ConBangTV_CFLAGS += -I$(WEBP)/src -I$(WEBP)
 CORE_LIB_DIR ?= $(HOME)/work/target-core/armv7-apple-ios6/release
 ConBangTV_LDFLAGS = -L$(CORE_LIB_DIR) -lconbang_core
 
