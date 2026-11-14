@@ -65,6 +65,26 @@ Bản phát hành bỏ hẳn `Debug/` (không đọc lệnh, không giữ màn h
 `su mobile -c uicache` để hiện biểu tượng — **không** chạy uicache lúc app đang mở). 14/11/2026: bản **0.2.0** đã cài trên
 iPhone 5 và iPad mini 1.
 
+## Cập nhật OTA và phát hành
+
+App (từ 0.4.0) tự kiểm [GitHub Releases](https://github.com/ConBangTVLegacy/ConBangTV-Legacy/releases) lúc mở / quay lại app
+(tối đa 6 giờ một lần) và khi chạm «Phiên bản» trong Cài đặt (`Core/CBUpdate.m`): bản mới hơn có tệp
+`vn.conbangtv.legacy_<bản>_iphoneos-arm.deb` thì hỏi «Cập nhật / Để sau», tải qua lõi (iOS 6 không tự vào được GitHub), kiểm
+kích thước + SHA-256 (`digest` GitHub ghi sẵn), rồi gọi `/usr/libexec/conbangtv/cbupdate` (`Helper/cbupdate.c`, setuid root —
+`layout/DEBIAN/postinst` đặt quyền): chỉ cài `.deb` trong `Documents/ConBangTV-update/` đúng gói `vn.conbangtv.legacy`, đóng app,
+`dpkg -i`, `uicache`, mở lại app (nhật ký `Documents/ConBangTV-update/install.log`). Thử: pref `update_api` trỏ tới danh sách
+release khác.
+
+Phát hành bản mới:
+
+1. Đổi số bản ở `app/control` (`Version:`) và `CFBundleShortVersionString` trong `app/Resources/Info.plist`.
+2. Trên máy dựng: `bash tools/build-release.sh` → `app/packages/vn.conbangtv.legacy_<bản>_iphoneos-arm.deb` (+ tra ký hiệu bằng
+   `cbsymcheck` trên một máy iOS 6).
+3. `gh release create v<bản> <tệp .deb> -R ConBangTVLegacy/ConBangTV-Legacy --title "Côn Bằng TV Legacy <bản>" --notes "…"`.
+   Đừng thay tệp của bản đã phát hành (CDN còn giữ tệp cũ vài phút → app báo sai kích thước) — sửa thì ra bản mới.
+
+Máy đang chạy bản cũ hơn 0.4.0 (chưa có `cbupdate`) cài tay một lần: chép `.deb` vào máy rồi `dpkg -i` (SSH / Filza).
+
 ## Bẫy của iOS 6 đã gặp (và cách xử lý)
 
 - **Xcode 14+ bỏ armv7** → Theos trên Linux + SDK 9.3 (bản cuối còn armv7).
