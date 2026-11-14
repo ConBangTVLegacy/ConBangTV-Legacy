@@ -194,6 +194,10 @@
         [player selectServer:[arg integerValue]];
     } else if ([verb isEqualToString:@"close"]) {
         [player close];
+    } else if ([verb isEqualToString:@"unhist"]) {
+        // unhist <url phim> — xoá khỏi lịch sử / Xem tiếp (có dấu xoá — máy đã ghép cũng xoá)
+        [CBPrefs removeHistory:arg];
+        CBLog(@"[gỡ lỗi] đã xoá khỏi lịch sử: %@", arg);
     } else if ([verb isEqualToString:@"chip"]) {
         // chip <số> — bấm nút danh mục ở đầu trang chủ (0 = ★ Điểm IMDb cao)
         UIViewController *root = nav.viewControllers.count ? nav.viewControllers[0] : nil;

@@ -12,8 +12,8 @@ enum { CBAskCode = 1, CBAskAddress };
 static NSString *CBPlatformIcon(NSString *p) {
     if ([p isEqualToString:@"android"]) return @"📺";
     if ([p isEqualToString:@"ios"]) return @"📱";
-    if ([p isEqualToString:@"windows"]) return @"💻";
-    return @"🖥";
+    if ([p isEqualToString:@"linux"]) return @"🐧";
+    return @"💻";  // windows, mac… (🖥 của bản Windows không có trong bộ emoji iOS 6 → ô vuông)
 }
 
 static BOOL CBTrue(id v) {
