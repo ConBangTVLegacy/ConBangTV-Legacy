@@ -5,6 +5,7 @@
 #import "CBLog.h"
 #import "CBPlayerViewController.h"
 #import "CBPrefs.h"
+#import "CBRowCell.h"
 #import "CBTheme.h"
 
 #pragma mark - Ô tập
@@ -75,6 +76,11 @@
     UIActivityIndicatorView *_spinner;
     CGFloat _headerHeight;
     UILabel *_descLabel;
+    // Phần cuối: mô tả + các hàng «phim liên quan» (tải sau khi trang phim đã hiện; nil = chưa xong)
+    UIView *_footer;
+    NSArray *_related;
+    BOOL _relatedLoading;
+    NSMutableArray *_relatedViews;  // [UILabel tên hàng, CBRowCell] cho từng hàng
 }
 
 - (instancetype)initWithItem:(NSDictionary *)item {
@@ -151,6 +157,7 @@
                          seen:NO];
     }
     [self refreshMarks];
+    if (!_related && !_relatedLoading) [self loadRelated];
 }
 
 - (void)refreshMarks {
@@ -205,6 +212,10 @@
     _descLabel.textColor = [CBTheme dim];
     _descLabel.font = [CBTheme font:14];
     _descLabel.numberOfLines = 0;
+    _footer = [[UIView alloc] init];
+    _footer.backgroundColor = [CBTheme bg];
+    [_footer addSubview:_descLabel];
+    _relatedViews = [NSMutableArray array];
 }
 
 - (void)relayout {
@@ -314,20 +325,20 @@
 }
 
 - (CGSize)collectionView:(UICollectionView *)cv layout:(UICollectionViewLayout *)l referenceSizeForFooterInSection:(NSInteger)s {
-    if (!_descLabel.text) return CGSizeZero;
-    return CGSizeMake(cv.bounds.size.width, [CBTheme heightOf:_descLabel.text font:_descLabel.font width:cv.bounds.size.width - 24] + 32);
+    CGFloat h = [self layoutFooter:cv.bounds.size.width];
+    return h > 0 ? CGSizeMake(cv.bounds.size.width, h) : CGSizeZero;
 }
 
 - (UICollectionReusableView *)collectionView:(UICollectionView *)cv viewForSupplementaryElementOfKind:(NSString *)kind
                                  atIndexPath:(NSIndexPath *)ip {
     BOOL head = [kind isEqualToString:UICollectionElementKindSectionHeader];
     CBHostView *v = [cv dequeueReusableSupplementaryViewOfKind:kind withReuseIdentifier:head ? @"h" : @"f" forIndexPath:ip];
-    UIView *content = head ? _header : _descLabel;
+    UIView *content = head ? _header : _footer;
     if (content.superview != v) {
         [content removeFromSuperview];
         [v addSubview:content];
     }
-    if (!head) _descLabel.frame = CGRectMake(12, 12, v.bounds.size.width - 24, v.bounds.size.height - 24);
+    if (!head) [self layoutFooter:v.bounds.size.width];
     return v;
 }
 
@@ -342,6 +353,88 @@
 - (void)collectionView:(UICollectionView *)cv didSelectItemAtIndexPath:(NSIndexPath *)ip {
     NSDictionary *ep = [self episodes][ip.item];
     [self playEpisode:CBStr(ep, @"url") resume:NO];
+}
+
+#pragma mark - Phim liên quan
+
+- (void)loadRelated {
+    NSString *title = CBStr(_detail, @"title") ?: CBStr(_item, @"title");
+    NSString *url = CBStr(_detail, @"url") ?: CBStr(_item, @"url");
+    if (!title.length || !url.length) return;
+    _relatedLoading = YES;
+    long long t0 = CBNowMs();
+    [CBCore call:@"related.load" args:@{@"title": title, @"url": url} done:^(id ok, NSString *err) {
+        self->_relatedLoading = NO;
+        NSArray *rows = CBIsArr(ok) ? ok : @[];
+        CBLog(@"Phim liên quan «%@»: %lu hàng sau %lld ms%@", title, (unsigned long)rows.count, CBNowMs() - t0,
+              err ? [@" — LỖI " stringByAppendingString:err] : @"");
+        self->_related = rows;
+        [self buildRelated];
+    }];
+}
+
+/// Phần tử ô phim cho hàng liên quan: phim ở trang khác gắn nhãn tên trang (như «kkphim» ở trang chủ)
+- (NSDictionary *)relatedItem:(NSDictionary *)film {
+    NSMutableDictionary *item = [CBItemFromFilm(film) mutableCopy];
+    NSString *mine = CBHostOf(CBStr(_detail, @"url") ?: CBStr(_item, @"url") ?: @"");
+    NSString *host = CBHostOf(CBStr(film, @"url") ?: @"");
+    if (host && mine && ![host isEqualToString:mine]) {
+        id tag = [CBCore sync:@"site.tag" args:@{@"host": host, @"sites": [CBPrefs sites] ?: @[]}];
+        if (CBIsStr(tag) && [tag length]) {
+            if (!item[@"sub"] && item[@"badge"]) item[@"sub"] = item[@"badge"];
+            item[@"badge"] = tag;
+        }
+    }
+    return item;
+}
+
+- (void)buildRelated {
+    for (NSArray *pair in _relatedViews) for (UIView *v in pair) [v removeFromSuperview];
+    [_relatedViews removeAllObjects];
+    __weak CBDetailViewController *weakSelf = self;
+    for (NSDictionary *row in _related) {
+        NSMutableArray *items = [NSMutableArray array];
+        for (NSDictionary *f in CBArr(row, @"films")) if (CBIsDict(f)) [items addObject:[self relatedItem:f]];
+        if (!items.count) continue;
+        UILabel *t = [[UILabel alloc] init];
+        t.backgroundColor = [UIColor clearColor];
+        t.textColor = [CBTheme text];
+        t.font = [CBTheme bold:[CBTheme isPad] ? 20 : 17];
+        t.text = CBStr(row, @"title");
+        CBRowCell *cell = [[CBRowCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:nil];
+        cell.onSelect = ^(NSDictionary *item) {
+            CBDetailViewController *d = [[CBDetailViewController alloc] initWithItem:item];
+            [weakSelf.navigationController pushViewController:d animated:YES];
+        };
+        [_footer addSubview:t];
+        [_footer addSubview:cell];
+        [_relatedViews addObject:@[t, cell]];
+        cell.frame = CGRectMake(0, 0, _cv.bounds.size.width, [CBRowCell height]);
+        [cell layoutIfNeeded];
+        [cell setItems:items offset:0];
+    }
+    [_cv.collectionViewLayout invalidateLayout];
+}
+
+/// Đặt khung mô tả + hàng liên quan theo bề ngang w, trả chiều cao phần cuối (0 = không có gì)
+- (CGFloat)layoutFooter:(CGFloat)w {
+    CGFloat y = 0;
+    if (_descLabel.text.length) {
+        CGFloat dh = [CBTheme heightOf:_descLabel.text font:_descLabel.font width:w - 24];
+        _descLabel.frame = CGRectMake(12, 12, w - 24, dh);
+        y = 12 + dh + 20;
+    } else {
+        _descLabel.frame = CGRectZero;
+    }
+    for (NSArray *pair in _relatedViews) {
+        [pair[0] setFrame:CGRectMake(12, y, w - 24, 24)];
+        y += 32;
+        CGRect f = CGRectMake(0, y, w, [CBRowCell height]);
+        if (!CGRectEqualToRect([pair[1] frame], f)) [pair[1] setFrame:f];
+        y += [CBRowCell height] + 16;
+    }
+    _footer.frame = CGRectMake(0, 0, w, y);
+    return y;
 }
 
 #pragma mark - Thao tác

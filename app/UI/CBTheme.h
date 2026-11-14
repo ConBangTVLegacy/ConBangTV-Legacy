@@ -30,4 +30,6 @@
 + (CGFloat)heightOf:(NSString *)text font:(UIFont *)font width:(CGFloat)width;
 /// «01:23:45» / «23:45»
 + (NSString *)time:(double)seconds;
+/// Lời báo ngắn ở cuối màn hình (tự ẩn sau vài giây; lời mới thay lời cũ)
++ (void)toast:(NSString *)text;
 @end

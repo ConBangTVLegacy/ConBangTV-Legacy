@@ -27,8 +27,23 @@ Cổng phát nội bộ 127.0.0.1 (media_proxy: bỏ quảng cáo, cắt PNG ng�
 | `tools/rust/` | Target `armv7-apple-ios6.json`, `cargo-ios6.sh` (cargo nightly + build-std), `vendor-ring.sh` (vá ring) |
 | `tools/cblaunch/` | Mở app / đánh thức / mở khoá máy từ SSH (SpringBoardServices) |
 | `tools/symcheck/`, `tools/symlist.py` | Tra trên máy iOS 6 mọi ký hiệu tệp chạy cần — bắt lỗi «dyld: Symbol not found» trước khi chạy |
-| `patches/` | Bản vá tạm cho lõi chung (hiện trống — 3 bản vá cho iOS đã vào repo chính 14/11/2026) |
-| `app/` | **App thật — Côn Bằng TV Legacy** (`vn.conbangtv.legacy`): trang chủ, tìm kiếm, trang phim, trình phát, người xem, cài đặt |
+| `patches/` | Bản vá tạm cho lõi chung (3 bản vá đầu đã vào repo chính 14/11/2026; còn `0001-sync-ios-platform` — xem README trong đó) |
+| `app/` | **App thật — Côn Bằng TV Legacy** (`vn.conbangtv.legacy`) — các màn ở mục «App» dưới đây |
+
+## App (`app/`)
+
+| Màn | Có gì |
+| --- | --- |
+| Trang chủ | «Có tập mới», «Xem tiếp», các hàng của trang chủ tổng hợp (`home.load` / `home.late`); cuối trang: ★ Điểm IMDb cao (`imdb.page`), danh mục của trang, Thể loại… / Quốc gia… (`api.filters` / `next.filters`) |
+| Tìm kiếm | tìm trên mọi trang (`site.searchAll`) |
+| Trang phim | thông tin, Xem / Xem tiếp, Theo dõi, chọn bản (Vietsub / Thuyết minh), lưới tập, mô tả, **phim liên quan** (`related.load`) |
+| Trình phát | AVPlayer qua cổng phát nội bộ, tự chọn server phát được trên iOS 6, nhớ chỗ xem, tự chuyển tập, điều khiển trên màn khoá |
+| Người xem | «Ai đang xem?» (thêm người, mã PIN), đổi người xem — cùng khoá dữ liệu với bản Windows |
+| Cài đặt | người xem, trang phim, phát video, mạng (DNS mã hoá, vượt chặn), **Đồng bộ trong nhà**, xoá lịch sử, miễn trừ |
+| Đồng bộ trong nhà | ghép với tivi / Windows / iPad bằng mã 4 số (lõi `sync_service`, cổng 8791): lịch sử, chỗ xem, theo dõi, người xem, trang phim |
+
+Bản thử (không `FINALPACKAGE=1`) có `Debug/CBDebug.m`: đọc lệnh từ `Documents/ConBangTV-cmd.txt` (`shot`, `film`, `play`, `search`,
+`settings`, `profiles`, `sync`, `syncpair`, `pick`, `scroll`, `wait`, `status`, `core`, `pref`…) để thử tự động qua SSH.
 
 ## Dựng (máy Linux)
 
@@ -76,7 +91,6 @@ cd src/spike/01-player && THEOS=~/theos make package  # → packages/*.deb (ký 
 ## Việc tiếp theo
 
 1. Đo lại tốc độ / phát qua lõi khi Wi-Fi tốt; nếu lõi vẫn chậm hơn NSURLConnection thì dò (DNS mã hoá, cổng SOCKS nội bộ, IPv6).
-2. Vỏ app thật bằng UIKit: chọn người xem, trang chủ tổng hợp (`home.load`), danh sách / tìm kiếm, trang phim (`site.detail`),
-   trình phát (AVPlayer + `media.open`, nhớ vị trí, tự chuyển tập), cài đặt — theo bản Windows (cùng FFI JSON).
-3. Thử iPad mini 1 (A5, 512 MB RAM).
+2. Thử iPad mini 1 (A5, 512 MB RAM).
+3. Giới hạn giờ xem cho trẻ (như `WatchLimit` của bản Windows / iPad).
 4. Đóng gói / cập nhật: repo Cydia riêng hoặc .deb trên GitHub Releases.

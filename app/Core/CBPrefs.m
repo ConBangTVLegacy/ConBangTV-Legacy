@@ -2,6 +2,7 @@
 #import "CBCore.h"
 #import "CBJSON.h"
 #import "CBLog.h"
+#import "CBSync.h"
 #import <CommonCrypto/CommonDigest.h>
 
 // Trang mẫu (như Prefs.PresetSites của bản Windows)
@@ -119,6 +120,12 @@ static NSString *Sha256Hex(NSString *s) {
     return list[0];
 }
 
++ (void)invalidateCaches {
+    gPidCache = nil;
+    gHistoryCache = nil;
+    gPositionsCache = nil;
+}
+
 + (void)switchProfile:(NSString *)pid {
     BOOL found = NO;
     for (NSDictionary *p in [self profiles]) found |= [(CBStr(p, @"id") ?: @"") isEqualToString:pid];
@@ -160,6 +167,7 @@ static NSString *Sha256Hex(NSString *s) {
 }
 
 + (NSDictionary *)addProfile:(NSString *)name {
+    [CBSync soon:3];  // dữ liệu dùng chung với máy đã ghép
     NSMutableArray *list = [[self profiles] mutableCopy];
     NSInteger n = 1;
     NSMutableSet *ids = [NSMutableSet set];
@@ -204,6 +212,7 @@ static NSString *Sha256Hex(NSString *s) {
 }
 
 + (void)renameProfile:(NSString *)pid name:(NSString *)name {
+    [CBSync soon:3];  // dữ liệu dùng chung với máy đã ghép
     NSString *clean = [name stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
     if (!clean.length) return;
     [self updateProfile:pid change:^(NSMutableDictionary *p) { p[@"name"] = clean; }];
@@ -215,6 +224,7 @@ static NSString *Sha256Hex(NSString *s) {
 }
 
 + (void)setProfilePin:(NSString *)pid pin:(NSString *)pin {
+    [CBSync soon:3];  // dữ liệu dùng chung với máy đã ghép
     [self updateProfile:pid change:^(NSMutableDictionary *p) {
         if (pin) p[@"pin"] = [self pinHash:pid pin:pin];
         else [p removeObjectForKey:@"pin"];
@@ -227,6 +237,7 @@ static NSString *Sha256Hex(NSString *s) {
 }
 
 + (BOOL)deleteProfile:(NSString *)pid {
+    [CBSync soon:3];  // dữ liệu dùng chung với máy đã ghép
     NSArray *list = [self profiles];
     NSMutableArray *rest = [NSMutableArray array];
     for (NSDictionary *p in list) {
@@ -298,6 +309,7 @@ static NSString *Sha256Hex(NSString *s) {
 }
 
 + (void)removeHistory:(NSString *)filmUrl {
+    [CBSync soon:3];  // dữ liệu dùng chung với máy đã ghép
     NSDictionary *item = [self historyFor:filmUrl];
     NSMutableDictionary *del = [[self stamps:[self k:@"hist_del"]] mutableCopy];
     del[filmUrl] = @(CBNowMs());
@@ -320,6 +332,7 @@ static NSString *Sha256Hex(NSString *s) {
 }
 
 + (void)clearHistory {
+    [CBSync soon:3];  // dữ liệu dùng chung với máy đã ghép
     NSMutableDictionary *del = [[self stamps:[self k:@"hist_del"]] mutableCopy];
     NSNumber *now = @(CBNowMs());
     for (NSDictionary *h in [self historyList]) {
@@ -405,6 +418,7 @@ static NSString *Sha256Hex(NSString *s) {
 }
 
 + (void)follow:(NSDictionary *)detail {
+    [CBSync soon:3];  // dữ liệu dùng chung với máy đã ghép
     NSString *url = CBStr(detail, @"url");
     if (!url) return;
     NSInteger n = CBDetailEpisodeCount(detail);
@@ -420,6 +434,7 @@ static NSString *Sha256Hex(NSString *s) {
 }
 
 + (void)unfollow:(NSString *)filmUrl {
+    [CBSync soon:3];  // dữ liệu dùng chung với máy đã ghép
     NSMutableDictionary *del = [[self stamps:[self k:@"follow_del"]] mutableCopy];
     del[filmUrl] = @(CBNowMs());
     [self setStamps:[self k:@"follow_del"] map:del];
@@ -453,8 +468,11 @@ static NSString *Sha256Hex(NSString *s) {
 
 + (NSString *)baseUrl {
     id v = [self get:[self k:@"base_url"]] ?: [self get:@"base_url"];
-    // Bản iOS 6: lần đầu dùng KKPhim — phát thẳng được hết (trang mặc định của TV chỉ có trình phát nhúng)
-    return CBIsStr(v) && [v length] ? v : kKkSite;
+    if (CBIsStr(v) && [v length]) return v;
+    // Bản iOS 6: lần đầu dùng KKPhim — phát thẳng được hết (trang mặc định của TV chỉ có trình phát nhúng). Ghi luôn vào cài đặt
+    // để lõi (trang chủ, danh mục, bộ lọc) cũng dùng KKPhim — lõi mặc định trang đầu danh sách (yanhh3d)
+    [self set:[self k:@"base_url"] value:kKkSite];
+    return kKkSite;
 }
 
 + (NSArray *)sites {
@@ -467,6 +485,7 @@ static NSString *Sha256Hex(NSString *s) {
 }
 
 + (void)setSites:(NSArray *)sites {
+    [CBSync soon:3];  // dữ liệu dùng chung với máy đã ghép
     NSSet *old = [NSSet setWithArray:[self sites]];
     NSMutableDictionary *add = [[self stamps:@"sites_add"] mutableCopy];
     NSMutableDictionary *del = [[self stamps:@"sites_del"] mutableCopy];
@@ -486,6 +505,10 @@ static NSString *Sha256Hex(NSString *s) {
     [self set:[self k:@"base_url"] value:url];
     NSArray *sites = [self sites];
     if (![sites containsObject:url]) [self setSites:[sites arrayByAddingObject:url]];
+}
+
++ (BOOL)kids {
+    return [self boolKey:[self k:@"kids"] def:NO];
 }
 
 + (BOOL)homeMix {

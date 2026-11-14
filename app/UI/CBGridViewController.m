@@ -4,6 +4,7 @@
 #import "CBJSON.h"
 #import "CBLog.h"
 #import "CBPosterCell.h"
+#import "CBPrefs.h"
 #import "CBRowCell.h"
 #import "CBTheme.h"
 
@@ -146,7 +147,13 @@
     _loading = YES;
     NSInteger t = ++_token;
     if (!_sections.count) [_spinner startAnimating];
-    [CBCore call:@"site.list" args:@{@"url": url} done:^(id ok, NSString *err) {
+    // «imdb:top» = trang «Điểm IMDb cao» của lõi (các nhóm phim KKPhim xếp theo IMDb), không phải địa chỉ trang
+    BOOL imdb = [url isEqualToString:@"imdb:top"];
+    long long t0 = CBNowMs();
+    [CBCore call:imdb ? @"imdb.page" : @"site.list" args:imdb ? @{@"kids": @([CBPrefs kids])} : @{@"url": url}
+            done:^(id ok, NSString *err) {
+        if (imdb) CBLog(@"Điểm IMDb cao: %@ sau %lld ms", CBIsDict(ok) ? [NSString stringWithFormat:@"%lu nhóm",
+                         (unsigned long)CBArr(ok, @"sections").count] : [@"LỖI " stringByAppendingString:err ?: @"?"], CBNowMs() - t0);
         if (t != self->_token) return;
         self->_loading = NO;
         [self->_spinner stopAnimating];

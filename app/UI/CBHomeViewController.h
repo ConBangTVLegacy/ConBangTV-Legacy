@@ -8,4 +8,6 @@
 - (NSArray *)rows;
 /// Mở phim thứ i của hàng r như khi chạm (lệnh gỡ lỗi)
 - (void)openRow:(NSInteger)r item:(NSInteger)i;
+/// Mở nút thứ i của dải danh mục đầu trang
+- (void)openCategoryAt:(NSInteger)i;
 @end

@@ -196,6 +196,13 @@ static UIImage *CBDecode(NSData *data, CGFloat maxPx) {
 
 + (void)load:(NSString *)url size:(CGSize)size into:(UIImageView *)iv {
     [self setup];
+    // AVIF (vd ảnh bìa yanhh3d — WordPress sinh kèm bản .webp cùng chỗ): iOS 6 không giải mã được AVIF → lấy bản WebP
+    NSRange q = [url rangeOfString:@"?"];
+    NSString *path = q.location == NSNotFound ? url : [url substringToIndex:q.location];
+    if ([path.lowercaseString hasSuffix:@".avif"]) {
+        url = [[path substringToIndex:path.length - 5] stringByAppendingFormat:@".webp%@",
+                                                                              q.location == NSNotFound ? @"" : [url substringFromIndex:q.location]];
+    }
     objc_setAssociatedObject(iv, kUrlKey, url, OBJC_ASSOCIATION_COPY_NONATOMIC);
     iv.image = nil;
     if (!url.length) return;

@@ -109,4 +109,39 @@
                      : [NSString stringWithFormat:@"%02ld:%02ld", s / 60, s % 60];
 }
 
+static UILabel *gToast;
+
++ (void)toast:(NSString *)text {
+    UIWindow *w = [UIApplication sharedApplication].keyWindow;
+    if (!w || !text.length) return;
+    [gToast removeFromSuperview];
+    UILabel *l = [[UILabel alloc] init];
+    l.backgroundColor = [UIColor colorWithWhite:0.12 alpha:0.94];
+    l.textColor = [UIColor whiteColor];
+    l.font = [self font:15];
+    l.numberOfLines = 0;
+    l.textAlignment = NSTextAlignmentCenter;
+    l.text = text;
+    l.layer.cornerRadius = 10;
+    l.clipsToBounds = YES;
+    CGFloat maxW = MIN(w.bounds.size.width - 40, 420);
+    CGFloat h = [self heightOf:text font:l.font width:maxW - 24] + 20;
+    CGSize one = [text sizeWithFont:l.font];
+    CGFloat lw = MIN(maxW, one.width + 32);
+    l.frame = CGRectMake((w.bounds.size.width - lw) / 2, w.bounds.size.height - h - 60, lw, h);
+    l.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin | UIViewAutoresizingFlexibleRightMargin | UIViewAutoresizingFlexibleTopMargin;
+    l.alpha = 0;
+    // Trên mọi màn (kể cả màn trình bày đè lên): gắn vào cửa sổ, đặt trên cùng
+    [w addSubview:l];
+    gToast = l;
+    [UIView animateWithDuration:0.2 animations:^{ l.alpha = 1; }];
+    double secs = MIN(6, 2.5 + text.length / 30.0);
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(secs * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        [UIView animateWithDuration:0.3 animations:^{ l.alpha = 0; } completion:^(BOOL done) {
+            [l removeFromSuperview];
+            if (gToast == l) gToast = nil;
+        }];
+    });
+}
+
 @end

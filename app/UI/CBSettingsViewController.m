@@ -6,6 +6,7 @@
 #import "CBLog.h"
 #import "CBPrefs.h"
 #import "CBProfilesViewController.h"
+#import "CBSyncViewController.h"
 #import "CBTheme.h"
 
 typedef NS_ENUM(NSInteger, CBSection) { CBSecProfile, CBSecSites, CBSecPlayer, CBSecNet, CBSecData, CBSecAbout, CBSecCount };
@@ -62,7 +63,7 @@ typedef NS_ENUM(NSInteger, CBAlert) { CBAlertAdd = 1, CBAlertRename, CBAlertPin,
         case CBSecSites: return 1 + _sites.count;
         case CBSecPlayer: return 3;
         case CBSecNet: return 2;
-        case CBSecData: return 1;
+        case CBSecData: return 2;
         case CBSecAbout: return 3;
     }
     return 0;
@@ -166,6 +167,14 @@ typedef NS_ENUM(NSInteger, CBAlert) { CBAlertAdd = 1, CBAlertRename, CBAlertPin,
             if (ip.row == 0) return [self switchCell:tv text:@"DNS mã hoá" on:[CBPrefs secureDns] tag:5];
             return [self switchCell:tv text:@"Vượt chặn nhà mạng" on:[CBPrefs unblock] tag:6];
         case CBSecData: {
+            if (ip.row == 0) {
+                id peers = [CBCore sync:@"sync.peers" args:nil];
+                NSUInteger n = CBIsArr(peers) ? [peers count] : 0;
+                UITableViewCell *c = [self cell:tv text:@"Đồng bộ trong nhà"
+                                          detail:n ? [NSString stringWithFormat:@"%lu máy", (unsigned long)n] : @"Chưa ghép"];
+                c.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+                return c;
+            }
             UITableViewCell *c = [self cell:tv text:@"Xoá lịch sử xem…" detail:[NSString stringWithFormat:@"%lu phim",
                                                                                 (unsigned long)[CBPrefs history].count]];
             c.textLabel.textColor = CBRGB(0xE5533D);
@@ -248,6 +257,8 @@ typedef NS_ENUM(NSInteger, CBAlert) { CBAlertAdd = 1, CBAlertRename, CBAlertPin,
         NSUInteger i = [steps indexOfObject:@([CBPrefs seekStep])];
         [CBPrefs setSeekStep:[steps[i == NSNotFound ? 1 : (i + 1) % steps.count] integerValue]];
         [tv reloadData];
+    } else if (ip.section == CBSecData && ip.row == 0) {
+        [self.navigationController pushViewController:[[CBSyncViewController alloc] init] animated:YES];
     } else if (ip.section == CBSecData) {
         [[self ask:@"Xoá lịch sử xem?" message:@"Xoá danh sách «Xem tiếp» và chỗ đang xem của mọi tập (người xem hiện tại)."
                tag:CBAlertClear style:UIAlertViewStyleDefault ok:@"Xoá"] show];

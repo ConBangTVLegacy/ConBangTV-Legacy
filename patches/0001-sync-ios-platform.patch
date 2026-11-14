@@ -1,0 +1,30 @@
+diff --git a/linux/core/src/sync_service.rs b/linux/core/src/sync_service.rs
+index 24080f2..187e05a 100644
+--- a/linux/core/src/sync_service.rs
++++ b/linux/core/src/sync_service.rs
+@@ -96,8 +96,10 @@ pub enum SyncEvent {
+ }
+ 
+ pub const SERVICE_TYPE: &str = "_conbangtv._tcp";
+-#[cfg(not(windows))]
++#[cfg(all(not(windows), not(target_os = "ios")))]
+ pub const PLATFORM: &str = "linux";
++#[cfg(target_os = "ios")]
++pub const PLATFORM: &str = "ios";
+ #[cfg(windows)]
+ pub const PLATFORM: &str = "windows";
+ /// Cổng mặc định khi người dùng gõ địa chỉ không kèm cổng.
+@@ -112,8 +114,12 @@ pub fn port() -> u16 {
+     }
+ }
+ 
+-/// Tên máy (hostname, bỏ phần tên miền).
++/// Tên máy (hostname, bỏ phần tên miền). App đặt được tên riêng qua biến CONBANG_DEVICE_NAME (vd bản iOS: tên máy trong
++/// Cài đặt → Giới thiệu, có dấu — hostname của iOS chỉ là «iPhone-cua-…»).
+ pub fn device_name() -> String {
++    if let Some(n) = std::env::var("CONBANG_DEVICE_NAME").ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) {
++        return n;
++    }
+     #[cfg(windows)]
+     {
+         // Như Environment.MachineName của bản C# (tên NetBIOS)

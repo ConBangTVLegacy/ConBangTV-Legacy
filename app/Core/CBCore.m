@@ -1,5 +1,6 @@
 #import "CBCore.h"
 #import "CBLog.h"
+#import <UIKit/UIKit.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -75,10 +76,17 @@ static void CBCallback(uint64_t cid, const char *json) {
     gPending = [NSMutableDictionary dictionary];
     NSString *certs = [[NSBundle mainBundle] pathForResource:@"cacert" ofType:@"pem"];
     if (certs) setenv("SSL_CERT_FILE", certs.fileSystemRepresentation, 1);
+    // Tên máy hiện ở tivi / máy tính khi đồng bộ trong nhà (tên có dấu trong Cài đặt → Giới thiệu; bản vá patches/0001)
+    NSString *device = [UIDevice currentDevice].name;
+    if (device.length) setenv("CONBANG_DEVICE_NAME", device.UTF8String, 1);
     NSString *dir = [CBDocumentsDir() stringByAppendingPathComponent:@"cbtv-core"];
     long long t = CBNowMs();
     result = cbtv_init(dir.fileSystemRepresentation, CBCallback);
     CBLog(@"[lõi] cbtv_init → %d sau %lld ms (dữ liệu %@)", result, CBNowMs() - t, dir);
+    if (result == 0) {
+        // Danh sách «Điểm IMDb cao» đã xếp được lõi lưu ở đây (như imdb_top.json của bản Windows)
+        [self sync:@"imdb.setCacheFile" args:@{@"path": [dir stringByAppendingPathComponent:@"imdb_top.json"]}];
+    }
     return result == 0;
 }
 

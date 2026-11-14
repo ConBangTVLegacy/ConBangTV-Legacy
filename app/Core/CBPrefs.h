@@ -16,6 +16,8 @@
 + (NSString *)profileId;
 + (NSDictionary *)currentProfile;
 + (void)switchProfile:(NSString *)pid;
+/// Bỏ bộ đệm (đồng bộ vừa gộp dữ liệu của máy khác vào lõi)
++ (void)invalidateCaches;
 + (NSDictionary *)addProfile:(NSString *)name;
 + (void)renameProfile:(NSString *)pid name:(NSString *)name;
 /// pin nil = bỏ khoá
@@ -49,6 +51,8 @@
 + (void)setBaseUrl:(NSString *)url;
 + (NSArray *)sites;
 + (BOOL)homeMix;
+/// Hồ sơ trẻ em (khoá kids — đặt từ bản Windows / Android, đồng bộ hồ sơ)
++ (BOOL)kids;
 + (void)setHomeMix:(BOOL)on;
 + (BOOL)autoNext;
 + (void)setAutoNext:(BOOL)on;

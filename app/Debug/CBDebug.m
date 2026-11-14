@@ -3,6 +3,7 @@
 #import "CBCore.h"
 #import "CBImages.h"
 #import "CBDetailViewController.h"
+#import "CBFilterViewController.h"
 #import "CBGridViewController.h"
 #import "CBHomeViewController.h"
 #import "CBLog.h"
@@ -11,6 +12,8 @@
 #import "CBPrefs.h"
 #import "CBProfilesViewController.h"
 #import "CBSettingsViewController.h"
+#import "CBSyncViewController.h"
+#import "CBJSON.h"
 #import <AVFoundation/AVFoundation.h>
 #import <QuartzCore/QuartzCore.h>
 #import <UIKit/UIKit.h>
@@ -191,6 +194,47 @@
         [player selectServer:[arg integerValue]];
     } else if ([verb isEqualToString:@"close"]) {
         [player close];
+    } else if ([verb isEqualToString:@"chip"]) {
+        // chip <số> — bấm nút danh mục ở đầu trang chủ (0 = ★ Điểm IMDb cao)
+        UIViewController *root = nav.viewControllers.count ? nav.viewControllers[0] : nil;
+        [nav popToRootViewControllerAnimated:NO];
+        if ([root isKindOfClass:[CBHomeViewController class]]) [(CBHomeViewController *)root openCategoryAt:[arg integerValue]];
+    } else if ([verb isEqualToString:@"sync"]) {
+        [nav pushViewController:[[CBSyncViewController alloc] init] animated:YES];
+    } else if ([verb isEqualToString:@"syncpair"]) {
+        // syncpair <địa chỉ[:cổng]> <mã> — ghép như bấm trên màn Đồng bộ (mở màn nếu chưa mở)
+        UIViewController *vc = nav.topViewController;
+        if (![vc isKindOfClass:[CBSyncViewController class]]) {
+            vc = [[CBSyncViewController alloc] init];
+            [nav pushViewController:vc animated:NO];
+        }
+        id hp = [CBCore sync:@"sync.parseAddress" args:@{@"input": args.count ? args[0] : @""}];
+        if (CBIsDict(hp)) {
+            [(CBSyncViewController *)vc pairHost:CBStr(hp, @"host") port:(NSInteger)CBNum(hp, @"port", 8791)
+                                            code:args.count > 1 ? args[1] : @""];
+        }
+    } else if ([verb isEqualToString:@"pick"]) {
+        // pick <hàng> [mục] — chọn một dòng của bảng đang hiện (mục âm = mục cuối, vd danh mục cuối trang chủ)
+        UIViewController *top = [self top];
+        if ([top isKindOfClass:[UINavigationController class]]) top = [(UINavigationController *)top topViewController];
+        if ([top respondsToSelector:@selector(openAt:)]) {  // lưới nút (Thể loại / Quốc gia)
+            CBLog(@"[gỡ lỗi] chọn nút %@ của %@", args[0], NSStringFromClass([top class]));
+            [(id)top openAt:[args[0] integerValue]];
+            return;
+        }
+        if (![top isKindOfClass:[UITableViewController class]]) {
+            CBLog(@"[gỡ lỗi] màn %@ không phải bảng", NSStringFromClass([top class]));
+            return;
+        }
+        UITableViewController *tvc = (UITableViewController *)top;
+        NSInteger sec = args.count > 1 ? [args[1] integerValue] : 0;
+        if (sec < 0) sec += [tvc.tableView numberOfSections];
+        NSInteger row = [args[0] integerValue];
+        if (row < 0) row += [tvc.tableView numberOfRowsInSection:sec];  // âm = đếm từ cuối
+        NSIndexPath *ip = [NSIndexPath indexPathForRow:row inSection:sec];
+        CBLog(@"[gỡ lỗi] chọn dòng %ld mục %ld: %@", (long)ip.row, (long)ip.section,
+              [tvc tableView:tvc.tableView cellForRowAtIndexPath:ip].textLabel.text);
+        [tvc tableView:tvc.tableView didSelectRowAtIndexPath:ip];
     } else if ([verb isEqualToString:@"scroll"]) {
         // scroll <y> — cuộn tới y điểm (âm = cuối danh sách)
         UIViewController *top = [self top];

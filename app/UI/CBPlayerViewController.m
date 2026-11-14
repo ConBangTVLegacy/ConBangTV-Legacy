@@ -3,6 +3,7 @@
 #import "CBJSON.h"
 #import "CBLog.h"
 #import "CBPrefs.h"
+#import "CBSync.h"
 #import "CBTheme.h"
 #import <AVFoundation/AVFoundation.h>
 #import <MediaPlayer/MediaPlayer.h>
@@ -107,6 +108,7 @@ static double CBDuration(AVPlayerItem *item) {
 
 - (void)viewDidLoad {
     [super viewDidLoad];
+    [CBSync setPlaying:YES];
     _video = [[CBVideoView alloc] initWithFrame:self.view.bounds];
     _video.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     _video.backgroundColor = [UIColor blackColor];
@@ -746,6 +748,7 @@ static double CBDuration(AVPlayerItem *item) {
     _token++;
     [self teardownPlayer];
     [CBCore sync:@"media.closeAll" args:nil];
+    [CBSync setPlaying:NO];
     [MPNowPlayingInfoCenter defaultCenter].nowPlayingInfo = nil;
     [self.presentingViewController dismissViewControllerAnimated:YES completion:nil];
 }

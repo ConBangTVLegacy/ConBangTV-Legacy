@@ -1,6 +1,7 @@
 #import "CBHomeViewController.h"
 #import "CBCore.h"
 #import "CBDetailViewController.h"
+#import "CBFilterViewController.h"
 #import "CBGridViewController.h"
 #import "CBJSON.h"
 #import "CBLog.h"
@@ -9,6 +10,7 @@
 #import "CBProfilesViewController.h"
 #import "CBRowCell.h"
 #import "CBSettingsViewController.h"
+#import "CBSync.h"
 #import "CBTheme.h"
 
 @interface CBHomeViewController () <UIActionSheetDelegate>
@@ -17,7 +19,8 @@
 @implementation CBHomeViewController {
     NSArray *_headRows;     // «Có tập mới», «Xem tiếp» (từ dữ liệu người xem)
     NSArray *_feedRows;     // hàng của trang chủ: {id, title, items, more}
-    NSArray *_categories;   // {title, url}
+    NSArray *_categories;   // danh mục (dải nút đầu trang): {title, url} hoặc {title, kind: genres|countries} (xem menuWith:)
+    UIScrollView *_chips;   // dải nút danh mục cuộn ngang ở đầu trang chủ
     NSString *_note;
     NSInteger _token;
     NSMutableDictionary *_offsets;  // id hàng → chỗ đã cuộn ngang
@@ -40,6 +43,8 @@
     self.refreshControl = [[UIRefreshControl alloc] init];
     self.refreshControl.tintColor = [CBTheme dim];
     [self.refreshControl addTarget:self action:@selector(reload) forControlEvents:UIControlEventValueChanged];
+    // Đồng bộ vừa gộp dữ liệu của máy khác: vẽ lại «Có tập mới» / «Xem tiếp» (người xem có thể đã đổi)
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(syncDataChanged) name:CBSyncDataChanged object:nil];
     UIBarButtonItem *search = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemSearch target:self
                                                                             action:@selector(openSearch)];
     UIBarButtonItem *settings = [[UIBarButtonItem alloc] initWithTitle:@"Cài đặt" style:UIBarButtonItemStyleBordered target:self
@@ -57,7 +62,66 @@
     title.minimumScaleFactor = 0.6;
     title.text = self.title;
     self.navigationItem.titleView = title;
+    _chips = [[UIScrollView alloc] initWithFrame:CGRectMake(0, 0, self.view.bounds.size.width, 0)];
+    _chips.backgroundColor = [CBTheme bg];
+    _chips.showsHorizontalScrollIndicator = NO;
+    _chips.scrollsToTop = NO;
+    _chips.autoresizingMask = UIViewAutoresizingFlexibleWidth;
     [self reload];
+}
+
+/// Dải nút danh mục ở đầu trang chủ (★ Điểm IMDb cao, Thể loại, Quốc gia, danh mục của trang) — trước đây nằm tận cuối trang
+- (void)buildChips {
+    for (UIView *v in _chips.subviews) [v removeFromSuperview];
+    CGFloat x = 12, h = 34;
+    UIFont *font = [CBTheme font:[CBTheme isPad] ? 15 : 14];
+    for (NSUInteger i = 0; i < _categories.count; i++) {
+        NSString *t = CBStr(_categories[i], @"title") ?: @"";
+        if ([t hasSuffix:@"…"]) t = [t substringToIndex:t.length - 1];
+        UIButton *b = [UIButton buttonWithType:UIButtonTypeCustom];
+        b.tag = (NSInteger)i;
+        b.titleLabel.font = font;
+        [b setTitle:t forState:UIControlStateNormal];
+        BOOL star = [t hasPrefix:@"★"];
+        [b setTitleColor:star ? [CBTheme focus] : [CBTheme text] forState:UIControlStateNormal];
+        [b setBackgroundImage:[CBTheme imageWithColor:[CBTheme surface]] forState:UIControlStateNormal];
+        [b setBackgroundImage:[CBTheme imageWithColor:[CBTheme surface2]] forState:UIControlStateHighlighted];
+        b.layer.cornerRadius = h / 2;
+        b.clipsToBounds = YES;
+        CGFloat w = ceil([t sizeWithFont:font].width) + 28;
+        b.frame = CGRectMake(x, 10, w, h);
+        [b addTarget:self action:@selector(chipTapped:) forControlEvents:UIControlEventTouchUpInside];
+        [_chips addSubview:b];
+        x += w + 8;
+    }
+    _chips.contentSize = CGSizeMake(x + 4, h + 14);
+    CGRect f = _chips.frame;
+    f.size.height = _categories.count ? h + 14 : 0;
+    f.size.width = self.tableView.bounds.size.width;
+    _chips.frame = f;
+    self.tableView.tableHeaderView = _categories.count ? _chips : nil;
+}
+
+- (void)chipTapped:(UIButton *)b {
+    if (b.tag < (NSInteger)_categories.count) [self openCategory:_categories[b.tag]];
+}
+
+/// Mở một mục danh mục (gỡ lỗi: lệnh «chip <số>»)
+- (void)openCategoryAt:(NSInteger)i {
+    if (i >= 0 && i < (NSInteger)_categories.count) [self openCategory:_categories[i]];
+}
+
+- (void)openCategory:(NSDictionary *)cat {
+    NSString *kind = CBStr(cat, @"kind");
+    if (kind) {
+        [self.navigationController pushViewController:[[CBFilterViewController alloc] initGenres:[kind isEqualToString:@"genres"]]
+                                             animated:YES];
+        return;
+    }
+    if (!CBStr(cat, @"url")) return;
+    NSString *title = [CBStr(cat, @"url") isEqualToString:@"imdb:top"] ? @"Điểm IMDb cao" : CBStr(cat, @"title");
+    [self.navigationController pushViewController:[[CBGridViewController alloc] initWithListUrl:CBStr(cat, @"url") title:title]
+                                         animated:YES];
 }
 
 - (void)viewWillAppear:(BOOL)animated {
@@ -85,6 +149,11 @@
 }
 
 #pragma mark - Dữ liệu
+
+- (void)syncDataChanged {
+    [self rebuildHead];
+    [self.tableView reloadData];
+}
 
 - (void)rebuildHead {
     NSMutableArray *rows = [NSMutableArray array];
@@ -162,7 +231,8 @@
                 }
             }
             self->_feedRows = rows;
-            self->_categories = CBArr(ok, @"categories");
+            self->_categories = [self menuWith:CBArr(ok, @"categories")];
+            [self buildChips];
             self->_note = rows.count ? nil : @"Trang này chưa đọc được phim nào.";
             [self.tableView reloadData];
         }];
@@ -204,10 +274,24 @@
     }
     _feedRows = rows;
     NSArray *cats = CBArr(snap, @"categories");
-    _categories = cats.count ? cats : [CBCore sync:@"site.menu" args:@{@"baseUrl": [CBPrefs baseUrl]}];
+    _categories = [self menuWith:cats.count ? cats : [CBCore sync:@"site.menu" args:@{@"baseUrl": [CBPrefs baseUrl]}]];
+    [self buildChips];
     NSString *note = CBStr(snap, @"note");
     _note = rows.count ? note : (note ?: (CBBool(snap, @"empty", NO) ? @"Chưa đọc được phim nào — kéo xuống để thử lại." : nil));
     [self.tableView reloadData];
+}
+
+/// Danh mục (dải nút đầu trang, giống menu bản Windows): Điểm IMDb cao, Thể loại… / Quốc gia… (trang có bộ lọc), danh mục của trang
+- (NSArray *)menuWith:(id)cats {
+    NSMutableArray *m = [NSMutableArray arrayWithObject:@{@"title": @"★ Điểm IMDb cao", @"url": @"imdb:top"}];
+    if ([CBFilterViewController available]) {
+        [m addObject:@{@"title": @"Thể loại…", @"kind": @"genres"}];
+        [m addObject:@{@"title": @"Quốc gia…", @"kind": @"countries"}];
+    }
+    if (CBIsArr(cats)) {
+        for (id c in cats) if (CBStr(c, @"title") && CBStr(c, @"url")) [m addObject:c];
+    }
+    return m;
 }
 
 - (NSArray *)allRows {
@@ -233,7 +317,7 @@
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
     if (section < (NSInteger)[self allRows].count) return 1;
-    return (_note ? 1 : 0) + (CBIsArr(_categories) ? _categories.count : 0);
+    return _note ? 1 : 0;
 }
 
 - (CGFloat)tableView:(UITableView *)tableView heightForRowAtIndexPath:(NSIndexPath *)ip {
@@ -244,7 +328,7 @@
 
 - (CGFloat)tableView:(UITableView *)tableView heightForHeaderInSection:(NSInteger)section {
     if (section < (NSInteger)[self allRows].count) return 40;
-    return CBIsArr(_categories) && _categories.count ? 40 : 0;
+    return 0;
 }
 
 - (UIView *)tableView:(UITableView *)tableView viewForHeaderInSection:(NSInteger)section {
@@ -256,10 +340,7 @@
     l.textColor = [CBTheme text];
     l.font = [CBTheme bold:17];
     [v addSubview:l];
-    if (section >= (NSInteger)rows.count) {
-        l.text = @"Danh mục";
-        return v;
-    }
+    if (section >= (NSInteger)rows.count) return nil;
     NSDictionary *row = rows[section];
     l.text = CBStr(row, @"title");
     if (CBArr(row, @"items").count > 4 || CBStr(row, @"more")) {
@@ -308,16 +389,7 @@
         cell.textLabel.textAlignment = NSTextAlignmentCenter;
         cell.selectionStyle = UITableViewCellSelectionStyleNone;
         cell.accessoryType = UITableViewCellAccessoryNone;
-        return cell;
     }
-    NSDictionary *cat = _categories[ip.row - (_note ? 1 : 0)];
-    cell.textLabel.text = CBStr(cat, @"title");
-    cell.textLabel.textColor = [CBTheme text];
-    cell.textLabel.font = [CBTheme font:16];
-    cell.textLabel.numberOfLines = 1;
-    cell.textLabel.textAlignment = NSTextAlignmentLeft;
-    cell.selectionStyle = UITableViewCellSelectionStyleDefault;
-    cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
     return cell;
 }
 
@@ -331,12 +403,6 @@
 
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)ip {
     [tableView deselectRowAtIndexPath:ip animated:YES];
-    if (ip.section < (NSInteger)[self allRows].count || (_note && ip.row == 0)) return;
-    NSDictionary *cat = _categories[ip.row - (_note ? 1 : 0)];
-    if (!CBStr(cat, @"url")) return;
-    [self.navigationController pushViewController:[[CBGridViewController alloc] initWithListUrl:CBStr(cat, @"url")
-                                                                                          title:CBStr(cat, @"title")]
-                                         animated:YES];
 }
 
 #pragma mark - Thao tác

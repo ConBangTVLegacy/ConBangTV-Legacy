@@ -7,6 +7,7 @@
 #import "CBNavController.h"
 #import "CBPrefs.h"
 #import "CBProfilesViewController.h"
+#import "CBSync.h"
 #import "CBTheme.h"
 #import <AVFoundation/AVFoundation.h>
 #ifdef DEBUG
@@ -25,6 +26,7 @@
     [CBCore sync:@"app.setVersion" args:@{@"version": [@"ios6-" stringByAppendingString:version ?: @"0"]}];
     [[AVAudioSession sharedInstance] setCategory:AVAudioSessionCategoryPlayback error:NULL];
     [CBTheme apply];
+    [CBSync start];
 
     self.window = [[UIWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
     self.window.backgroundColor = [CBTheme bg];
