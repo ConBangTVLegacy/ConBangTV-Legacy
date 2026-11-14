@@ -5,6 +5,7 @@
 #   bash tools/build-core.sh            # dựng bản đang có
 #   bash tools/build-core.sh --pull     # lấy bản mới nhất của main rồi dựng
 set -euo pipefail
+shopt -s nullglob
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 WORK="${WORK:-$(cd "$ROOT/.." && pwd)}"
 UP="$WORK/upstream"

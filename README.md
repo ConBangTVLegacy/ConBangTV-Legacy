@@ -27,9 +27,7 @@ Cổng phát nội bộ 127.0.0.1 (media_proxy: bỏ quảng cáo, cắt PNG ng�
 | `tools/rust/` | Target `armv7-apple-ios6.json`, `cargo-ios6.sh` (cargo nightly + build-std), `vendor-ring.sh` (vá ring) |
 | `tools/cblaunch/` | Mở app / đánh thức / mở khoá máy từ SSH (SpringBoardServices) |
 | `tools/symcheck/`, `tools/symlist.py` | Tra trên máy iOS 6 mọi ký hiệu tệp chạy cần — bắt lỗi «dyld: Symbol not found» trước khi chạy |
-| `patches/core-ios6.patch` | Vá nhỏ cho lõi chung (Darwin không có `TCP_INFO`) — chưa đưa vào repo chính |
-| `patches/core-media-ranges.patch` | Cổng phát nội bộ: nối khúc 8 MB của k-20 cả với Range đóng (AVPlayer) — sửa MP4 CLB Phim Xưa; log yêu cầu tệp video |
-| `patches/ffi-ios-wakeup.patch` | Nhịp 50 ms trong lõi trên iOS: tokio đôi khi không đánh thức luồng khi app đẩy việc vào (lõi «đứng» tới 20 s) |
+| `patches/` | Bản vá tạm cho lõi chung (hiện trống — 3 bản vá cho iOS đã vào repo chính 14/11/2026) |
 | `app/` | **App thật — Côn Bằng TV Legacy** (`vn.conbangtv.legacy`): trang chủ, tìm kiếm, trang phim, trình phát, người xem, cài đặt |
 
 ## Dựng (máy Linux)
