@@ -7,3 +7,5 @@ target-core/
 Cargo.lock
 # ring đã vá — sinh lại bằng tools/rust/vendor-ring.sh
 vendor/
+# Bản phát hành đã dựng (tools/build-release.sh) — không đưa vào git
+dist/

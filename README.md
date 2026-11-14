@@ -54,8 +54,14 @@ Rust nightly có `rust-src` (`rustup toolchain install nightly --profile minimal
 
 ```sh
 bash src/tools/build-core.sh [--pull]                # → target-core/armv7-apple-ios6/release/libconbang_core.a (~22 MB)
-cd src/spike/01-player && THEOS=~/theos make package  # → packages/*.deb (ký ldid SHA-1, nén gzip)
+cd src/app && THEOS=~/theos make package               # bản thử (có Debug/: lệnh gỡ lỗi qua Documents/ConBangTV-cmd.txt)
+bash src/tools/build-release.sh [--core]              # bản phát hành → app/packages/vn.conbangtv.legacy_<bản>_iphoneos-arm.deb
 ```
+
+Bản phát hành bỏ hẳn `Debug/` (không đọc lệnh, không giữ màn hình sáng khi mở app); số bản ở `app/control` và
+`CFBundleShortVersionString` (script kiểm hai chỗ khớp nhau). Cài tay: chép .deb vào máy rồi `dpkg -i` (lần đầu thêm
+`su mobile -c uicache` để hiện biểu tượng — **không** chạy uicache lúc app đang mở). 14/11/2026: bản **0.2.0** đã cài trên
+iPhone 5 và iPad mini 1.
 
 ## Bẫy của iOS 6 đã gặp (và cách xử lý)
 
