@@ -23,6 +23,13 @@
 /// pin nil = bỏ khoá
 + (void)setProfilePin:(NSString *)pid pin:(NSString *)pin;
 + (BOOL)checkPin:(NSString *)pin profile:(NSDictionary *)profile;
+/// Mã PIN phụ huynh (cả nhà): đặt / đổi giới hạn giờ xem, cho xem thêm khi hết giờ
++ (BOOL)hasParentPin;
++ (void)setParentPin:(NSString *)pin;  // nil = xoá
++ (BOOL)checkParentPin:(NSString *)pin;
+/// Khoá riêng của người xem pid («key#pid»; người đầu tiên pid "" = «key») / của người đang xem
++ (NSString *)pk:(NSString *)pid key:(NSString *)key;
++ (NSString *)k:(NSString *)key;
 /// Xoá người xem cùng dữ liệu riêng (còn một người thì không xoá)
 + (BOOL)deleteProfile:(NSString *)pid;
 + (BOOL)askProfile;

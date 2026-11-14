@@ -1,6 +1,7 @@
 #import "CBProfilesViewController.h"
 #import "CBJSON.h"
 #import "CBLog.h"
+#import "CBParental.h"
 #import "CBPrefs.h"
 #import "CBTheme.h"
 
@@ -106,11 +107,21 @@ static const NSUInteger CBMaxProfiles = 8;
 
 - (void)tapped:(UIButton *)b {
     if (b.tag < 0) {
-        UIAlertView *a = [[UIAlertView alloc] initWithTitle:@"Thêm người xem" message:@"Tên người xem" delegate:self
-                                          cancelButtonTitle:@"Huỷ" otherButtonTitles:@"Thêm", nil];
-        a.tag = CBAskAdd;
-        a.alertViewStyle = UIAlertViewStylePlainTextInput;
-        [a show];
+        void (^ask)(void) = ^{
+            UIAlertView *a = [[UIAlertView alloc] initWithTitle:@"Thêm người xem" message:@"Tên người xem" delegate:self
+                                              cancelButtonTitle:@"Huỷ" otherButtonTitles:@"Thêm", nil];
+            a.tag = CBAskAdd;
+            a.alertViewStyle = UIAlertViewStylePlainTextInput;
+            [a show];
+        };
+        // Đang có giới hạn giờ xem: thêm người xem cần mã phụ huynh (trẻ khỏi tự tạo người không bị giới hạn)
+        if (![CBWatchLimit anyLimits]) {
+            ask();
+        } else {
+            [CBParental checkParent:@"Đang có giới hạn giờ xem — nhập mã PIN phụ huynh để thêm người xem." done:^(BOOL ok) {
+                if (ok) ask();
+            }];
+        }
         return;
     }
     NSDictionary *p = _profiles[b.tag];

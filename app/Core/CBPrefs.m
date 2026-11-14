@@ -3,6 +3,7 @@
 #import "CBJSON.h"
 #import "CBLog.h"
 #import "CBSync.h"
+#import "CBWatchLimit.h"
 #import <CommonCrypto/CommonDigest.h>
 
 // Trang mẫu (như Prefs.PresetSites của bản Windows)
@@ -130,6 +131,8 @@ static NSString *Sha256Hex(NSString *s) {
     BOOL found = NO;
     for (NSDictionary *p in [self profiles]) found |= [(CBStr(p, @"id") ?: @"") isEqualToString:pid];
     if (!found) return;
+    [CBWatchLimit flush];  // giờ đã xem tính cho người cũ
+    [CBWatchLimit reset];
     gPidCache = pid;
     gHistoryCache = nil;
     gPositionsCache = nil;
@@ -234,6 +237,22 @@ static NSString *Sha256Hex(NSString *s) {
 + (BOOL)checkPin:(NSString *)pin profile:(NSDictionary *)profile {
     NSString *hash = CBStr(profile, @"pin");
     return !hash || [hash isEqualToString:[self pinHash:CBStr(profile, @"id") ?: @"" pin:pin]];
+}
+
+#pragma mark - Mã PIN phụ huynh (cả nhà) — khoá parent_pin như bản Windows / TV / iPad
+
++ (BOOL)hasParentPin {
+    return CBIsStr([self get:@"parent_pin"]);
+}
+
++ (void)setParentPin:(NSString *)pin {
+    if (pin.length) [self set:@"parent_pin" value:[self pinHash:@"parent" pin:pin]];
+    else [self remove:@"parent_pin"];
+}
+
++ (BOOL)checkParentPin:(NSString *)pin {
+    id h = [self get:@"parent_pin"];
+    return CBIsStr(h) && [h isEqualToString:[self pinHash:@"parent" pin:pin ?: @""]];
 }
 
 + (BOOL)deleteProfile:(NSString *)pid {

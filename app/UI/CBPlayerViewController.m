@@ -2,6 +2,7 @@
 #import "CBCore.h"
 #import "CBJSON.h"
 #import "CBLog.h"
+#import "CBParental.h"
 #import "CBPrefs.h"
 #import "CBSync.h"
 #import "CBTheme.h"
@@ -47,6 +48,9 @@ static double CBDuration(AVPlayerItem *item) {
     NSInteger _token;
     int _resumeAt;
     BOOL _started, _closed, _dragging, _seekedResume;
+    BOOL _appeared, _limitWarned;
+    CBLimitBlock _pendingBlock;  // hết giờ xem trước khi màn hiện xong — xử lý lúc viewDidAppear
+    NSString *_blockedEp;
     long long _lastSave;
     // Video
     CBVideoView *_video;
@@ -207,6 +211,13 @@ static double CBDuration(AVPlayerItem *item) {
 
 - (void)viewDidAppear:(BOOL)animated {
     [super viewDidAppear:animated];
+    _appeared = YES;
+    if (_pendingBlock != CBLimitNone) {
+        CBLimitBlock b = _pendingBlock;
+        _pendingBlock = CBLimitNone;
+        [self limitBlocked:b episode:_blockedEp];
+        return;
+    }
     [[UIApplication sharedApplication] beginReceivingRemoteControlEvents];
     [self becomeFirstResponder];
 }
@@ -343,6 +354,12 @@ static double CBDuration(AVPlayerItem *item) {
 - (void)openEpisode:(NSInteger)i {
     NSArray *eps = [self episodes];
     if (i < 0 || i >= (NSInteger)eps.count) return;
+    // Người đang xem đã hết giờ xem: chưa mở tập, hỏi mã phụ huynh trước
+    CBLimitBlock blocked = [CBWatchLimit blocked];
+    if (blocked != CBLimitNone) {
+        [self limitBlocked:blocked episode:CBStr(eps[i], @"url") ?: _epUrl];
+        return;
+    }
     [self savePosition];
     [self teardownPlayer];
     _index = i;
@@ -624,6 +641,39 @@ static double CBDuration(AVPlayerItem *item) {
         _slider.value = isfinite(dur) && dur > 0 ? (float)(now / dur) : 0;
     }
     if (_started && CBNowMs() - _lastSave > 10000) [self savePosition];
+    [self checkLimit];
+}
+
+#pragma mark - Giới hạn giờ xem
+
+/// Mỗi lần đọc trạng thái: đếm giờ xem; sắp hết giờ thì nhắc, hết giờ thì dừng phim, thoát và hỏi mã PIN phụ huynh
+- (void)checkLimit {
+    [CBWatchLimit tick:_started && _player.rate > 0];
+    CBLimitBlock b = [CBWatchLimit blocked];
+    if (b == CBLimitNone) {
+        NSInteger r = [CBWatchLimit remaining];
+        if (_started && !_limitWarned && r != NSNotFound && r > 0 && r <= 300) {
+            _limitWarned = YES;
+            [CBTheme toast:[NSString stringWithFormat:@"Còn %@ xem hôm nay (%@).", [CBWatchLimit minutesText:r],
+                                                     CBStr([CBPrefs currentProfile], @"name") ?: @""]];
+        }
+        return;
+    }
+    [_player pause];
+    [self limitBlocked:b episode:_epUrl];
+}
+
+- (void)limitBlocked:(CBLimitBlock)b episode:(NSString *)ep {
+    if (_closed) return;
+    if (!_appeared) {
+        _pendingBlock = b;
+        _blockedEp = ep;
+        return;
+    }
+    UIViewController *host = self.presentingViewController;
+    NSString *film = _filmUrl;
+    [self close];
+    [CBParental limitReached:b film:film episode:ep host:host];
 }
 
 - (void)savePosition {
@@ -744,6 +794,7 @@ static double CBDuration(AVPlayerItem *item) {
 - (void)close {
     if (_closed) return;
     [self savePosition];
+    [CBWatchLimit flush];
     _closed = YES;
     _token++;
     [self teardownPlayer];

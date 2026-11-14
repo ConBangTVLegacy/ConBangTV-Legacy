@@ -70,6 +70,24 @@
     return nil;
 }
 
+/// Hộp thoại UIAlertView đang hiện (iOS 6 đặt trong cửa sổ riêng)
++ (UIAlertView *)visibleAlert {
+    for (UIWindow *w in [[UIApplication sharedApplication].windows reverseObjectEnumerator]) {
+        UIAlertView *a = [self alertIn:w];
+        if (a) return a;
+    }
+    return nil;
+}
+
++ (UIAlertView *)alertIn:(UIView *)v {
+    if ([v isKindOfClass:[UIAlertView class]]) return (UIAlertView *)v;
+    for (UIView *s in v.subviews) {
+        UIAlertView *a = [self alertIn:s];
+        if (a) return a;
+    }
+    return nil;
+}
+
 + (CBNavController *)nav {
     return [(CBAppDelegate *)[UIApplication sharedApplication].delegate nav];
 }
@@ -194,6 +212,22 @@
         [player selectServer:[arg integerValue]];
     } else if ([verb isEqualToString:@"close"]) {
         [player close];
+    } else if ([verb isEqualToString:@"alert"]) {
+        // alert <số nút> [chữ] — điền ô nhập (nếu có) rồi bấm nút của hộp thoại đang hiện (0 = Huỷ / nút huỷ)
+        UIAlertView *found = [self visibleAlert];
+        if (!found) {
+            CBLog(@"[gỡ lỗi] không có hộp thoại nào");
+            return;
+        }
+        NSInteger idx = args.count ? [args[0] integerValue] : 0;
+        if (found.alertViewStyle != UIAlertViewStyleDefault && args.count > 1) {
+            [found textFieldAtIndex:0].text = args[1];
+            if (args.count > 2 && found.alertViewStyle == UIAlertViewStyleLoginAndPasswordInput) [found textFieldAtIndex:1].text = args[2];
+        }
+        CBLog(@"[gỡ lỗi] hộp «%@»: bấm nút %ld «%@»", found.title, (long)idx, [found buttonTitleAtIndex:idx]);
+        id<UIAlertViewDelegate> d = found.delegate;
+        if ([d respondsToSelector:@selector(alertView:clickedButtonAtIndex:)]) [d alertView:found clickedButtonAtIndex:idx];
+        [found dismissWithClickedButtonIndex:idx animated:YES];
     } else if ([verb isEqualToString:@"unhist"]) {
         // unhist <url phim> — xoá khỏi lịch sử / Xem tiếp (có dấu xoá — máy đã ghép cũng xoá)
         [CBPrefs removeHistory:arg];

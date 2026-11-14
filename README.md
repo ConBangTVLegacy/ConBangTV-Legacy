@@ -40,6 +40,7 @@ Cổng phát nội bộ 127.0.0.1 (media_proxy: bỏ quảng cáo, cắt PNG ng�
 | Trình phát | AVPlayer qua cổng phát nội bộ, tự chọn server phát được trên iOS 6, nhớ chỗ xem, tự chuyển tập, điều khiển trên màn khoá |
 | Người xem | «Ai đang xem?» (thêm người, mã PIN), đổi người xem — cùng khoá dữ liệu với bản Windows |
 | Cài đặt | người xem, trang phim, phát video, mạng (DNS mã hoá, vượt chặn), **Đồng bộ trong nhà**, xoá lịch sử, miễn trừ |
+| Giới hạn giờ xem | từng người xem: số phút mỗi ngày, giờ đi ngủ (tới 6 giờ sáng); hết giờ phim dừng, xem thêm cần mã PIN phụ huynh — cùng khoá với bản Windows / TV / iPad |
 | Đồng bộ trong nhà | ghép với tivi / Windows / iPad bằng mã 4 số (lõi `sync_service`, cổng 8791): lịch sử, chỗ xem, theo dõi, người xem, trang phim |
 
 Bản thử (không `FINALPACKAGE=1`) có `Debug/CBDebug.m`: đọc lệnh từ `Documents/ConBangTV-cmd.txt` (`shot`, `film`, `play`, `search`,
@@ -92,5 +93,4 @@ cd src/spike/01-player && THEOS=~/theos make package  # → packages/*.deb (ký 
 
 1. Đo lại tốc độ / phát qua lõi khi Wi-Fi tốt; nếu lõi vẫn chậm hơn NSURLConnection thì dò (DNS mã hoá, cổng SOCKS nội bộ, IPv6).
 2. Thử iPad mini 1 (A5, 512 MB RAM).
-3. Giới hạn giờ xem cho trẻ (như `WatchLimit` của bản Windows / iPad).
-4. Đóng gói / cập nhật: repo Cydia riêng hoặc .deb trên GitHub Releases.
+3. Đóng gói / cập nhật (OTA): .deb trên GitHub Releases + kiểm bản mới trong app, hoặc repo Cydia riêng.

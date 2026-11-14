@@ -5,12 +5,14 @@
 #import "CBJSON.h"
 #import "CBLog.h"
 #import "CBPrefs.h"
+#import "CBLimitsViewController.h"
+#import "CBParental.h"
 #import "CBProfilesViewController.h"
 #import "CBSyncViewController.h"
 #import "CBTheme.h"
 
 typedef NS_ENUM(NSInteger, CBSection) { CBSecProfile, CBSecSites, CBSecPlayer, CBSecNet, CBSecData, CBSecAbout, CBSecCount };
-typedef NS_ENUM(NSInteger, CBAlert) { CBAlertAdd = 1, CBAlertRename, CBAlertPin, CBAlertDelete, CBAlertClear };
+typedef NS_ENUM(NSInteger, CBSettingsAlert) { CBAlertAdd = 1, CBAlertRename, CBAlertPin, CBAlertDelete, CBAlertClear };
 
 @interface CBSettingsViewController () <UIAlertViewDelegate>
 @end
@@ -59,7 +61,7 @@ typedef NS_ENUM(NSInteger, CBAlert) { CBAlertAdd = 1, CBAlertRename, CBAlertPin,
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
     switch (section) {
-        case CBSecProfile: return [CBPrefs profiles].count > 1 ? 6 : 5;
+        case CBSecProfile: return [CBPrefs profiles].count > 1 ? 7 : 6;
         case CBSecSites: return 1 + _sites.count;
         case CBSecPlayer: return 3;
         case CBSecNet: return 2;
@@ -142,6 +144,12 @@ typedef NS_ENUM(NSInteger, CBAlert) { CBAlertAdd = 1, CBAlertRename, CBAlertPin,
                 case 2: return [self cell:tv text:@"Đổi tên người này…" detail:nil];
                 case 3: return [self cell:tv text:@"Mã PIN" detail:CBStr(p, @"pin") ? @"Đang khoá — bấm để bỏ" : @"Không khoá"];
                 case 4: return [self switchCell:tv text:@"Hỏi người xem khi mở app" on:[CBPrefs askProfile] tag:1];
+                case 5: {
+                    UITableViewCell *c = [self cell:tv text:@"Giới hạn giờ xem"
+                                             detail:[CBWatchLimit summaryFor:CBStr(p, @"id") ?: @""]];
+                    c.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+                    return c;
+                }
                 default: {
                     UITableViewCell *c = [self cell:tv text:@"Xoá người xem này…" detail:nil];
                     c.textLabel.textColor = CBRGB(0xE5533D);
@@ -219,6 +227,17 @@ typedef NS_ENUM(NSInteger, CBAlert) { CBAlertAdd = 1, CBAlertRename, CBAlertPin,
     return a;
 }
 
+/// Đang có giới hạn giờ xem thì thêm / xoá người xem cần mã PIN phụ huynh (như bản Windows)
+- (void)parentIfLimited:(NSString *)why then:(void (^)(void))then {
+    if (![CBWatchLimit anyLimits]) {
+        then();
+        return;
+    }
+    [CBParental checkParent:why done:^(BOOL ok) {
+        if (ok) then();
+    }];
+}
+
 - (void)tableView:(UITableView *)tv didSelectRowAtIndexPath:(NSIndexPath *)ip {
     [tv deselectRowAtIndexPath:ip animated:YES];
     NSDictionary *p = [CBPrefs currentProfile];
@@ -229,7 +248,9 @@ typedef NS_ENUM(NSInteger, CBAlert) { CBAlertAdd = 1, CBAlertRename, CBAlertPin,
             vc.onDone = ^{ [weakSelf.tableView reloadData]; };
             [self presentViewController:vc animated:YES completion:nil];
         } else if (ip.row == 1) {
-            [[self ask:@"Thêm người xem" message:@"Tên người xem" tag:CBAlertAdd style:UIAlertViewStylePlainTextInput ok:@"Thêm"] show];
+            [self parentIfLimited:@"Đang có giới hạn giờ xem — nhập mã PIN phụ huynh để thêm người xem." then:^{
+                [[self ask:@"Thêm người xem" message:@"Tên người xem" tag:CBAlertAdd style:UIAlertViewStylePlainTextInput ok:@"Thêm"] show];
+            }];
         } else if (ip.row == 2) {
             UIAlertView *a = [self ask:@"Đổi tên" message:nil tag:CBAlertRename style:UIAlertViewStylePlainTextInput ok:@"Lưu"];
             [a textFieldAtIndex:0].text = CBStr(p, @"name");
@@ -245,9 +266,15 @@ typedef NS_ENUM(NSInteger, CBAlert) { CBAlertAdd = 1, CBAlertRename, CBAlertPin,
                 [a show];
             }
         } else if (ip.row == 5) {
-            [[self ask:@"Xoá người xem này?" message:[NSString stringWithFormat:@"Xoá «%@» cùng lịch sử, phim theo dõi của người này.",
-                                                                                 CBStr(p, @"name")]
-                   tag:CBAlertDelete style:UIAlertViewStyleDefault ok:@"Xoá"] show];
+            [CBParental checkParent:@"Nhập mã PIN phụ huynh để đặt giới hạn giờ xem." done:^(BOOL ok) {
+                if (ok) [self.navigationController pushViewController:[[CBLimitsViewController alloc] initWithProfile:nil] animated:YES];
+            }];
+        } else if (ip.row == 6) {
+            [self parentIfLimited:@"Đang có giới hạn giờ xem — nhập mã PIN phụ huynh để xoá người xem." then:^{
+                [[self ask:@"Xoá người xem này?" message:[NSString stringWithFormat:@"Xoá «%@» cùng lịch sử, phim theo dõi của người này.",
+                                                                                     CBStr(p, @"name")]
+                       tag:CBAlertDelete style:UIAlertViewStyleDefault ok:@"Xoá"] show];
+            }];
         }
     } else if (ip.section == CBSecSites && ip.row > 0) {
         [CBPrefs setBaseUrl:_sites[ip.row - 1]];
