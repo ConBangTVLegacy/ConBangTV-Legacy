@@ -1,5 +1,8 @@
 # Côn Bằng TV Legacy — bản iOS 6
 
+**Trang giới thiệu, cách cài:** <https://conbangtvlegacy.github.io> · **Tải bản mới nhất:** [GitHub Releases](https://github.com/ConBangTVLegacy/ConBangTV-Legacy/releases/latest)
+
+
 Bản Côn Bằng TV cho máy iOS 6 đã jailbreak (máy thử: **iPhone 5 iOS 6.1.4**, **iPad mini 1** — chưa thử). App gốc và lõi chung ở repo
 [repo chính](https://github.com/Circling5714/ChimToTV); bản iPad hiện tại (Swift / SwiftUI / WKWebView, iOS 15+) không
 chạy được trên iOS 6 nên bản này viết riêng.
