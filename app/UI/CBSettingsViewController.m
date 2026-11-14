@@ -8,6 +8,7 @@
 #import "CBLimitsViewController.h"
 #import "CBParental.h"
 #import "CBProfilesViewController.h"
+#import "CBProxyViewController.h"
 #import "CBSyncViewController.h"
 #import "CBTheme.h"
 
@@ -64,7 +65,7 @@ typedef NS_ENUM(NSInteger, CBSettingsAlert) { CBAlertAdd = 1, CBAlertRename, CBA
         case CBSecProfile: return [CBPrefs profiles].count > 1 ? 7 : 6;
         case CBSecSites: return 2 + _sites.count;  // tổng hợp, hồ sơ trẻ em, từng trang
         case CBSecPlayer: return 3;
-        case CBSecNet: return 2;
+        case CBSecNet: return 3;
         case CBSecData: return 2;
         case CBSecAbout: return 3;
     }
@@ -181,7 +182,12 @@ typedef NS_ENUM(NSInteger, CBSettingsAlert) { CBAlertAdd = 1, CBAlertRename, CBA
             return [self switchCell:tv text:@"Lấp đầy màn hình" on:[CBPrefs videoFill] tag:4];
         case CBSecNet:
             if (ip.row == 0) return [self switchCell:tv text:@"DNS mã hoá" on:[CBPrefs secureDns] tag:5];
-            return [self switchCell:tv text:@"Vượt chặn nhà mạng" on:[CBPrefs unblock] tag:6];
+            if (ip.row == 1) return [self switchCell:tv text:@"Vượt chặn nhà mạng" on:[CBPrefs unblock] tag:6];
+            {
+                UITableViewCell *c = [self cell:tv text:@"Proxy" detail:[CBProxyViewController summary]];
+                c.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+                return c;
+            }
         case CBSecData: {
             if (ip.row == 0) {
                 id peers = [CBCore sync:@"sync.peers" args:nil];
@@ -309,6 +315,8 @@ typedef NS_ENUM(NSInteger, CBSettingsAlert) { CBAlertAdd = 1, CBAlertRename, CBA
         NSUInteger i = [steps indexOfObject:@([CBPrefs seekStep])];
         [CBPrefs setSeekStep:[steps[i == NSNotFound ? 1 : (i + 1) % steps.count] integerValue]];
         [tv reloadData];
+    } else if (ip.section == CBSecNet && ip.row == 2) {
+        [self.navigationController pushViewController:[[CBProxyViewController alloc] init] animated:YES];
     } else if (ip.section == CBSecData && ip.row == 0) {
         [self.navigationController pushViewController:[[CBSyncViewController alloc] init] animated:YES];
     } else if (ip.section == CBSecData) {

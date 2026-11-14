@@ -41,6 +41,7 @@ Cổng phát nội bộ 127.0.0.1 (media_proxy: bỏ quảng cáo, cắt PNG ng�
 | Người xem | «Ai đang xem?» (thêm người, mã PIN), đổi người xem — cùng khoá dữ liệu với bản Windows |
 | Cài đặt | người xem, trang chủ tổng hợp, **hồ sơ trẻ em** (tắt cần mã phụ huynh), trang phim, phát video, mạng, **Đồng bộ trong nhà**, xoá lịch sử, miễn trừ |
 | Theo dõi / Lịch sử | nút «☆ Theo dõi» đầu trang chủ, «Xem thêm» của «Có tập mới» / «Xem tiếp»: lưới phim, kiểm tập mới khi mở, nhấn giữ để bỏ theo dõi / xoá |
+| Proxy | Cài đặt → Mạng → Proxy: SOCKS5 (có đăng nhập) hoặc Shadowsocks (dán link `ss://`), DNS qua proxy, chỉ trang phim, thử kết nối; lõi lo hết (trang, video qua cổng phát nội bộ, ảnh tải qua lõi khi proxy cho cả app); proxy lỗi thì báo lỗi, không đi thẳng |
 | Giới hạn giờ xem | từng người xem: số phút mỗi ngày, giờ đi ngủ (tới 6 giờ sáng); hết giờ phim dừng, xem thêm cần mã PIN phụ huynh — cùng khoá với bản Windows / TV / iPad |
 | Đồng bộ trong nhà | ghép với tivi / Windows / iPad bằng mã 4 số (lõi `sync_service`, cổng 8791): lịch sử, chỗ xem, theo dõi, người xem, trang phim |
 
@@ -101,3 +102,4 @@ iPhone 5 và iPad mini 1.
 1. Đo lại tốc độ / phát qua lõi khi Wi-Fi tốt; nếu lõi vẫn chậm hơn NSURLConnection thì dò (DNS mã hoá, cổng SOCKS nội bộ, IPv6).
 2. Thử iPad mini 1 (A5, 512 MB RAM).
 3. Đóng gói / cập nhật (OTA): .deb trên GitHub Releases + kiểm bản mới trong app, hoặc repo Cydia riêng.
+4. Shadowsocks mới thử phần giao diện (đọc link, báo lỗi) — chưa thử với máy chủ thật.

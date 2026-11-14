@@ -1,4 +1,6 @@
 #import "CBImages.h"
+#import "CBPrefs.h"
+#import "CBCore.h"
 #import "CBLog.h"
 #import <CommonCrypto/CommonDigest.h>
 #import <ImageIO/ImageIO.h>
@@ -260,11 +262,30 @@ static NSMutableDictionary *gWaiters;  // url → mảng khối deliver
     [self pump];
 }
 
+/// Proxy đang bật cho cả app (không phải «chỉ trang phim»): ảnh cũng phải đi qua proxy → tải bằng lõi (http.download)
++ (BOOL)viaCore {
+    id on = [CBPrefs get:@"proxy_on"], sitesOnly = [CBPrefs get:@"proxy_sites_only"];
+    return [on respondsToSelector:@selector(boolValue)] && [on boolValue] &&
+           !([sitesOnly respondsToSelector:@selector(boolValue)] && [sitesOnly boolValue]);
+}
+
 + (void)pump {
+    BOOL viaCore = gQueue.count ? [self viaCore] : NO;
     while (gActive.count < kMaxActive && gQueue.count) {
         CBImageJob *job = gQueue.lastObject;
         [gQueue removeLastObject];
         gActive[job.url] = job;
+        if (viaCore) {
+            NSString *tmp = [NSTemporaryDirectory() stringByAppendingPathComponent:[@"img-" stringByAppendingString:CBMd5(job.url)]];
+            [CBCore call:@"http.download" args:@{@"url": job.url, @"path": tmp} done:^(id ok, NSString *err) {
+                NSData *d = err ? nil : [NSData dataWithContentsOfFile:tmp];
+                [[NSFileManager defaultManager] removeItemAtPath:tmp error:NULL];
+                if (err) CBLog(@"Ảnh lỗi (qua lõi / proxy): %@ — %@", err, job.url);
+                else gDone++;
+                [self finish:job data:d];
+            }];
+            continue;
+        }
         NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:job.url]
                                                            cachePolicy:NSURLRequestReloadIgnoringLocalCacheData
                                                        timeoutInterval:20];

@@ -286,6 +286,12 @@
         NSIndexPath *ip = [NSIndexPath indexPathForRow:row inSection:sec];
         UITableViewCell *cell = [tvc tableView:tvc.tableView cellForRowAtIndexPath:ip];
         CBLog(@"[gỡ lỗi] chọn dòng %ld mục %ld: %@", (long)ip.row, (long)ip.section, cell.textLabel.text);
+        if ([cell.accessoryView isKindOfClass:[UISegmentedControl class]]) {  // dòng có ô chọn: chọn ô kế tiếp
+            UISegmentedControl *seg = (UISegmentedControl *)cell.accessoryView;
+            seg.selectedSegmentIndex = (seg.selectedSegmentIndex + 1) % (NSInteger)seg.numberOfSegments;
+            [seg sendActionsForControlEvents:UIControlEventValueChanged];
+            return;
+        }
         if ([cell.accessoryView isKindOfClass:[UISwitch class]]) {  // dòng có công tắc: gạt công tắc
             UISwitch *sw = (UISwitch *)cell.accessoryView;
             sw.on = !sw.on;
