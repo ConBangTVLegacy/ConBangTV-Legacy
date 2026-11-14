@@ -47,6 +47,16 @@
     self.navigationItem.rightBarButtonItems = @[settings, search];
     self.navigationItem.backBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"Trang chủ" style:UIBarButtonItemStyleBordered
                                                                             target:nil action:nil];
+    // Tên app dài: tự thu nhỏ chữ cho vừa thanh tiêu đề (iPhone dọc bị cắt «Côn Bằng TV Le…»)
+    UILabel *title = [[UILabel alloc] initWithFrame:CGRectMake(0, 0, 200, 30)];
+    title.backgroundColor = [UIColor clearColor];
+    title.textColor = [CBTheme text];
+    title.font = [CBTheme bold:18];
+    title.textAlignment = NSTextAlignmentCenter;
+    title.adjustsFontSizeToFitWidth = YES;
+    title.minimumScaleFactor = 0.6;
+    title.text = self.title;
+    self.navigationItem.titleView = title;
     [self reload];
 }
 

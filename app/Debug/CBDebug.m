@@ -1,6 +1,7 @@
 #import "CBDebug.h"
 #import "CBAppDelegate.h"
 #import "CBCore.h"
+#import "CBImages.h"
 #import "CBDetailViewController.h"
 #import "CBGridViewController.h"
 #import "CBHomeViewController.h"
@@ -164,6 +165,7 @@
     } else if ([verb isEqualToString:@"close"]) {
         [player close];
     } else if ([verb isEqualToString:@"status"]) {
+        CBLog(@"[trạng thái] %@", [CBImages debugStatus]);
         CBLog(@"[trạng thái] màn %@ | RAM %.1f MB%@", NSStringFromClass([[self top] class]), CBResidentMB(),
               player ? [@" | " stringByAppendingString:[player statusLine]] : @"");
     } else {

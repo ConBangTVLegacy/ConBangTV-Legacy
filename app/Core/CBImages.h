@@ -11,4 +11,6 @@
 /// Xử lý thử thách TLS bằng gốc của máy + gốc Mozilla đóng kèm
 + (void)handleChallenge:(NSURLAuthenticationChallenge *)challenge;
 + (void)clearMemory;
+/// Số ảnh đang tải / chờ / xong / hỏng (gỡ lỗi)
++ (NSString *)debugStatus;
 @end

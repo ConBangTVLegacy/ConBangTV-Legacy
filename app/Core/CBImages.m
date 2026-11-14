@@ -14,6 +14,7 @@ static NSCache *gMemory;
 static NSMutableArray *gQueue;      // việc chờ (mới nhất ở cuối — ô vừa hiện lên tải trước)
 static NSMutableDictionary *gActive;  // url → CBImageJob đang tải
 static NSString *gDiskDir;
+static NSInteger gFailed, gDone;  // đếm để gỡ lỗi (lệnh status)
 
 /// Giải mã base64 (NSData initWithBase64EncodedString chỉ có từ iOS 7)
 static NSData *CBBase64Decode(NSString *s) {
@@ -180,6 +181,11 @@ static UIImage *CBDecode(NSData *data, CGFloat maxPx) {
     }
 }
 
++ (NSString *)debugStatus {
+    return [NSString stringWithFormat:@"ảnh: đang tải %lu, chờ %lu, xong %ld, hỏng %ld", (unsigned long)gActive.count,
+            (unsigned long)gQueue.count, (long)gDone, (long)gFailed];
+}
+
 + (void)clearMemory {
     [gMemory removeAllObjects];
 }
@@ -274,10 +280,20 @@ static NSMutableDictionary *gWaiters;  // url → mảng khối deliver
     NSString *file = [gDiskDir stringByAppendingPathComponent:CBMd5(job.url)];
     CGFloat maxPx = job.maxPx;
     NSString *url = job.url;
+    if (!data.length) {
+        gFailed++;
+        CBLog(@"Ảnh hỏng (HTTP %ld): %@", (long)job.status, url);
+    }
     if (data.length) {
         dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
             UIImage *img = CBDecode(data, maxPx);
             if (img) [data writeToFile:file atomically:YES];
+            if (!img) {
+                const unsigned char *b = data.bytes;
+                CBLog(@"Ảnh không giải mã được (%lu byte, đầu %02x%02x%02x%02x…%02x%02x%02x%02x): %@", (unsigned long)data.length,
+                      b[0], b[1], b[2], b[3], data.length > 11 ? b[8] : 0, data.length > 11 ? b[9] : 0, data.length > 11 ? b[10] : 0,
+                      data.length > 11 ? b[11] : 0, url);
+            }
             dispatch_async(dispatch_get_main_queue(), ^{
                 if (img) {
                     [gMemory setObject:img forKey:[self memKey:url px:maxPx]
@@ -308,10 +324,12 @@ static NSMutableDictionary *gWaiters;  // url → mảng khối deliver
 }
 
 - (void)connectionDidFinishLoading:(NSURLConnection *)connection {
+    gDone++;
     [CBImages finish:self data:self.status < 400 ? self.data : nil];
 }
 
 - (void)connection:(NSURLConnection *)connection didFailWithError:(NSError *)error {
+    CBLog(@"Ảnh lỗi mạng %ld (%@): %@", (long)error.code, error.localizedDescription, self.url);
     [CBImages finish:self data:nil];
 }
 

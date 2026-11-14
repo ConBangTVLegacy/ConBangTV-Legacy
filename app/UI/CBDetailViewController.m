@@ -191,7 +191,7 @@
     _countLabel = [self label:[CBTheme bold:16] color:[CBTheme text]];
     _messageLabel = [self label:[CBTheme font:15] color:[CBTheme dim]];
     _messageLabel.textAlignment = NSTextAlignmentCenter;
-    _playButton = [CBTheme button:@"▶ Xem" primary:YES];
+    _playButton = [CBTheme button:@"▶︎ Xem" primary:YES];
     [_playButton addTarget:self action:@selector(playTapped) forControlEvents:UIControlEventTouchUpInside];
     [_header addSubview:_playButton];
     _followButton = [CBTheme button:@"Theo dõi" primary:NO];
@@ -232,7 +232,7 @@
     _messageLabel.text = _error;
     // Nút Xem: xem tiếp tập trong lịch sử, hoặc tập đầu của bản đang chọn
     NSString *histEp = CBStr(_hist, @"epTitle");
-    NSString *play = histEp ? [NSString stringWithFormat:@"▶ Xem tiếp: %@", histEp] : (eps.count > 1 ? @"▶ Xem từ tập đầu" : @"▶ Xem");
+    NSString *play = histEp ? [NSString stringWithFormat:@"▶︎ Xem tiếp: %@", histEp] : (eps.count > 1 ? @"▶︎ Xem từ tập đầu" : @"▶︎ Xem");
     [_playButton setTitle:play forState:UIControlStateNormal];
     _playButton.enabled = _detail && (eps.count || histEp);
     BOOL following = [CBPrefs followOf:CBStr(_detail, @"url") ?: CBStr(_item, @"url") ?: @""] != nil;
