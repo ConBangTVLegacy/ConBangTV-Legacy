@@ -1,0 +1,9 @@
+Package: vn.chimto.tv.legacy.spike
+Name: CBTV Legacy - thu nghiem
+Version: 0.0.1
+Architecture: iphoneos-arm
+Description: Ban thu bo dung, trinh phat va TLS cho Con Bang TV tren iOS 6
+Maintainer: Con Bang TV
+Author: Con Bang TV
+Section: Utilities
+Depends: firmware (>= 6.0), uikittools

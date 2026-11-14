@@ -1,0 +1,9 @@
+# Theos
+.theos/
+packages/
+# Rust
+target/
+target-core/
+Cargo.lock
+# ring đã vá — sinh lại bằng tools/rust/vendor-ring.sh
+vendor/

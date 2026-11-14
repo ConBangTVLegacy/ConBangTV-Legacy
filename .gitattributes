@@ -1,0 +1,4 @@
+# Script chạy trên Linux / máy iOS: luôn LF (git của Windows đang bật autocrlf)
+* text=auto eol=lf
+*.png binary
+*.der binary

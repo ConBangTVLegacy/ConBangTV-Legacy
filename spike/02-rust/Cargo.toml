@@ -1,0 +1,23 @@
+# Bước 2 — thử Rust (std + tokio + reqwest/rustls) trên iOS 6: thư viện tĩnh gọi từ app ObjC của bước 1.
+# Dựng: bash build-ios6.sh (trên máy Ubuntu có Theos + Rust nightly) → target/armv7-apple-ios6/release/libcbrspike.a
+[package]
+name = "cbrspike"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["staticlib"]
+path = "src/lib.rs"
+
+[dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "net", "time"] }
+# Cùng reqwest 0.12 với linux/core; rustls + bộ chứng chỉ gốc Mozilla đóng trong tệp chạy (không phụ thuộc kho gốc của iOS 6)
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-webpki-roots", "gzip", "http2"] }
+
+# ring vá cho ARM 32-bit của Apple: tools/rust/cargo-ios6.sh tự thêm [patch.crates-io] (vendor/, tạo bằng vendor-ring.sh)
+
+[profile.release]
+panic = "abort"
+opt-level = 3
+lto = true
+codegen-units = 1
