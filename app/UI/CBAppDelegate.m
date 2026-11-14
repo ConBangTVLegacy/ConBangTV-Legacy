@@ -8,6 +8,7 @@
 #import "CBPrefs.h"
 #import "CBProfilesViewController.h"
 #import "CBSync.h"
+#import "CBUpdate.h"
 #import "CBTheme.h"
 #import <AVFoundation/AVFoundation.h>
 #ifdef DEBUG
@@ -27,6 +28,7 @@
     [[AVAudioSession sharedInstance] setCategory:AVAudioSessionCategoryPlayback error:NULL];
     [CBTheme apply];
     [CBSync start];
+    [CBUpdate start];
 
     self.window = [[UIWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
     self.window.backgroundColor = [CBTheme bg];

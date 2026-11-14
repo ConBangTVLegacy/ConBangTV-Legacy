@@ -1,0 +1,5 @@
+#!/bin/sh
+# Công cụ cài bản cập nhật (OTA) cần quyền root: dpkg -i, đóng / mở lại app — xem app/Helper/cbupdate.c
+chown root:wheel /usr/libexec/conbangtv/cbupdate
+chmod 4755 /usr/libexec/conbangtv/cbupdate
+exit 0

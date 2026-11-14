@@ -10,6 +10,7 @@
 #import "CBProfilesViewController.h"
 #import "CBProxyViewController.h"
 #import "CBSyncViewController.h"
+#import "CBUpdate.h"
 #import "CBTheme.h"
 
 typedef NS_ENUM(NSInteger, CBSection) { CBSecProfile, CBSecSites, CBSecPlayer, CBSecNet, CBSecData, CBSecAbout, CBSecCount };
@@ -83,6 +84,7 @@ typedef NS_ENUM(NSInteger, CBSettingsAlert) { CBAlertAdd = 1, CBAlertRename, CBA
                                       @"Trên iOS 6 chỉ phát được server có luồng HLS / tệp video (KKPhim, VSMOV, server KK Phim "
                                       @"của phimmois…); trình phát nhúng của trang (NguonC, streamfree…) không chạy được.";
     if (section == CBSecNet) return @"DNS mã hoá và vượt chặn giúp vào được trang bị nhà mạng chặn.";
+    if (section == CBSecAbout) return @"App tự kiểm tra bản mới (GitHub) khi mở; chạm «Phiên bản» để kiểm tra ngay.";
     return nil;
 }
 
@@ -207,8 +209,7 @@ typedef NS_ENUM(NSInteger, CBSettingsAlert) { CBAlertAdd = 1, CBAlertRename, CBA
                 NSString *v = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleShortVersionString"];
                 NSString *core = CBIsStr([CBCore sync:@"app.version" args:nil]) ? [CBCore sync:@"app.version" args:nil] : @"?";
                 UITableViewCell *c = [self cell:tv text:@"Phiên bản" detail:[NSString stringWithFormat:@"%@ (lõi %@)", v, core]];
-                c.selectionStyle = UITableViewCellSelectionStyleNone;
-                return c;
+                return c;  // chạm: kiểm tra bản mới (CBUpdate)
             }
             if (ip.row == 1) {
                 UITableViewCell *c = [self cell:tv text:@"Miễn trừ trách nhiệm" detail:nil];
@@ -322,6 +323,8 @@ typedef NS_ENUM(NSInteger, CBSettingsAlert) { CBAlertAdd = 1, CBAlertRename, CBA
     } else if (ip.section == CBSecData) {
         [[self ask:@"Xoá lịch sử xem?" message:@"Xoá danh sách «Xem tiếp» và chỗ đang xem của mọi tập (người xem hiện tại)."
                tag:CBAlertClear style:UIAlertViewStyleDefault ok:@"Xoá"] show];
+    } else if (ip.section == CBSecAbout && ip.row == 0) {
+        [CBUpdate checkManual];
     } else if (ip.section == CBSecAbout && ip.row == 1) {
         [self.navigationController pushViewController:[[CBDisclaimerViewController alloc] initGate:NO] animated:YES];
     }

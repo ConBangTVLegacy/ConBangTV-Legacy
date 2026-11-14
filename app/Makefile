@@ -36,5 +36,18 @@ ConBangTV_LDFLAGS = -L$(CORE_LIB_DIR) -lconbang_core
 
 include $(THEOS_MAKE_PATH)/application.mk
 
+# Công cụ cài bản cập nhật OTA (Helper/cbupdate.c): quyền root nhờ setuid — layout/DEBIAN/postinst đặt chown root + chmod 4755.
+# Quyền com.apple.springboard.launchapplications để mở lại app sau khi cài (như tools/cblaunch).
+TOOL_NAME = cbupdate
+cbupdate_FILES = Helper/cbupdate.c
+cbupdate_FRAMEWORKS = CoreFoundation
+cbupdate_INSTALL_PATH = /usr/libexec/conbangtv
+cbupdate_CODESIGN_FLAGS = -SHelper/entitlements.plist -Hsha1
+include $(THEOS_MAKE_PATH)/tool.mk
+
+# postinst cần quyền chạy (tệp chép từ Windows không giữ bit x)
+before-package::
+	chmod 0755 $(THEOS_STAGING_DIR)/DEBIAN/postinst
+
 after-install::
 	install.exec "su mobile -c uicache; killall -9 ConBangTV 2>/dev/null || true"
