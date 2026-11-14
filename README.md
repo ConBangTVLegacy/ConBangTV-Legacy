@@ -102,4 +102,3 @@ iPhone 5 và iPad mini 1.
 1. Đo lại tốc độ / phát qua lõi khi Wi-Fi tốt; nếu lõi vẫn chậm hơn NSURLConnection thì dò (DNS mã hoá, cổng SOCKS nội bộ, IPv6).
 2. Thử iPad mini 1 (A5, 512 MB RAM).
 3. Đóng gói / cập nhật (OTA): .deb trên GitHub Releases + kiểm bản mới trong app, hoặc repo Cydia riêng.
-4. Shadowsocks mới thử phần giao diện (đọc link, báo lỗi) — chưa thử với máy chủ thật.

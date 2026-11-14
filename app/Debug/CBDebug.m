@@ -104,7 +104,11 @@
 }
 
 + (void)run:(NSString *)cmd {
-    CBLog(@"[gỡ lỗi] %@", cmd);
+    // Không ghi khoá trong link ss:// (lệnh «alert 1 ss://…» khi thử Shadowsocks) vào nhật ký
+    static NSRegularExpression *secret;
+    if (!secret) secret = [NSRegularExpression regularExpressionWithPattern:@"ss://[^@ ]*@" options:0 error:NULL];
+    CBLog(@"[gỡ lỗi] %@", [secret stringByReplacingMatchesInString:cmd options:0 range:NSMakeRange(0, cmd.length)
+                                                      withTemplate:@"ss://***@"]);
     NSRange sp = [cmd rangeOfString:@" "];
     NSString *verb = sp.location == NSNotFound ? cmd : [cmd substringToIndex:sp.location];
     NSString *arg = sp.location == NSNotFound ? @"" : [[cmd substringFromIndex:sp.location + 1]
