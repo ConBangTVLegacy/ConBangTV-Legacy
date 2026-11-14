@@ -85,8 +85,12 @@ Phát hành bản mới:
    `cbsymcheck` trên một máy iOS 6).
 3. `gh release create v<bản> <tệp .deb> -R ConBangTVLegacy/ConBangTV-Legacy --title "Côn Bằng TV Legacy <bản>" --notes "…"`.
    Đừng thay tệp của bản đã phát hành (CDN còn giữ tệp cũ vài phút → app báo sai kích thước) — sửa thì ra bản mới.
+4. Nguồn Cydia (`https://conbangtvlegacy.github.io/repo/`, repo ConBangTVLegacy/conbangtvlegacy.github.io): trên máy dựng
+   `bash tools/update-cydia-repo.sh <…>/conbangtvlegacy.github.io/repo app/packages/vn.conbangtv.legacy_<bản>_iphoneos-arm.deb`
+   (chép .deb vào `repo/debs`, giữ 3 bản, tạo `Packages` / `Release`), sửa mục «Mới trong bản» của `repo/depiction.html`, rồi
+   đẩy repo trang lên. Trang `depiction.html` / `index.html` phải chạy trên Safari iOS 6 (không biến CSS, grid, flex gap, fetch).
 
-Máy đang chạy bản cũ hơn 0.4.0 (chưa có `cbupdate`) cài tay một lần: chép `.deb` vào máy rồi `dpkg -i` (SSH / Filza).
+Máy đang chạy bản cũ hơn 0.4.0 (chưa có `cbupdate`) cài bản mới một lần bằng Cydia (thêm nguồn ở trên) hoặc `dpkg -i`.
 
 ## Bẫy của iOS 6 đã gặp (và cách xử lý)
 

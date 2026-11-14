@@ -250,6 +250,16 @@
         UIViewController *root = nav.viewControllers.count ? nav.viewControllers[0] : nil;
         [nav popToRootViewControllerAnimated:NO];
         if ([root isKindOfClass:[CBHomeViewController class]]) [(CBHomeViewController *)root openMore:[arg integerValue]];
+    } else if ([verb isEqualToString:@"web"]) {
+        // web <url> — mở trang trong UIWebView (cùng WebKit với Safari iOS 6) để xem trang web hiển thị ra sao; «home» để đóng
+        UIViewController *vc = [[UIViewController alloc] init];
+        UIWebView *wv = [[UIWebView alloc] initWithFrame:nav.view.bounds];
+        wv.scalesPageToFit = YES;
+        wv.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+        vc.view = wv;
+        vc.title = @"Trang web";
+        [wv loadRequest:[NSURLRequest requestWithURL:[NSURL URLWithString:arg]]];
+        [nav pushViewController:vc animated:NO];
     } else if ([verb isEqualToString:@"unhist"]) {
         // unhist <url phim> — xoá khỏi lịch sử / Xem tiếp (có dấu xoá — máy đã ghép cũng xoá)
         [CBPrefs removeHistory:arg];
