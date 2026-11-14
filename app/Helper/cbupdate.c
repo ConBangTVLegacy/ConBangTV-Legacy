@@ -96,13 +96,15 @@ int main(int argc, char **argv) {
         fprintf(stderr, "cách dùng: cbupdate <tệp .deb trong " UPDATE_DIR "> [pid app]\n");
         return 64;
     }
-    // 1. Tệp: đúng thư mục tải của app, đuôi .deb, tệp thường (realpath gỡ hết liên kết tượng trưng)
-    char real[PATH_MAX];
-    if (!realpath(argv[1], real)) return 65;
-    size_t n = strlen(real);
+    // 1. Tệp: đúng thư mục tải của app, đuôi .deb, tệp thường (realpath gỡ hết liên kết tượng trưng — trên iOS /var là liên
+    //    kết tới /private/var nên so với realpath của chính thư mục tải)
+    char real[PATH_MAX], dir[PATH_MAX];
+    if (!realpath(argv[1], real) || !realpath(UPDATE_DIR, dir)) return 65;
+    strlcat(dir, "/", sizeof(dir));
+    size_t n = strlen(real), dn = strlen(dir);
     struct stat st;
-    if (strncmp(real, UPDATE_DIR, strlen(UPDATE_DIR)) != 0 || n < 5 || strcmp(real + n - 4, ".deb") != 0 ||
-        strchr(real + strlen(UPDATE_DIR), '/') || stat(real, &st) != 0 || !S_ISREG(st.st_mode)) {
+    if (strncmp(real, dir, dn) != 0 || n < dn + 5 || strcmp(real + n - 4, ".deb") != 0 || strchr(real + dn, '/') ||
+        stat(real, &st) != 0 || !S_ISREG(st.st_mode)) {
         fprintf(stderr, "tệp không hợp lệ: %s\n", real);
         return 65;
     }
