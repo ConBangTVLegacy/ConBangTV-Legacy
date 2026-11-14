@@ -63,6 +63,11 @@
     [self.nav presentViewController:p animated:NO completion:nil];
 }
 
+- (void)applicationDidBecomeActive:(UIApplication *)application {
+    // Nằm nền lâu / khoá màn hình: iOS thu hồi cổng nghe của app → mở lại trước khi trang / trình phát gọi mạng
+    [CBCore reviveLocalPorts];
+}
+
 - (void)applicationDidEnterBackground:(UIApplication *)application {
     [CBCore sync:@"prefs.flush" args:nil];
 }

@@ -1,4 +1,5 @@
 #import "CBCore.h"
+#import "CBJSON.h"
 #import "CBLog.h"
 #import <UIKit/UIKit.h>
 #include <stdint.h>
@@ -127,6 +128,13 @@ static void CBCallback(uint64_t cid, const char *json) {
 
 + (void)networkSettingsChanged {
     [self sync:@"net.settingsChanged" args:nil];
+}
+
++ (void)reviveLocalPorts {
+    id r = [self sync:@"net.revive" args:nil];
+    if (CBIsDict(r) && ([r[@"bridge"] boolValue] || [r[@"media"] boolValue])) {
+        CBLog(@"[lõi] cổng nội bộ bị iOS thu hồi lúc nằm nền — đã mở lại (cổng mạng %@, cổng phát %@)", r[@"bridge"], r[@"media"]);
+    }
 }
 
 @end

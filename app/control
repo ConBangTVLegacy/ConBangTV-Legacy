@@ -1,9 +1,11 @@
 Package: vn.conbangtv.legacy
-Name: Con Bang TV Legacy
-Version: 0.4.0
+Name: Côn Bằng TV Legacy
+Version: 0.4.1
 Architecture: iphoneos-arm
-Description: Xem phim tu cac trang phim cong khai tren iPhone / iPad iOS 6 (Con Bang TV Legacy)
-Maintainer: Con Bang TV
-Author: Con Bang TV
+Description: Xem phim từ nhiều trang phim, gom về một trang chủ — Côn Bằng TV cho iPhone / iPad iOS 6. Tự cập nhật, đồng bộ với tivi.
+Maintainer: Côn Bằng TV Legacy
+Author: Côn Bằng TV Legacy
 Section: Multimedia
 Depends: firmware (>= 6.0), uikittools
+Homepage: https://conbangtvlegacy.github.io/
+Depiction: https://conbangtvlegacy.github.io/repo/depiction.html

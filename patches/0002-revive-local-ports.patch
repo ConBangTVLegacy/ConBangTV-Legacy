@@ -1,0 +1,226 @@
+diff --git a/linux/core/src/media_proxy.rs b/linux/core/src/media_proxy.rs
+index 7aeed86..74b93f9 100644
+--- a/linux/core/src/media_proxy.rs
++++ b/linux/core/src/media_proxy.rs
+@@ -50,7 +50,8 @@ impl Links {
+     }
+ }
+ 
+-static PORT: OnceLock<u16> = OnceLock::new();
++/// Cổng phát đang mở: số cổng + việc nhận kết nối (bỏ được khi mở lại)
++static PORT: Mutex<Option<(u16, tokio::task::JoinHandle<()>)>> = Mutex::new(None);
+ static SESSIONS: Mutex<Vec<Session>> = Mutex::new(Vec::new());
+ 
+ /// Địa chỉ đưa cho trình phát.
+@@ -63,33 +64,61 @@ pub struct Opened {
+ 
+ /// Mở cổng (gọi nhiều lần cũng chỉ mở một lần). Trả số cổng.
+ pub fn start() -> u16 {
+-    *PORT.get_or_init(|| {
+-        let std_listener = std::net::TcpListener::bind("127.0.0.1:0").expect("không mở được cổng phát nội bộ");
+-        std_listener.set_nonblocking(true).ok();
+-        let port = std_listener.local_addr().map(|a| a.port()).unwrap_or(0);
+-        crate::rt().spawn(async move {
+-            let listener = match TcpListener::from_std(std_listener) {
+-                Ok(l) => l,
+-                Err(e) => {
+-                    crate::log::d("media", &format!("cổng phát lỗi: {e}"));
+-                    return;
+-                }
+-            };
++    let mut g = PORT.lock().unwrap();
++    if let Some(p) = g.as_ref() {
++        return p.0;
++    }
++    let p = open_port(0);
++    let port = p.0;
++    *g = Some(p);
++    port
++}
++
++/// Mở cổng nghe 127.0.0.1:want (0 = cổng bất kỳ; want bận thì lấy cổng bất kỳ) và việc nhận kết nối.
++fn open_port(want: u16) -> (u16, tokio::task::JoinHandle<()>) {
++    let std_listener = std::net::TcpListener::bind(("127.0.0.1", want))
++        .or_else(|_| std::net::TcpListener::bind("127.0.0.1:0"))
++        .expect("không mở được cổng phát nội bộ");
++    std_listener.set_nonblocking(true).ok();
++    let port = std_listener.local_addr().map(|a| a.port()).unwrap_or(0);
++    let task = crate::rt().spawn(async move {
++        let listener = match TcpListener::from_std(std_listener) {
++            Ok(l) => l,
++            Err(e) => {
++                crate::log::d("media", &format!("cổng phát lỗi: {e}"));
++                return;
++            }
++        };
+             loop {
+-                match listener.accept().await {
+-                    Ok((c, _)) => {
+-                        tokio::spawn(serve(c));
+-                    }
+-                    Err(e) => {
+-                        crate::log::d("media", &format!("accept lỗi: {e}"));
+-                        tokio::time::sleep(Duration::from_millis(200)).await;
+-                    }
++            match listener.accept().await {
++                Ok((c, _)) => {
++                    tokio::spawn(serve(c));
++                }
++                Err(e) => {
++                    crate::log::d("media", &format!("accept lỗi: {e}"));
++                    tokio::time::sleep(Duration::from_millis(200)).await;
+                 }
+             }
+-        });
+-        crate::log::d("media", &format!("Cổng phát nội bộ 127.0.0.1:{port}"));
+-        port
+-    })
++        }
++    });
++    crate::log::d("media", &format!("Cổng phát nội bộ 127.0.0.1:{port}"));
++    (port, task)
++}
++
++/// Quay lại app (iOS): cổng phát bị hệ thống thu hồi thì mở lại, giữ số cổng nếu được (trình phát đang mở dùng tiếp địa chỉ
++/// cũ). true = vừa mở lại.
++pub fn revive() -> bool {
++    let mut g = PORT.lock().unwrap();
++    let Some((old, task)) = g.take() else { return false };
++    if crate::net::listener_alive(old) {
++        *g = Some((old, task));
++        return false;
++    }
++    task.abort();
++    let p = open_port(old);
++    crate::log::d("media", &format!("cổng phát {old} bị thu hồi — mở lại {}", p.0));
++    *g = Some(p);
++    true
+ }
+ 
+ /// Referer kiểu trình duyệt cho yêu cầu khác tên miền: chỉ gốc trang («https://trang/»).
+diff --git a/linux/core/src/net.rs b/linux/core/src/net.rs
+index b7fa7db..4b8c2c7 100644
+--- a/linux/core/src/net.rs
++++ b/linux/core/src/net.rs
+@@ -339,7 +339,8 @@ fn tcp_conn(s: TcpStream, via: bool) -> Conn {
+ 
+ // ---- Cổng SOCKS5 nội bộ (127.0.0.1, không mật khẩu) — app (reqwest) và trình phát (WebKitGTK) luôn đi qua đây ----
+ 
+-static BRIDGE_PORT: OnceLock<u16> = OnceLock::new();
++/// Cổng nội bộ đang mở: số cổng + việc nhận kết nối (bỏ được khi mở lại)
++static BRIDGE: Mutex<Option<(u16, tokio::task::JoinHandle<()>)>> = Mutex::new(None);
+ static GENERATION: OnceLock<tokio::sync::watch::Sender<u64>> = OnceLock::new();
+ 
+ fn generation() -> &'static tokio::sync::watch::Sender<u64> {
+@@ -347,38 +348,73 @@ fn generation() -> &'static tokio::sync::watch::Sender<u64> {
+ }
+ 
+ pub fn bridge_port() -> u16 {
+-    *BRIDGE_PORT.get().unwrap_or(&0)
++    BRIDGE.lock().unwrap().as_ref().map(|b| b.0).unwrap_or(0)
+ }
+ 
+ /// Mở cổng nội bộ (gọi nhiều lần cũng chỉ mở một lần). Trả số cổng.
+ pub fn start_bridge() -> u16 {
+-    *BRIDGE_PORT.get_or_init(|| {
+-        let std_listener = std::net::TcpListener::bind("127.0.0.1:0").expect("không mở được cổng nội bộ");
+-        std_listener.set_nonblocking(true).ok();
+-        let port = std_listener.local_addr().map(|a| a.port()).unwrap_or(0);
+-        crate::rt().spawn(async move {
+-            let listener = match TcpListener::from_std(std_listener) {
+-                Ok(l) => l,
+-                Err(e) => {
+-                    crate::log::d("net", &format!("cổng nội bộ lỗi: {e}"));
+-                    return;
+-                }
+-            };
++    let mut g = BRIDGE.lock().unwrap();
++    if let Some(b) = g.as_ref() {
++        return b.0;
++    }
++    let b = open_bridge(0);
++    let port = b.0;
++    *g = Some(b);
++    port
++}
++
++/// Mở cổng nghe 127.0.0.1:want (0 = cổng bất kỳ; want bận thì lấy cổng bất kỳ) và việc nhận kết nối.
++fn open_bridge(want: u16) -> (u16, tokio::task::JoinHandle<()>) {
++    let std_listener = std::net::TcpListener::bind(("127.0.0.1", want))
++        .or_else(|_| std::net::TcpListener::bind("127.0.0.1:0"))
++        .expect("không mở được cổng nội bộ");
++    std_listener.set_nonblocking(true).ok();
++    let port = std_listener.local_addr().map(|a| a.port()).unwrap_or(0);
++    let task = crate::rt().spawn(async move {
++        let listener = match TcpListener::from_std(std_listener) {
++            Ok(l) => l,
++            Err(e) => {
++                crate::log::d("net", &format!("cổng nội bộ lỗi: {e}"));
++                return;
++            }
++        };
+             loop {
+-                match listener.accept().await {
+-                    Ok((c, _)) => {
+-                        tokio::spawn(serve(c));
+-                    }
+-                    Err(e) => {
+-                        crate::log::d("net", &format!("accept lỗi: {e}"));
+-                        tokio::time::sleep(Duration::from_millis(200)).await;
+-                    }
++            match listener.accept().await {
++                Ok((c, _)) => {
++                    tokio::spawn(serve(c));
++                }
++                Err(e) => {
++                    crate::log::d("net", &format!("accept lỗi: {e}"));
++                    tokio::time::sleep(Duration::from_millis(200)).await;
+                 }
+             }
+-        });
+-        crate::log::d("net", &format!("Cổng nội bộ 127.0.0.1:{port}"));
+-        port
+-    })
++        }
++    });
++    crate::log::d("net", &format!("Cổng nội bộ 127.0.0.1:{port}"));
++    (port, task)
++}
++
++/// Cổng nghe 127.0.0.1:port còn nhận kết nối không (iOS thu hồi cổng nghe của app nằm nền lâu → kết nối bị từ chối).
++pub fn listener_alive(port: u16) -> bool {
++    port != 0 && std::net::TcpStream::connect_timeout(&SocketAddr::from(([127, 0, 0, 1], port)), Duration::from_millis(500)).is_ok()
++}
++
++/// Quay lại app (iOS): cổng nội bộ bị hệ thống thu hồi thì mở lại (giữ số cổng nếu được) và bỏ các kết nối cũ của client HTTP.
++/// true = vừa mở lại.
++pub fn revive_bridge() -> bool {
++    let mut g = BRIDGE.lock().unwrap();
++    let Some((old, task)) = g.take() else { return false };
++    if listener_alive(old) {
++        *g = Some((old, task));
++        return false;
++    }
++    task.abort();
++    let b = open_bridge(old);
++    crate::log::d("net", &format!("cổng nội bộ {old} bị thu hồi — mở lại {}", b.0));
++    *g = Some(b);
++    drop(g);
++    crate::http::reset_client();
++    true
+ }
+ 
+ /// Đổi cài đặt mạng (proxy / vượt chặn / DNS mã hoá): đóng các kết nối đang mở để bên gọi mở lại theo cài đặt mới.
+diff --git a/linux/ffi/src/dispatch.rs b/linux/ffi/src/dispatch.rs
+index c058da7..2e4ca80 100644
+--- a/linux/ffi/src/dispatch.rs
++++ b/linux/ffi/src/dispatch.rs
+@@ -122,6 +122,8 @@ fn net_fn(name: &str, _a: &Value) -> Option<Res> {
+         // Cổng SOCKS5 nội bộ 127.0.0.1 — WebView2 (--proxy-server) và HttpClient của app (ảnh bìa) đi qua đây
+         "startBridge" => ok(net::start_bridge()),
+         "bridgePort" => ok(net::bridge_port()),
++        // iOS: quay lại app sau khi nằm nền — mở lại cổng nội bộ / cổng phát nếu hệ thống đã thu hồi
++        "revive" => ok(json!({ "bridge": net::revive_bridge(), "media": cbtv::media_proxy::revive() })),
+         "settingsChanged" => {
+             net::settings_changed();
+             Ok(Value::Null)

@@ -13,4 +13,7 @@
 + (void)call:(NSString *)method args:(NSDictionary *)args done:(void (^)(id ok, NSString *err))done;
 /// Báo lõi cài đặt mạng vừa đổi (DNS mã hoá, vượt chặn, proxy) — mở cổng nội bộ mới
 + (void)networkSettingsChanged;
+/// Quay lại app: iOS thu hồi cổng nghe 127.0.0.1 của app nằm nền lâu (cổng nội bộ — đường ra mạng của lõi — và cổng phát)
+/// → mở lại (bản vá patches/0002, hàm net.revive). Gọi mỗi lần app hoạt động lại; cổng còn sống thì không làm gì.
++ (void)reviveLocalPorts;
 @end
