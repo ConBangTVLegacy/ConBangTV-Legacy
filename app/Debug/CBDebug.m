@@ -214,6 +214,10 @@
         [player previousEpisode];
     } else if ([verb isEqualToString:@"server"]) {
         [player selectServer:[arg integerValue]];
+    } else if ([verb isEqualToString:@"eps"]) {
+        [player toggleEpisodes];
+    } else if ([verb isEqualToString:@"ep"]) {
+        [player selectEpisode:[arg integerValue]];
     } else if ([verb isEqualToString:@"close"]) {
         [player close];
     } else if ([verb isEqualToString:@"alert"]) {

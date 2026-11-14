@@ -15,4 +15,7 @@
 - (void)close;
 /// Trạng thái để ghi log / gỡ lỗi
 - (NSString *)statusLine;
+/// Bảng chọn tập (gỡ lỗi: lệnh «eps» / «ep <số>»)
+- (void)toggleEpisodes;
+- (void)selectEpisode:(NSInteger)i;
 @end

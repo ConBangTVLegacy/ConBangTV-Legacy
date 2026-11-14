@@ -28,7 +28,7 @@ Cổng phát nội bộ 127.0.0.1 (media_proxy: bỏ quảng cáo, cắt PNG ng�
 | `tools/cblaunch/` | Mở app / đánh thức / mở khoá máy từ SSH (SpringBoardServices) |
 | `tools/symcheck/`, `tools/symlist.py` | Tra trên máy iOS 6 mọi ký hiệu tệp chạy cần — bắt lỗi «dyld: Symbol not found» trước khi chạy |
 | `patches/` | Bản vá tạm cho lõi chung (3 bản vá đầu đã vào repo chính 14/11/2026; còn `0001-sync-ios-platform` — xem README trong đó) |
-| `app/` | **App thật — Côn Bằng TV Legacy** (`vn.conbangtv.legacy`) — các màn ở mục «App» dưới đây |
+| `app/` | **App thật — Côn Bằng TV Legacy** (`vn.conbangtv.legacy`; tên dưới biểu tượng: «Côn Bằng TV») — các màn ở mục «App» dưới đây |
 
 ## App (`app/`)
 
@@ -37,7 +37,7 @@ Cổng phát nội bộ 127.0.0.1 (media_proxy: bỏ quảng cáo, cắt PNG ng�
 | Trang chủ | «Có tập mới», «Xem tiếp», các hàng của trang chủ tổng hợp (`home.load` / `home.late`); cuối trang: ★ Điểm IMDb cao (`imdb.page`), danh mục của trang, Thể loại… / Quốc gia… (`api.filters` / `next.filters`) |
 | Tìm kiếm | tìm trên mọi trang (`site.searchAll`) |
 | Trang phim | thông tin, Xem / Xem tiếp, Theo dõi, chọn bản (Vietsub / Thuyết minh), lưới tập, mô tả, **phim liên quan** (`related.load`) |
-| Trình phát | AVPlayer qua cổng phát nội bộ, tự chọn server phát được trên iOS 6, nhớ chỗ xem, tự chuyển tập, điều khiển trên màn khoá |
+| Trình phát | AVPlayer qua cổng phát nội bộ, tự chọn server phát được trên iOS 6, nhớ chỗ xem, tự chuyển tập, **bảng chọn tập «☰ Tập»** (đổi bản Vietsub / Thuyết minh), điều khiển trên màn khoá |
 | Người xem | «Ai đang xem?» (thêm người, mã PIN), đổi người xem — cùng khoá dữ liệu với bản Windows |
 | Cài đặt | người xem, trang chủ tổng hợp, **hồ sơ trẻ em** (tắt cần mã phụ huynh), trang phim, phát video, mạng, **Đồng bộ trong nhà**, xoá lịch sử, miễn trừ |
 | Theo dõi / Lịch sử | nút «☆ Theo dõi» đầu trang chủ, «Xem thêm» của «Có tập mới» / «Xem tiếp»: lưới phim, kiểm tập mới khi mở, nhấn giữ để bỏ theo dõi / xoá |

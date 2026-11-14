@@ -29,7 +29,37 @@ static double CBDuration(AVPlayerItem *item) {
 }
 @end
 
-@interface CBPlayerViewController () <UIActionSheetDelegate, UIGestureRecognizerDelegate>
+#pragma mark - Ô tập trong bảng chọn tập
+
+@interface CBPlayerEpCell : UICollectionViewCell
+@property (nonatomic, strong) UILabel *label;
+@end
+
+@implementation CBPlayerEpCell
+- (instancetype)initWithFrame:(CGRect)frame {
+    if ((self = [super initWithFrame:frame])) {
+        self.contentView.backgroundColor = [UIColor colorWithWhite:1 alpha:0.12];
+        self.contentView.layer.cornerRadius = 6;
+        self.contentView.layer.borderColor = [CBTheme focus].CGColor;
+        _label = [[UILabel alloc] initWithFrame:CGRectInset(self.contentView.bounds, 4, 0)];
+        _label.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+        _label.backgroundColor = [UIColor clearColor];
+        _label.textAlignment = NSTextAlignmentCenter;
+        _label.font = [CBTheme font:15];
+        _label.adjustsFontSizeToFitWidth = YES;
+        _label.minimumScaleFactor = 0.6;
+        [self.contentView addSubview:_label];
+    }
+    return self;
+}
+- (void)setHighlighted:(BOOL)highlighted {
+    [super setHighlighted:highlighted];
+    self.contentView.alpha = highlighted ? 0.6 : 1;
+}
+@end
+
+@interface CBPlayerViewController () <UIActionSheetDelegate, UIGestureRecognizerDelegate, UICollectionViewDataSource,
+                                      UICollectionViewDelegate, UICollectionViewDelegateFlowLayout>
 @end
 
 @implementation CBPlayerViewController {
@@ -61,6 +91,11 @@ static double CBDuration(AVPlayerItem *item) {
     // Giao diện
     UIView *_top, *_bottom;
     UILabel *_titleLabel, *_timeLabel, *_durLabel, *_status, *_toast;
+    UIButton *_episodesButton;   // «☰ Tập»: bảng chọn tập
+    UIView *_epPanel;
+    UICollectionView *_epGrid;
+    UISegmentedControl *_epGroups;
+    NSInteger _panelGroup;      // bản đang xem trong bảng (chưa đổi bản đang phát cho tới khi chọn tập)
     UIButton *_closeButton, *_serverButton, *_playButton, *_prevButton, *_nextButton, *_backButton, *_fwdButton, *_retryButton;
     UISlider *_slider;
     UIActivityIndicatorView *_spinner;
@@ -128,6 +163,9 @@ static double CBDuration(AVPlayerItem *item) {
     [_top addSubview:_closeButton];
     _serverButton = [self barButton:@"Server" action:@selector(showServers)];
     [_top addSubview:_serverButton];
+    _episodesButton = [self barButton:@"☰ Tập" action:@selector(toggleEpisodes)];
+    _episodesButton.hidden = YES;
+    [_top addSubview:_episodesButton];
     _titleLabel = [self overlayLabel:[CBTheme bold:15]];
     _titleLabel.textAlignment = NSTextAlignmentCenter;
     [_top addSubview:_titleLabel];
@@ -254,7 +292,9 @@ static double CBDuration(AVPlayerItem *item) {
     _top.frame = CGRectMake(0, 0, w, topH);
     _closeButton.frame = CGRectMake(4, 0, 90, topH);
     _serverButton.frame = CGRectMake(w - 94, 0, 90, topH);
-    _titleLabel.frame = CGRectMake(98, 0, w - 196, topH);
+    _episodesButton.frame = CGRectMake(w - 184, 0, 86, topH);
+    _titleLabel.frame = CGRectMake(98, 0, w - 196 - (_episodesButton.hidden ? 0 : 90), topH);
+    [self layoutEpisodePanel];
     CGFloat bottomH = 88;
     _bottom.frame = CGRectMake(0, h - bottomH, w, bottomH);
     _timeLabel.frame = CGRectMake(10, 8, 64, 28);
@@ -274,6 +314,7 @@ static double CBDuration(AVPlayerItem *item) {
 - (void)setControlsVisible:(BOOL)visible {
     [_hideTimer invalidate];
     _hideTimer = nil;
+    if (!visible && _epPanel) return;  // đang chọn tập
     [UIView animateWithDuration:0.2 animations:^{
         self->_top.alpha = visible ? 1 : 0;
         self->_bottom.alpha = visible ? 1 : 0;
@@ -325,6 +366,124 @@ static double CBDuration(AVPlayerItem *item) {
     [self.view setNeedsLayout];
 }
 
+#pragma mark - Bảng chọn tập («☰ Tập»)
+
+- (void)toggleEpisodes {
+    if (_epPanel) {
+        [self hideEpisodes];
+        return;
+    }
+    NSArray *groups = CBArr(_detail, @"groups");
+    _panelGroup = _groupIndex;
+    _epPanel = [[UIView alloc] init];
+    _epPanel.backgroundColor = [UIColor colorWithWhite:0 alpha:0.85];
+    if (groups.count > 1) {
+        NSMutableArray *names = [NSMutableArray array];
+        for (id g in groups) [names addObject:CBStr(g, @"name") ?: @"?"];
+        _epGroups = [[UISegmentedControl alloc] initWithItems:names];
+        _epGroups.segmentedControlStyle = UISegmentedControlStyleBar;
+        _epGroups.selectedSegmentIndex = _panelGroup;
+        [_epGroups addTarget:self action:@selector(panelGroupChanged) forControlEvents:UIControlEventValueChanged];
+        [_epPanel addSubview:_epGroups];
+    }
+    UICollectionViewFlowLayout *layout = [[UICollectionViewFlowLayout alloc] init];
+    layout.minimumLineSpacing = 8;
+    layout.minimumInteritemSpacing = 8;
+    layout.sectionInset = UIEdgeInsetsMake(10, 12, 16, 12);
+    _epGrid = [[UICollectionView alloc] initWithFrame:CGRectZero collectionViewLayout:layout];
+    _epGrid.backgroundColor = [UIColor clearColor];
+    _epGrid.dataSource = self;
+    _epGrid.delegate = self;
+    _epGrid.alwaysBounceVertical = YES;
+    [_epGrid registerClass:[CBPlayerEpCell class] forCellWithReuseIdentifier:@"ep"];
+    [_epPanel addSubview:_epGrid];
+    [self.view insertSubview:_epPanel belowSubview:_top];
+    [self setControlsVisible:YES];
+    [self layoutEpisodePanel];
+    [_epGrid reloadData];
+    [self scrollPanelToCurrent];
+    [_episodesButton setTitle:@"✕ Tập" forState:UIControlStateNormal];
+}
+
+- (void)hideEpisodes {
+    [_epPanel removeFromSuperview];
+    _epPanel = nil;
+    _epGrid = nil;
+    _epGroups = nil;
+    [_episodesButton setTitle:@"☰ Tập" forState:UIControlStateNormal];
+    [self setControlsVisible:YES];
+}
+
+- (void)layoutEpisodePanel {
+    if (!_epPanel) return;
+    // Giữa thanh trên (44) và thanh dưới (88) — thanh nút luôn hiện khi bảng mở
+    CGFloat w = self.view.bounds.size.width, h = self.view.bounds.size.height, y = 44;
+    _epPanel.frame = CGRectMake(0, y, w, h - y - 88);
+    CGFloat gy = 0;
+    if (_epGroups) {
+        _epGroups.frame = CGRectMake(12, 10, MIN(w - 24, 120.0 * _epGroups.numberOfSegments), 30);
+        gy = 46;
+    }
+    _epGrid.frame = CGRectMake(0, gy, w, _epPanel.bounds.size.height - gy);
+    [_epGrid.collectionViewLayout invalidateLayout];
+}
+
+- (NSArray *)panelEpisodes {
+    NSArray *groups = CBArr(_detail, @"groups");
+    return _panelGroup < (NSInteger)groups.count ? (CBArr(groups[_panelGroup], @"episodes") ?: @[]) : @[];
+}
+
+- (void)panelGroupChanged {
+    _panelGroup = _epGroups.selectedSegmentIndex;
+    [_epGrid reloadData];
+    [self scrollPanelToCurrent];
+}
+
+- (void)scrollPanelToCurrent {
+    if (_panelGroup != _groupIndex || _index >= (NSInteger)[self panelEpisodes].count) return;
+    [_epGrid layoutIfNeeded];
+    [_epGrid scrollToItemAtIndexPath:[NSIndexPath indexPathForItem:_index inSection:0]
+                    atScrollPosition:UICollectionViewScrollPositionCenteredVertically animated:NO];
+}
+
+- (NSInteger)collectionView:(UICollectionView *)cv numberOfItemsInSection:(NSInteger)section {
+    return [self panelEpisodes].count;
+}
+
+- (CGSize)collectionView:(UICollectionView *)cv layout:(UICollectionViewLayout *)l sizeForItemAtIndexPath:(NSIndexPath *)ip {
+    CGFloat w = cv.bounds.size.width - 24;
+    NSInteger cols = MAX(4, (NSInteger)floor((w + 8) / ([CBTheme isPad] ? 96 : 76)));
+    return CGSizeMake(floor((w - 8 * (cols - 1)) / cols), 40);
+}
+
+- (UICollectionViewCell *)collectionView:(UICollectionView *)cv cellForItemAtIndexPath:(NSIndexPath *)ip {
+    CBPlayerEpCell *cell = [cv dequeueReusableCellWithReuseIdentifier:@"ep" forIndexPath:ip];
+    NSDictionary *ep = [self panelEpisodes][ip.item];
+    BOOL current = _panelGroup == _groupIndex && ip.item == _index;
+    BOOL watched = [[CBPrefs watchedEpisodes] containsObject:CBStr(ep, @"url") ?: @""];
+    cell.label.text = CBStr(ep, @"title");
+    cell.label.textColor = current ? [CBTheme focus] : (watched ? [UIColor colorWithWhite:1 alpha:0.45] : [UIColor whiteColor]);
+    cell.contentView.layer.borderWidth = current ? 2 : 0;
+    return cell;
+}
+
+- (void)collectionView:(UICollectionView *)cv didSelectItemAtIndexPath:(NSIndexPath *)ip {
+    [self selectEpisode:ip.item];
+}
+
+/// Chọn tập trong bảng (gỡ lỗi: lệnh «ep <số>»); đổi bản nếu đang xem bản khác trong bảng
+- (void)selectEpisode:(NSInteger)i {
+    NSInteger group = _epPanel ? _panelGroup : _groupIndex;
+    [self hideEpisodes];
+    if (group == _groupIndex && i == _index) return;
+    CBLog(@"Chọn tập %ld (bản %ld) từ bảng tập", (long)i, (long)group);
+    if (group != _groupIndex) {
+        [self savePosition];
+        _groupIndex = group;
+    }
+    [self openEpisode:i];
+}
+
 #pragma mark - Mở tập
 
 - (NSArray *)episodes {
@@ -370,6 +529,8 @@ static double CBDuration(AVPlayerItem *item) {
     _titleLabel.text = [NSString stringWithFormat:@"%@ — %@%@", CBStr(_detail, @"title") ?: @"", CBStr(ep, @"title") ?: @"", groupName];
     _prevButton.enabled = i > 0;
     _nextButton.enabled = i + 1 < (NSInteger)eps.count;
+    _episodesButton.hidden = eps.count <= 1 && groups.count <= 1;
+    [self.view setNeedsLayout];
     _resumeAt = [CBPrefs positionOf:_epUrl];
     _started = NO;
     _seekedResume = NO;
@@ -809,7 +970,7 @@ static double CBDuration(AVPlayerItem *item) {
     NSString *ep = _index < (NSInteger)eps.count ? CBStr(eps[_index], @"title") : nil;
     NSMutableDictionary *info = [NSMutableDictionary dictionary];
     info[MPMediaItemPropertyTitle] = ep ?: @"";
-    info[MPMediaItemPropertyArtist] = CBStr(_detail, @"title") ?: @"Côn Bằng TV Legacy";
+    info[MPMediaItemPropertyArtist] = CBStr(_detail, @"title") ?: @"Côn Bằng TV";
     if (isfinite(CBDuration(_item))) {
         info[MPMediaItemPropertyPlaybackDuration] = @(CBDuration(_item));
         info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = @(CMTimeGetSeconds(_player.currentTime));

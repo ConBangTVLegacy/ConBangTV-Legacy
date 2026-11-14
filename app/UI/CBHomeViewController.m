@@ -30,7 +30,7 @@
 
 - (instancetype)init {
     if ((self = [super initWithStyle:UITableViewStylePlain])) {
-        self.title = @"Côn Bằng TV Legacy";
+        self.title = @"Côn Bằng TV";  // tên ngắn: «… Legacy» không vừa dưới biểu tượng iPad
         _offsets = [NSMutableDictionary dictionary];
     }
     return self;
