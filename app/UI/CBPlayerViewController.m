@@ -11,6 +11,14 @@ static void *kKVO = &kKVO;
 /// Loại server «Trình phát của trang» (mở thẳng trang tập) — iOS 6 không có WebView chạy nổi
 static NSString *const kPageServer = @"page";
 
+/// Độ dài (giây) — chỉ đọc khi AVPlayer đã sẵn sàng. Trên iOS 6, đọc duration của tệp MP4 chưa tải xong thông tin là chặn luồng
+/// chính để chờ, mà bộ tải tệp của AVPlayer lại chạy trên luồng chính → kẹt tới hết hạn rồi báo lỗi -12935 (MP4 CLB Phim Xưa).
+static double CBDuration(AVPlayerItem *item) {
+    if (!item || item.status != AVPlayerItemStatusReadyToPlay) return NAN;
+    CMTime d = item.duration;
+    return CMTIME_IS_NUMERIC(d) ? CMTimeGetSeconds(d) : NAN;
+}
+
 @interface CBVideoView : UIView
 @end
 @implementation CBVideoView
@@ -536,8 +544,10 @@ static NSString *const kPageServer = @"page";
 
 - (void)playbackFailed:(NSError *)error {
     AVPlayerItemErrorLogEvent *ev = _item.errorLog.events.lastObject;
-    CBLog(@"AVPlayer lỗi (server %@): %@ — %ld %@", CBStr(_servers.count > _serverIdx ? _servers[_serverIdx] : nil, @"label"),
-          error.localizedDescription, (long)ev.errorStatusCode, ev.errorComment);
+    NSError *under = error.userInfo[NSUnderlyingErrorKey];
+    CBLog(@"AVPlayer lỗi (server %@): %@ [%@ %ld; gốc %@ %ld] — log %ld %@ %@",
+          CBStr(_servers.count > _serverIdx ? _servers[_serverIdx] : nil, @"label"), error.localizedDescription, error.domain,
+          (long)error.code, under.domain, (long)under.code, (long)ev.errorStatusCode, ev.errorDomain, ev.errorComment);
     // Giữ chỗ đang xem rồi thử server sau
     double now = CMTimeGetSeconds(_player.currentTime);
     if (_started && isfinite(now) && now > 5) _resumeAt = (int)now;
@@ -569,8 +579,7 @@ static NSString *const kPageServer = @"page";
 - (void)tick {
     if (!_player || _closed) return;
     double now = CMTimeGetSeconds(_player.currentTime);
-    CMTime d = _item.duration;
-    double dur = CMTIME_IS_NUMERIC(d) ? CMTimeGetSeconds(d) : NAN;
+    double dur = CBDuration(_item);
     if (!_started && now > 0.5 && _player.rate > 0) {
         _started = YES;
         [self hideStatus];
@@ -589,8 +598,8 @@ static NSString *const kPageServer = @"page";
 - (void)savePosition {
     if (!_started || !_player || !_epUrl) return;
     double now = CMTimeGetSeconds(_player.currentTime);
-    CMTime d = _item.duration;
-    double dur = CMTIME_IS_NUMERIC(d) ? CMTimeGetSeconds(d) : 0;
+    double dur = CBDuration(_item);
+    if (!isfinite(dur)) dur = 0;
     if (!isfinite(now) || now < 1) return;
     // Xem gần hết thì coi như xong (lần sau mở lại từ đầu) — như bản Windows / TV
     BOOL done = dur > 0 && now > dur - 90;
@@ -651,14 +660,14 @@ static NSString *const kPageServer = @"page";
 }
 
 - (void)sliderMoved {
-    CMTime d = _item.duration;
-    if (CMTIME_IS_NUMERIC(d)) _timeLabel.text = [CBTheme time:CMTimeGetSeconds(d) * _slider.value];
+    double dur = CBDuration(_item);
+    if (isfinite(dur)) _timeLabel.text = [CBTheme time:dur * _slider.value];
 }
 
 - (void)sliderUp {
     _dragging = NO;
-    CMTime d = _item.duration;
-    if (CMTIME_IS_NUMERIC(d)) [self seekTo:CMTimeGetSeconds(d) * _slider.value];
+    double dur = CBDuration(_item);
+    if (isfinite(dur)) [self seekTo:dur * _slider.value];
     [self setControlsVisible:YES];
 }
 
@@ -718,8 +727,8 @@ static NSString *const kPageServer = @"page";
     NSMutableDictionary *info = [NSMutableDictionary dictionary];
     info[MPMediaItemPropertyTitle] = ep ?: @"";
     info[MPMediaItemPropertyArtist] = CBStr(_detail, @"title") ?: @"Côn Bằng TV Legacy";
-    if (_item && CMTIME_IS_NUMERIC(_item.duration)) {
-        info[MPMediaItemPropertyPlaybackDuration] = @(CMTimeGetSeconds(_item.duration));
+    if (isfinite(CBDuration(_item))) {
+        info[MPMediaItemPropertyPlaybackDuration] = @(CBDuration(_item));
         info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = @(CMTimeGetSeconds(_player.currentTime));
         info[MPNowPlayingInfoPropertyPlaybackRate] = @(_player.rate);
     }
@@ -740,10 +749,9 @@ static NSString *const kPageServer = @"page";
 
 - (NSString *)statusLine {
     double now = _player ? CMTimeGetSeconds(_player.currentTime) : 0;
-    CMTime d = _item.duration;
     AVPlayerItemAccessLogEvent *ev = _item.accessLog.events.lastObject;
     return [NSString stringWithFormat:@"%@ | %@ / %@ | rate %.1f | server %@ | đệm %@ | bitrate %.0f kbps | khựng %ld | RAM %.0f MB",
-            _titleLabel.text, [CBTheme time:now], [CBTheme time:CMTIME_IS_NUMERIC(d) ? CMTimeGetSeconds(d) : NAN], _player.rate,
+            _titleLabel.text, [CBTheme time:now], [CBTheme time:CBDuration(_item)], _player.rate,
             CBStr(_servers.count > _serverIdx ? _servers[_serverIdx] : nil, @"label"),
             _item.playbackLikelyToKeepUp ? @"đủ" : @"thiếu", ev.observedBitrate / 1000, (long)ev.numberOfStalls, CBResidentMB()];
 }

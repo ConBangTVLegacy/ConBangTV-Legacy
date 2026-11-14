@@ -10,6 +10,7 @@
 #import "CBPrefs.h"
 #import "CBProfilesViewController.h"
 #import "CBSettingsViewController.h"
+#import <AVFoundation/AVFoundation.h>
 #import <QuartzCore/QuartzCore.h>
 #import <UIKit/UIKit.h>
 #include <dlfcn.h>
@@ -131,6 +132,16 @@
         [CBPrefs set:key value:v];
         [CBCore networkSettingsChanged];
         CBLog(@"[gỡ lỗi] %@ = %@", key, v);
+    } else if ([verb isEqualToString:@"rawplay"] || [verb isEqualToString:@"rawmedia"]) {
+        // rawplay <url>: AVPlayer phát thẳng; rawmedia <url>: qua cổng phát nội bộ của lõi (media.open) — ghi trạng thái 10 giây
+        NSString *url = arg;
+        if ([verb isEqualToString:@"rawmedia"]) {
+            id o = [CBCore sync:@"media.open" args:@{@"src": arg, @"hls": @NO}];
+            url = [o isKindOfClass:[NSDictionary class]] ? o[@"url"] : nil;
+            CBLog(@"[raw] media.open → %@", url);
+            if (!url) return;
+        }
+        [self rawPlay:url];
     } else if ([verb isEqualToString:@"reload"]) {
         UIViewController *root = nav.viewControllers.count ? nav.viewControllers[0] : nil;
         if ([root isKindOfClass:[CBHomeViewController class]]) [(CBHomeViewController *)root reload];
@@ -153,6 +164,33 @@
               player ? [@" | " stringByAppendingString:[player statusLine]] : @"");
     } else {
         CBLog(@"[gỡ lỗi] lệnh không hiểu: %@", cmd);
+    }
+}
+
+static AVPlayer *gRawPlayer;
+
++ (void)rawPlay:(NSString *)url {
+    [gRawPlayer pause];
+    AVPlayerItem *item = [AVPlayerItem playerItemWithURL:[NSURL URLWithString:url]];
+    gRawPlayer = [AVPlayer playerWithPlayerItem:item];
+    [gRawPlayer play];
+    CBLog(@"[raw] phát %@", url);
+    for (int i = 1; i <= 10; i++) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(i * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            AVPlayerItem *it = gRawPlayer.currentItem;
+            if (it != item) return;
+            NSError *e = it.error;
+            NSError *u = e.userInfo[NSUnderlyingErrorKey];
+            AVPlayerItemAccessLogEvent *a = it.accessLog.events.lastObject;
+            AVPlayerItemErrorLogEvent *el = it.errorLog.events.lastObject;
+            CBLog(@"[raw] %ds: status %ld, t=%.1f, dài %.0f, rate %.1f, đệm %@ | lỗi %@ %ld (gốc %@ %ld) %@ | access %@ %.0f byte | errorLog %ld %@ %@",
+                  i, (long)it.status, CMTimeGetSeconds(gRawPlayer.currentTime),
+                  it.status == AVPlayerItemStatusReadyToPlay && CMTIME_IS_NUMERIC(it.duration) ? CMTimeGetSeconds(it.duration) : -1, gRawPlayer.rate,
+                  it.playbackLikelyToKeepUp ? @"đủ" : @"thiếu", e.domain, (long)e.code, u.domain, (long)u.code,
+                  e.localizedFailureReason, a.URI, (double)a.numberOfBytesTransferred, (long)el.errorStatusCode, el.errorDomain,
+                  el.errorComment);
+            if (i == 10) [gRawPlayer pause];
+        });
     }
 }
 
