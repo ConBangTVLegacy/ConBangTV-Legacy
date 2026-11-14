@@ -114,7 +114,12 @@ static BOOL gBusy;
         });
         return;
     }
+    // Ghi chú phát hành viết markdown: bỏ **, `, đổi «- » đầu dòng thành «• » cho hộp thoại chữ thường
     NSString *notes = CBStr(rel, @"body") ?: @"";
+    notes = [[notes stringByReplacingOccurrencesOfString:@"**" withString:@""] stringByReplacingOccurrencesOfString:@"`" withString:@""];
+    notes = [notes stringByReplacingOccurrencesOfString:@"\r" withString:@""];
+    notes = [[@"\n" stringByAppendingString:notes] stringByReplacingOccurrencesOfString:@"\n- " withString:@"\n• "];
+    notes = [notes stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
     if (notes.length > 500) notes = [[notes substringToIndex:500] stringByAppendingString:@"…"];
     NSString *msg = [NSString stringWithFormat:@"Đang dùng bản %@.%@%@", cur, notes.length ? @"\n\n" : @"", notes];
     [[CBAlert title:[NSString stringWithFormat:@"Có bản mới %@", version] message:msg cancel:@"Để sau" others:@[@"Cập nhật"]
