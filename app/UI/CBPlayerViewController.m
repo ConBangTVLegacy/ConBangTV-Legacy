@@ -42,6 +42,7 @@ static double CBDuration(AVPlayerItem *item) {
     NSMutableArray *_probeResults;  // kết quả site.videoOf từng server (NSNull = chưa hỏi, {pending} = đang hỏi)
     NSInteger _probeNext;           // server tiếp theo được xét theo thứ tự ưu tiên
     BOOL _probing;                  // đang chọn server — đã chọn được (hoặc hết server) thì kết quả về sau không làm phát lại
+    BOOL _graceArmed, _skipPending;  // server sau đã có link phát được: chờ server đứng trước thêm 2,5 s rồi bỏ qua
     NSInteger _token;
     int _resumeAt;
     BOOL _started, _closed, _dragging, _seekedResume;
@@ -405,8 +406,9 @@ static double CBDuration(AVPlayerItem *item) {
     for (id s in CBArr(src, @"servers") ?: @[]) {
         if (!CBIsDict(s) || [CBStr(s, @"type") isEqualToString:kPageServer]) continue;
         NSString *type = CBStr(s, @"type");
-        if (pref && [type isEqualToString:pref]) [first insertObject:s atIndex:0];
-        else if (worked && [type isEqualToString:worked]) [first addObject:s];
+        // Server bản iOS 6 đã phát được lên đầu (lựa chọn đồng bộ từ TV có thể là trình phát nhúng — iOS 6 không chạy)
+        if (worked && [type isEqualToString:worked]) [first insertObject:s atIndex:0];
+        else if (pref && [type isEqualToString:pref]) [first addObject:s];
         else [list addObject:s];
     }
     return [first arrayByAddingObjectsFromArray:list];
@@ -418,6 +420,8 @@ static double CBDuration(AVPlayerItem *item) {
     if (t != _token || _closed) return;
     _probeNext = k;
     _probing = YES;
+    _graceArmed = NO;
+    _skipPending = NO;
     if (!_probeResults || _probeResults.count != _servers.count) {
         _probeResults = [NSMutableArray array];
         for (NSUInteger i = 0; i < _servers.count; i++) [_probeResults addObject:[NSNull null]];
@@ -438,11 +442,36 @@ static double CBDuration(AVPlayerItem *item) {
     [self advanceProbe:t];
 }
 
+/// Có server sau vị trí k đã trả link phát thẳng được (HLS / tệp video)?
+- (BOOL)playableAfter:(NSInteger)k {
+    for (NSInteger i = k + 1; i < (NSInteger)_probeResults.count; i++) {
+        NSDictionary *v = _probeResults[i];
+        if (!CBIsDict(v) || CBBool(v, @"pending", NO)) continue;
+        NSString *url = CBStr(v, @"url");
+        if (url && (CBBool(v, @"file", NO) || [[[NSURL URLWithString:url].path lowercaseString] hasSuffix:@".m3u8"])) return YES;
+    }
+    return NO;
+}
+
 - (void)advanceProbe:(NSInteger)t {
     if (t != _token || _closed || !_probing) return;
     while (_probeNext < (NSInteger)_servers.count) {
         NSDictionary *v = _probeResults[_probeNext];
         if (!CBIsDict(v) || CBBool(v, @"pending", NO)) {
+            if (_skipPending) {
+                CBLog(@"Server %@: chờ quá lâu — bỏ qua", CBStr(_servers[_probeNext], @"label"));
+                _probeNext++;
+                continue;
+            }
+            if (!_graceArmed && [self playableAfter:_probeNext]) {
+                // Server sau đã sẵn link phát được: chờ server đứng trước thêm 2,5 s (thường là trình phát nhúng — chậm, vô ích)
+                _graceArmed = YES;
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                    if (t != self->_token || !self->_probing) return;
+                    self->_skipPending = YES;
+                    [self advanceProbe:t];
+                });
+            }
             NSDictionary *s = _servers[_probeNext];
             [_serverButton setTitle:CBStr(s, @"label") ?: @"Server" forState:UIControlStateNormal];
             return;  // chờ server đứng trước trả lời

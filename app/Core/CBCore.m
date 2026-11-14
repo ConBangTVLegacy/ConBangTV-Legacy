@@ -54,6 +54,8 @@ static void CBCallback(uint64_t cid, const char *json) {
         [gPending removeObjectForKey:key];
         CBDone done = h[1];
         id err = msg[@"err"];
+        long long ms = CBNowMs() - [h[3] longLongValue];
+        if (ms > 1500) CBLog(@"[lõi] %@ chậm: %lld ms", h[2], ms);
         if ([err isKindOfClass:[NSString class]]) {
             CBLog(@"[lõi] %@ lỗi sau %lld ms: %@", h[2], CBNowMs() - [h[3] longLongValue], err);
             done(nil, err);
@@ -81,7 +83,10 @@ static void CBCallback(uint64_t cid, const char *json) {
 }
 
 + (id)sync:(NSString *)method args:(NSDictionary *)args error:(NSString **)error {
+    long long t0 = CBNowMs();
     char *r = cbtv_call_sync(method.UTF8String, CBJSONString(args ?: @{}).UTF8String);
+    long long ms = CBNowMs() - t0;
+    if (ms > 300) CBLog(@"[lõi] gọi đồng bộ %@ chặn luồng chính %lld ms", method, ms);
     id v = CBParse(r);
     cbtv_free(r);
     if (![v isKindOfClass:[NSDictionary class]]) {

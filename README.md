@@ -28,6 +28,9 @@ Cổng phát nội bộ 127.0.0.1 (media_proxy: bỏ quảng cáo, cắt PNG ng�
 | `tools/cblaunch/` | Mở app / đánh thức / mở khoá máy từ SSH (SpringBoardServices) |
 | `tools/symcheck/`, `tools/symlist.py` | Tra trên máy iOS 6 mọi ký hiệu tệp chạy cần — bắt lỗi «dyld: Symbol not found» trước khi chạy |
 | `patches/core-ios6.patch` | Vá nhỏ cho lõi chung (Darwin không có `TCP_INFO`) — chưa đưa vào repo chính |
+| `patches/core-media-ranges.patch` | Cổng phát nội bộ: nối khúc 8 MB của k-20 cả với Range đóng (AVPlayer) — sửa MP4 CLB Phim Xưa; log yêu cầu tệp video |
+| `patches/ffi-ios-wakeup.patch` | Nhịp 50 ms trong lõi trên iOS: tokio đôi khi không đánh thức luồng khi app đẩy việc vào (lõi «đứng» tới 20 s) |
+| `app/` | **App thật — Côn Bằng TV Legacy** (`vn.conbangtv.legacy`): trang chủ, tìm kiếm, trang phim, trình phát, người xem, cài đặt |
 
 ## Dựng (máy Linux)
 
@@ -53,6 +56,15 @@ cd src/spike/01-player && THEOS=~/theos make package  # → packages/*.deb (ký 
 - **Chứng chỉ:** iOS 6 không tin Let's Encrypt (CDN video, ảnh); chuỗi Cloudflare dựa vào gốc GlobalSign R1 hết hạn 28/01/2028 →
   lõi dùng rustls + `cacert.pem` (Mozilla) đóng kèm qua `SSL_CERT_FILE`, không phụ thuộc kho gốc của máy.
 - **AVPlayer dừng khi máy tự khoá** → `idleTimerDisabled = YES` lúc phát.
+- **Ảnh WebP** (ảnh bìa KKPhim, yanhh3d…): iOS 6 không đọc được → libwebp (chỉ phần giải mã, `tools/vendor-libwebp.sh`).
+- **MP4 tải tuần tự:** đọc `AVPlayerItem.duration` trước khi sẵn sàng là chặn luồng chính, mà bộ tải tệp của AVPlayer lại cần luồng
+  chính → kẹt tới hết hạn (lỗi CoreMedia -12935). Chỉ đọc duration khi `ReadyToPlay`. AVPlayer xin Range kiểu đóng
+  (`bytes=0-<cuối>`) → vá cổng phát nội bộ.
+- **tokio trên armv7 iOS 6:** việc đẩy vào từ ngoài (`cbtv_call`) có lúc không đánh thức luồng nào — ngăn xếp lấy bằng lệnh gỡ lỗi
+  `crash`: mọi luồng ngủ ở `park_condvar` / `Driver::turn` (kqueue `EVFILT_USER` thì chạy đúng, đã kiểm bằng `tools/kqtest`) → nhịp
+  50 ms (`ffi-ios-wakeup.patch`).
+- **Cài bản mới:** đừng chạy `uicache` lúc app đang mở (SpringBoard đơ, phải respring); cài xong mở lại app ngay — bản thử giữ màn
+  hình sáng, máy khoá lâu thì tắt Wi-Fi, mất SSH.
 
 ## Kết quả trên iPhone 5 (iOS 6.1.4)
 

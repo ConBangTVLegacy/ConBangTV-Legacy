@@ -142,6 +142,10 @@
             if (!url) return;
         }
         [self rawPlay:url];
+    } else if ([verb isEqualToString:@"crash"]) {
+        // Dừng app có chủ đích: iOS ghi báo cáo crash kèm ngăn xếp của mọi luồng (xem lõi đang kẹt ở đâu)
+        CBLog(@"[gỡ lỗi] tự dừng để lấy ngăn xếp các luồng");
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ abort(); });
     } else if ([verb isEqualToString:@"reload"]) {
         UIViewController *root = nav.viewControllers.count ? nav.viewControllers[0] : nil;
         if ([root isKindOfClass:[CBHomeViewController class]]) [(CBHomeViewController *)root reload];
