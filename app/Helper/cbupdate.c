@@ -2,8 +2,9 @@
 //   /usr/libexec/conbangtv/cbupdate <tệp .deb> [pid app]
 // App tải .deb từ GitHub Releases (qua lõi, đã kiểm SHA-256) vào /var/mobile/Documents/ConBangTV-update/ rồi gọi công cụ này.
 // Chỉ nhận tệp .deb nằm trong đúng thư mục đó và đúng gói vn.conbangtv.legacy (dpkg-deb -f … Package) — không cài gói khác.
-// Kiểm xong thì tách nền (app chờ được mã thoát ngay), đóng app, dpkg -i, uicache (quyền mobile — app đã tắt, SpringBoard không
-// đơ), xoá tệp, mở lại app (SpringBoardServices, quyền com.apple.springboard.launchapplications như tools/cblaunch).
+// Kiểm xong thì tách nền (app chờ được mã thoát ngay), đóng app, dpkg -i, xoá tệp, mở lại app (SpringBoardServices, quyền
+// com.apple.springboard.launchapplications như tools/cblaunch). Không uicache, trừ khi bản mới đổi tên hiện dưới biểu tượng
+// (khi đó uicache rồi khởi động lại SpringBoard) — uicache trên iOS 6 từng làm SpringBoard của iPad treo.
 // Nhật ký: /var/mobile/Documents/ConBangTV-update/install.log
 #include <CoreFoundation/CoreFoundation.h>
 #include <dlfcn.h>
@@ -65,6 +66,25 @@ static int run(char *const argv[], char *out, size_t outSize) {
     while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {
     }
     return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+}
+
+/// Tên hiện dưới biểu tượng (CFBundleDisplayName trong Info.plist dạng XML của app); rỗng nếu không đọc được
+static void displayName(char *out, size_t size) {
+    out[0] = 0;
+    FILE *f = fopen("/Applications/ConBangTV.app/Info.plist", "r");
+    if (!f) return;
+    char buf[16384];
+    size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+    fclose(f);
+    buf[n] = 0;
+    char *k = strstr(buf, "<key>CFBundleDisplayName</key>");
+    char *s = k ? strstr(k, "<string>") : NULL;
+    char *e = s ? strstr(s, "</string>") : NULL;
+    if (!s || !e) return;
+    s += 8;
+    size_t len = (size_t)(e - s) < size - 1 ? (size_t)(e - s) : size - 1;
+    memcpy(out, s, len);
+    out[len] = 0;
 }
 
 static int launchApp(void) {
@@ -145,28 +165,45 @@ int main(int argc, char **argv) {
         if (kill(app, 0) == 0) kill(app, SIGKILL);
         logf_("đã đóng app%s", "");
     }
+    char before[256], after[256];
+    displayName(before, sizeof(before));
     char *install[] = {"/usr/bin/dpkg", "-i", real, NULL};
     int rc = run(install, NULL, 0);
     char code[16];
     snprintf(code, sizeof(code), "%d", rc);
     logf_("dpkg -i → %s", code);
     unlink(real);
-    // uicache bằng quyền mobile (tên / biểu tượng mới); app đã tắt nên SpringBoard không đơ
-    pid_t u = fork();
-    if (u == 0) {
-        setgid(MOBILE_UID);
-        setuid(MOBILE_UID);
-        setenv("HOME", "/var/mobile", 1);
-        execl("/usr/bin/uicache", "uicache", (char *)NULL);
-        _exit(127);
+    displayName(after, sizeof(after));
+    // Cập nhật thường KHÔNG chạy uicache: app vẫn ở chỗ cũ nên SpringBoard mở được ngay; uicache trên iOS 6 có lúc làm
+    // SpringBoard treo (iPad mini 1, 14/11/2026 — phải khởi động lại SpringBoard). Chỉ khi đổi tên hiện dưới biểu tượng mới
+    // uicache (quyền mobile) rồi khởi động lại SpringBoard để nhận tên mới — kể cả uicache làm treo thì cũng được gỡ ngay.
+    if (rc == 0 && strcmp(before, after) != 0) {
+        logf_("đổi tên app → %s: uicache + khởi động lại SpringBoard", after);
+        pid_t u = fork();
+        if (u == 0) {
+            setgid(MOBILE_UID);
+            setuid(MOBILE_UID);
+            setenv("HOME", "/var/mobile", 1);
+            execl("/usr/bin/uicache", "uicache", (char *)NULL);
+            _exit(127);
+        }
+        if (u > 0) {
+            int status;
+            for (int i = 0; i < 300 && waitpid(u, &status, WNOHANG) == 0; i++) usleep(100000);  // tối đa 30 giây
+            kill(u, SIGKILL);
+        }
+        char *respring[] = {"/usr/bin/killall", "-9", "SpringBoard", NULL};
+        run(respring, NULL, 0);
+        sleep(10);
+    } else {
+        sleep(1);
     }
-    if (u > 0) {
-        int status;
-        waitpid(u, &status, 0);
-        logf_("uicache xong%s", "");
+    int launched = launchApp();
+    if (launched != 0) {  // SpringBoard đang bận: thử lại một lần
+        sleep(3);
+        launched = launchApp();
     }
-    sleep(1);
-    snprintf(code, sizeof(code), "%d", launchApp());
+    snprintf(code, sizeof(code), "%d", launched);
     logf_("mở lại app → %s", code);
     return rc == 0 ? 0 : 1;
 }
