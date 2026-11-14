@@ -75,7 +75,8 @@ App (từ 0.4.0) tự kiểm [GitHub Releases](https://github.com/ConBangTVLegac
 `vn.conbangtv.legacy_<bản>_iphoneos-arm.deb` thì hỏi «Cập nhật / Để sau», tải qua lõi (iOS 6 không tự vào được GitHub), kiểm
 kích thước + SHA-256 (`digest` GitHub ghi sẵn), rồi gọi `/usr/libexec/conbangtv/cbupdate` (`Helper/cbupdate.c`, setuid root —
 `layout/DEBIAN/postinst` đặt quyền): chỉ cài `.deb` trong `Documents/ConBangTV-update/` đúng gói `vn.conbangtv.legacy`, đóng app,
-`dpkg -i`, `uicache`, mở lại app (nhật ký `Documents/ConBangTV-update/install.log`). Thử: pref `update_api` trỏ tới danh sách
+`dpkg -i`, mở lại app — **không `uicache`** (trên iOS 6 từng làm SpringBoard của iPad treo; chỉ khi đổi tên hiện dưới
+biểu tượng mới `uicache` + khởi động lại SpringBoard) (nhật ký `Documents/ConBangTV-update/install.log`). Thử: pref `update_api` trỏ tới danh sách
 release khác.
 
 Phát hành bản mới:
