@@ -48,9 +48,10 @@ Cổng phát nội bộ 127.0.0.1 (media_proxy: bỏ quảng cáo, cắt PNG ng�
 Bản thử (không `FINALPACKAGE=1`) có `Debug/CBDebug.m`: đọc lệnh từ `Documents/ConBangTV-cmd.txt` (`shot`, `film`, `play`, `search`,
 `settings`, `profiles`, `sync`, `syncpair`, `pick`, `scroll`, `wait`, `status`, `core`, `pref`…) để thử tự động qua SSH.
 
-## Dựng (máy Linux)
+## Dựng (máy Linux, vd Ubuntu 22.04+)
 
-`src/` = bản chép thư mục này, `upstream/` = clone repo chính, `target-core/` = lõi đã dựng. Lần đầu: `bash src/tools/setup-theos.sh`,
+Thư mục làm việc: `<làm việc>/src/` = repo này, `<làm việc>/upstream/` = clone repo chính (build-core.sh tự clone),
+`<làm việc>/target-core/` = lõi đã dựng (Makefile của app tự tìm ở đó; đổi bằng `CORE_LIB_DIR=…`). Lần đầu: `bash src/tools/setup-theos.sh`,
 Rust nightly có `rust-src` (`rustup toolchain install nightly --profile minimal --component rust-src`). Sau đó:
 
 ```sh

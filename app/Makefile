@@ -30,7 +30,8 @@ $(error Chưa có libwebp — chạy bash ../tools/vendor-libwebp.sh)
 endif
 ConBangTV_FILES += $(addprefix $(WEBP)/,$(WEBP_FILES))
 ConBangTV_CFLAGS += -I$(WEBP)/src -I$(WEBP)
-CORE_LIB_DIR ?= $(HOME)/work/target-core/armv7-apple-ios6/release
+# Lõi do tools/build-core.sh dựng ở <thư mục chứa repo>/target-core (cạnh repo)
+CORE_LIB_DIR ?= $(abspath $(CURDIR)/../../target-core/armv7-apple-ios6/release)
 ConBangTV_LDFLAGS = -L$(CORE_LIB_DIR) -lconbang_core
 
 include $(THEOS_MAKE_PATH)/application.mk
