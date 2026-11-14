@@ -4,6 +4,9 @@
 #import "CBPrefs.h"
 #import "CBTheme.h"
 
+enum { CBAskPin = 1, CBAskAdd = 2 };
+static const NSUInteger CBMaxProfiles = 8;
+
 @interface CBProfilesViewController () <UIAlertViewDelegate>
 @end
 
@@ -24,33 +27,62 @@
     _title.textAlignment = NSTextAlignmentCenter;
     _title.text = @"Ai đang xem?";
     [self.view addSubview:_title];
+    [self buildTiles];
+}
+
+- (UIButton *)tileWithAvatar:(UIView *)avatar name:(NSString *)text tag:(NSInteger)tag {
+    UIButton *b = [UIButton buttonWithType:UIButtonTypeCustom];
+    b.tag = tag;
+    [b addTarget:self action:@selector(tapped:) forControlEvents:UIControlEventTouchUpInside];
+    avatar.userInteractionEnabled = NO;
+    avatar.tag = 1;
+    [b addSubview:avatar];
+    UILabel *name = [[UILabel alloc] init];
+    name.tag = 2;
+    name.backgroundColor = [UIColor clearColor];
+    name.textColor = [CBTheme text];
+    name.font = [CBTheme font:15];
+    name.textAlignment = NSTextAlignmentCenter;
+    name.adjustsFontSizeToFitWidth = YES;
+    name.minimumScaleFactor = 0.7;
+    name.text = text;
+    [b addSubview:name];
+    return b;
+}
+
+/// Ô cho từng người xem + ô «Thêm» (giống màn chọn người xem bản Windows)
+- (void)buildTiles {
+    for (UIView *v in _tiles) [v removeFromSuperview];
     _profiles = [CBPrefs profiles];
     _tiles = [NSMutableArray array];
     NSString *current = [CBPrefs profileId];
     for (NSUInteger i = 0; i < _profiles.count; i++) {
         NSDictionary *p = _profiles[i];
-        UIButton *b = [UIButton buttonWithType:UIButtonTypeCustom];
-        b.tag = (NSInteger)i;
-        [b addTarget:self action:@selector(tapped:) forControlEvents:UIControlEventTouchUpInside];
         UIView *avatar = [CBTheme avatarFor:p size:80];
-        avatar.userInteractionEnabled = NO;
-        avatar.tag = 1;
         if ([(CBStr(p, @"id") ?: @"") isEqualToString:current]) {
             avatar.layer.borderColor = [CBTheme focus].CGColor;
             avatar.layer.borderWidth = 3;
         }
-        [b addSubview:avatar];
-        UILabel *name = [[UILabel alloc] init];
-        name.tag = 2;
-        name.backgroundColor = [UIColor clearColor];
-        name.textColor = [CBTheme text];
-        name.font = [CBTheme font:15];
-        name.textAlignment = NSTextAlignmentCenter;
-        name.text = [NSString stringWithFormat:@"%@%@", CBStr(p, @"name") ?: @"?", CBStr(p, @"pin") ? @" 🔒" : @""];
-        [b addSubview:name];
-        [self.view addSubview:b];
-        [_tiles addObject:b];
+        NSString *name = [NSString stringWithFormat:@"%@%@", CBStr(p, @"name") ?: @"?", CBStr(p, @"pin") ? @" 🔒" : @""];
+        [_tiles addObject:[self tileWithAvatar:avatar name:name tag:(NSInteger)i]];
     }
+    if (_profiles.count < CBMaxProfiles) {
+        UILabel *plus = [[UILabel alloc] initWithFrame:CGRectMake(0, 0, 80, 80)];
+        plus.backgroundColor = [CBTheme surface];
+        plus.textColor = [CBTheme dim];
+        plus.textAlignment = NSTextAlignmentCenter;
+        plus.font = [CBTheme font:44];
+        plus.text = @"+";
+        plus.layer.cornerRadius = 40;
+        plus.layer.borderColor = [CBTheme dim].CGColor;
+        plus.layer.borderWidth = 2;
+        plus.clipsToBounds = YES;
+        UIButton *add = [self tileWithAvatar:plus name:@"Thêm" tag:-1];
+        [(UILabel *)[add viewWithTag:2] setTextColor:[CBTheme dim]];
+        [_tiles addObject:add];
+    }
+    for (UIView *v in _tiles) [self.view addSubview:v];
+    [self.view setNeedsLayout];
 }
 
 - (void)viewDidLayoutSubviews {
@@ -68,11 +100,19 @@
         UIButton *b = _tiles[i];
         b.frame = CGRectMake(x0 + c * tw, y0 + r * th, tw, th);
         [b viewWithTag:1].frame = CGRectMake((tw - 80) / 2, 4, 80, 80);
-        [b viewWithTag:2].frame = CGRectMake(0, 90, tw, 22);
+        [b viewWithTag:2].frame = CGRectMake(4, 90, tw - 8, 22);
     }
 }
 
 - (void)tapped:(UIButton *)b {
+    if (b.tag < 0) {
+        UIAlertView *a = [[UIAlertView alloc] initWithTitle:@"Thêm người xem" message:@"Tên người xem" delegate:self
+                                          cancelButtonTitle:@"Huỷ" otherButtonTitles:@"Thêm", nil];
+        a.tag = CBAskAdd;
+        a.alertViewStyle = UIAlertViewStylePlainTextInput;
+        [a show];
+        return;
+    }
     NSDictionary *p = _profiles[b.tag];
     if (!CBStr(p, @"pin")) {
         [self choose:p];
@@ -81,14 +121,27 @@
     _pending = p;
     UIAlertView *a = [[UIAlertView alloc] initWithTitle:CBStr(p, @"name") message:@"Nhập mã PIN" delegate:self
                                       cancelButtonTitle:@"Huỷ" otherButtonTitles:@"Vào", nil];
+    a.tag = CBAskPin;
     a.alertViewStyle = UIAlertViewStyleSecureTextInput;
     [a textFieldAtIndex:0].keyboardType = UIKeyboardTypeNumberPad;
     [a show];
 }
 
 - (void)alertView:(UIAlertView *)a clickedButtonAtIndex:(NSInteger)index {
-    if (index == a.cancelButtonIndex || !_pending) return;
-    if ([CBPrefs checkPin:[a textFieldAtIndex:0].text profile:_pending]) {
+    if (index == a.cancelButtonIndex) {
+        _pending = nil;
+        return;
+    }
+    NSString *text = [[a textFieldAtIndex:0].text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+    if (a.tag == CBAskAdd) {
+        if (!text.length) return;
+        NSDictionary *np = [CBPrefs addProfile:text];
+        CBLog(@"Thêm người xem %@", CBStr(np, @"name"));
+        [self buildTiles];
+        return;
+    }
+    if (!_pending) return;
+    if ([CBPrefs checkPin:text profile:_pending]) {
         [self choose:_pending];
     } else {
         [[[UIAlertView alloc] initWithTitle:@"Sai mã PIN" message:nil delegate:nil cancelButtonTitle:@"OK" otherButtonTitles:nil] show];

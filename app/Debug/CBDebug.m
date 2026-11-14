@@ -34,10 +34,37 @@
     NSString *text = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:NULL];
     if (!text) return;
     [[NSFileManager defaultManager] removeItemAtPath:path error:NULL];
+    NSMutableArray *cmds = [NSMutableArray array];
     for (NSString *line in [text componentsSeparatedByCharactersInSet:[NSCharacterSet newlineCharacterSet]]) {
         NSString *cmd = [line stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
-        if (cmd.length) [self run:cmd];
+        if (cmd.length) [cmds addObject:cmd];
     }
+    [self runAll:cmds];
+}
+
+/// Chạy lần lượt; «wait <giây>» hoãn các lệnh sau (chờ hiệu ứng chuyển màn trước khi chụp)
++ (void)runAll:(NSArray *)cmds {
+    for (NSUInteger i = 0; i < cmds.count; i++) {
+        NSString *cmd = cmds[i];
+        if ([cmd hasPrefix:@"wait"]) {
+            double s = [[cmd substringFromIndex:4] doubleValue];
+            NSArray *rest = [cmds subarrayWithRange:NSMakeRange(i + 1, cmds.count - i - 1)];
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)((s > 0 ? s : 1) * NSEC_PER_SEC)),
+                           dispatch_get_main_queue(), ^{ [self runAll:rest]; });
+            return;
+        }
+        [self run:cmd];
+    }
+}
+
+/// Bảng / khung cuộn đầu tiên (theo chiều sâu) của màn đang hiện
++ (UIScrollView *)scrollIn:(UIView *)v {
+    if ([v isKindOfClass:[UIScrollView class]] && ![v isKindOfClass:[UITextView class]]) return (UIScrollView *)v;
+    for (UIView *s in v.subviews) {
+        UIScrollView *f = [self scrollIn:s];
+        if (f) return f;
+    }
+    return nil;
 }
 
 + (CBNavController *)nav {
@@ -164,6 +191,15 @@
         [player selectServer:[arg integerValue]];
     } else if ([verb isEqualToString:@"close"]) {
         [player close];
+    } else if ([verb isEqualToString:@"scroll"]) {
+        // scroll <y> — cuộn tới y điểm (âm = cuối danh sách)
+        UIViewController *top = [self top];
+        if ([top isKindOfClass:[UINavigationController class]]) top = [(UINavigationController *)top topViewController];
+        UIScrollView *sv = [self scrollIn:top.view];
+        CGFloat maxY = MAX(0, sv.contentSize.height - sv.bounds.size.height + sv.contentInset.bottom);
+        CGFloat y = [arg doubleValue] < 0 ? maxY : MIN(maxY, [arg doubleValue]);
+        [sv setContentOffset:CGPointMake(sv.contentOffset.x, y) animated:NO];
+        CBLog(@"[gỡ lỗi] cuộn %@ tới %.0f / %.0f", NSStringFromClass([sv class]), y, maxY);
     } else if ([verb isEqualToString:@"status"]) {
         CBLog(@"[trạng thái] %@", [CBImages debugStatus]);
         CBLog(@"[trạng thái] màn %@ | RAM %.1f MB%@", NSStringFromClass([[self top] class]), CBResidentMB(),

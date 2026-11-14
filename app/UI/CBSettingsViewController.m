@@ -99,6 +99,8 @@ typedef NS_ENUM(NSInteger, CBAlert) { CBAlertAdd = 1, CBAlertRename, CBAlertPin,
         c.backgroundColor = [CBTheme surface];
         c.textLabel.backgroundColor = [UIColor clearColor];
         c.detailTextLabel.backgroundColor = [UIColor clearColor];
+        c.textLabel.adjustsFontSizeToFitWidth = YES;  // chữ hơi dài (cạnh công tắc) co lại thay vì bị cắt «…»
+        c.textLabel.minimumScaleFactor = 0.75;
         UIView *sel = [[UIView alloc] init];
         sel.backgroundColor = [CBTheme surface2];
         c.selectedBackgroundView = sel;
@@ -148,7 +150,9 @@ typedef NS_ENUM(NSInteger, CBAlert) { CBAlertAdd = 1, CBAlertRename, CBAlertPin,
         case CBSecSites: {
             if (ip.row == 0) return [self switchCell:tv text:@"Trang chủ tổng hợp" on:[CBPrefs homeMix] tag:2];
             NSString *url = _sites[ip.row - 1];
-            UITableViewCell *c = [self cell:tv text:[self siteName:url] detail:CBHostOf(url)];
+            // Tên trang đã kèm tên miền khi cần (vd «CLB Phim Xưa (sc.k-20.xyz)») — không lặp ở cột phải
+            NSString *name = [self siteName:url], *host = CBHostOf(url);
+            UITableViewCell *c = [self cell:tv text:name detail:(host && [name rangeOfString:host].location == NSNotFound) ? host : nil];
             c.accessoryType = [url isEqualToString:[CBPrefs baseUrl]] ? UITableViewCellAccessoryCheckmark : UITableViewCellAccessoryNone;
             return c;
         }
