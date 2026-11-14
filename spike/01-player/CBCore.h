@@ -1,6 +1,6 @@
 #import <Foundation/Foundation.h>
 
-/// Lõi Rust chung của bản Windows / Linux (ChimToTV linux/core + linux/ffi, dựng cho iOS 6 → libconbang_core.a).
+/// Lõi Rust chung của bản Windows / Linux (repo chính: linux/core + linux/ffi, dựng cho iOS 6 → libconbang_core.a).
 /// Giao tiếp bằng JSON như bản Windows (windows/ConBangTV/Core/Native.cs).
 @interface CBCore : NSObject
 /// Mở lõi một lần: thư mục dữ liệu Documents/cbtv-core, chứng chỉ gốc Mozilla đóng kèm (SSL_CERT_FILE → rustls-native-certs).

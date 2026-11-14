@@ -1,7 +1,7 @@
-# Côn Bằng TV — bản iOS 6 (ConBangTV_Legacy)
+# Côn Bằng TV Legacy — bản iOS 6
 
 Bản Côn Bằng TV cho máy iOS 6 đã jailbreak (máy thử: **iPhone 5 iOS 6.1.4**, **iPad mini 1** — chưa thử). App gốc và lõi chung ở repo
-[Circling5714/ChimToTV](https://github.com/Circling5714/ChimToTV); bản iPad hiện tại (Swift / SwiftUI / WKWebView, iOS 15+) không
+[repo chính](https://github.com/Circling5714/ChimToTV); bản iPad hiện tại (Swift / SwiftUI / WKWebView, iOS 15+) không
 chạy được trên iOS 6 nên bản này viết riêng.
 
 ## Kiến trúc (đã chứng minh chạy trên iPhone 5 — 14/11/2026)
@@ -10,7 +10,7 @@ chạy được trên iOS 6 nên bản này viết riêng.
 UIKit + Objective-C (vỏ app, armv7, iOS 6.0)
   │  JSON qua 4 hàm C: cbtv_init / cbtv_call / cbtv_call_sync / cbtv_free   (như bản Windows)
   ▼
-Lõi Rust chung của ChimToTV (linux/core + linux/ffi) dựng cho armv7 iOS 6 → libconbang_core.a
+Lõi Rust chung của repo chính (linux/core + linux/ffi) dựng cho armv7 iOS 6 → libconbang_core.a
   │  đọc trang / API phim, cài đặt, mạng (rustls + gốc Mozilla đóng kèm, DNS mã hoá, vượt chặn, proxy), đồng bộ…
   ▼
 Cổng phát nội bộ 127.0.0.1 (media_proxy: bỏ quảng cáo, cắt PNG ngụy trang…) ──► AVPlayer (giải mã phần cứng 1080p)
@@ -23,15 +23,15 @@ Cổng phát nội bộ 127.0.0.1 (media_proxy: bỏ quảng cáo, cắt PNG ng�
 | `spike/01-player/` | App thử (Theos): bài kiểm mạng / TLS, phát AVPlayer, gọi lõi Rust; chạy tự động qua SSH — xem README trong đó |
 | `spike/02-rust/` | Thử Rust tối thiểu (std + tokio + reqwest) — bước đệm, nay dùng lõi thật |
 | `tools/setup-theos.sh` | Cài Theos + toolchain (clang 11, ld64-609) + SDK iPhoneOS 9.3 vào `~/theos`, **vá SDK** cho iOS 6 |
-| `tools/build-core.sh` | Dựng lõi chung: clone ChimToTV vào `upstream/`, áp `patches/*.patch`, dựng `conbang-ffi` thành thư viện tĩnh |
+| `tools/build-core.sh` | Dựng lõi chung: clone repo chính vào `upstream/`, áp `patches/*.patch`, dựng `conbang-ffi` thành thư viện tĩnh |
 | `tools/rust/` | Target `armv7-apple-ios6.json`, `cargo-ios6.sh` (cargo nightly + build-std), `vendor-ring.sh` (vá ring) |
 | `tools/cblaunch/` | Mở app / đánh thức / mở khoá máy từ SSH (SpringBoardServices) |
 | `tools/symcheck/`, `tools/symlist.py` | Tra trên máy iOS 6 mọi ký hiệu tệp chạy cần — bắt lỗi «dyld: Symbol not found» trước khi chạy |
-| `patches/core-ios6.patch` | Vá nhỏ cho lõi chung (Darwin không có `TCP_INFO`) — chưa đưa vào repo ChimToTV |
+| `patches/core-ios6.patch` | Vá nhỏ cho lõi chung (Darwin không có `TCP_INFO`) — chưa đưa vào repo chính |
 
 ## Dựng (máy Linux)
 
-`src/` = bản chép thư mục này, `upstream/` = clone ChimToTV, `target-core/` = lõi đã dựng. Lần đầu: `bash src/tools/setup-theos.sh`,
+`src/` = bản chép thư mục này, `upstream/` = clone repo chính, `target-core/` = lõi đã dựng. Lần đầu: `bash src/tools/setup-theos.sh`,
 Rust nightly có `rust-src` (`rustup toolchain install nightly --profile minimal --component rust-src`). Sau đó:
 
 ```sh

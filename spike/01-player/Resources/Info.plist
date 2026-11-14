@@ -9,7 +9,7 @@
 	<key>CFBundleExecutable</key>
 	<string>ConBangLegacy</string>
 	<key>CFBundleIdentifier</key>
-	<string>vn.chimto.tv.legacy.spike</string>
+	<string>vn.conbangtv.legacy.spike</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>

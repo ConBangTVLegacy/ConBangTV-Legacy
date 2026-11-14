@@ -16,7 +16,7 @@ APPLICATION_NAME = ConBangLegacy
 ConBangLegacy_FILES = main.m AppDelegate.m TestsViewController.m PlayerViewController.m CBFetch.m CBLog.m CBCore.m shims_ios6.c
 ConBangLegacy_FRAMEWORKS = UIKit Foundation CoreGraphics QuartzCore AVFoundation CoreMedia CoreVideo Security
 ConBangLegacy_CFLAGS = -fobjc-arc -Wno-deprecated-declarations
-# Lõi Rust chung (ChimToTV linux/core + linux/ffi) dựng cho iOS 6 — tools/build-core.sh → libconbang_core.a
+# Lõi Rust chung (repo chính: linux/core + linux/ffi) dựng cho iOS 6 — tools/build-core.sh → libconbang_core.a
 CORE_LIB_DIR ?= $(HOME)/work/target-core/armv7-apple-ios6/release
 ConBangLegacy_LDFLAGS = -L$(CORE_LIB_DIR) -lconbang_core
 

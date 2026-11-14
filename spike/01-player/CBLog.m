@@ -25,7 +25,7 @@ void CBLog(NSString *format, ...) {
     static NSDateFormatter *fmt;
     static dispatch_once_t once;
     dispatch_once(&once, ^{
-        queue = dispatch_queue_create("vn.chimto.legacy.log", DISPATCH_QUEUE_SERIAL);
+        queue = dispatch_queue_create("vn.conbangtv.legacy.log", DISPATCH_QUEUE_SERIAL);
         fmt = [[NSDateFormatter alloc] init];
         fmt.dateFormat = @"HH:mm:ss.SSS";
     });

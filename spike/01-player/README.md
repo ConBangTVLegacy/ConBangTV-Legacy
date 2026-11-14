@@ -15,13 +15,13 @@ Lần đầu: `bash tools/setup-theos.sh` (ở gốc dự án) — cài Theos + 
 
 ```sh
 export THEOS=~/theos
-make package                                   # → packages/vn.chimto.tv.legacy.spike_<bản>_iphoneos-arm.deb
+make package                                   # → packages/vn.conbangtv.legacy.spike_<bản>_iphoneos-arm.deb
 make package install THEOS_DEVICE_IP=<ip máy>  # cài qua SSH (root), chạy uicache
 ```
 
 Chạy tự động qua SSH (không cần chạm máy): cài `tools/cblaunch` và `tools/symcheck` vào `/usr/bin` của máy, ghi lệnh vào
 `/var/mobile/Documents/ConBangLegacy-autorun.txt` (`net` | `play-http <giây>` | `play-https <giây>` | `play-url <giây> <url>`), rồi
-`cblaunch wake; cblaunch launch vn.chimto.tv.legacy.spike`. Trước khi chạy bản mới: `python3 tools/symlist.py <tệp chạy> | ssh … cbsymcheck`
+`cblaunch wake; cblaunch launch vn.conbangtv.legacy.spike`. Trước khi chạy bản mới: `python3 tools/symlist.py <tệp chạy> | ssh … cbsymcheck`
 liệt kê ký hiệu iOS 6 không có.
 
 ## Kết quả trên iPhone 5 (iPhone5,2, iOS 6.1.4, jailbreak) — 14/11/2026
