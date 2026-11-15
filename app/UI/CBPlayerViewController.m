@@ -6,6 +6,7 @@
 #import "CBPrefs.h"
 #import "CBSync.h"
 #import "CBTheme.h"
+#import "CBWaitPlayable.h"
 #import <AVFoundation/AVFoundation.h>
 #import <MediaPlayer/MediaPlayer.h>
 
@@ -126,6 +127,8 @@ static NSArray *CBParseSubtitles(NSString *text) {
     BOOL _versionFallback;      // tập đang mở là bản khác (vd Việt Sub) vì bản đang xem không có server phát được trên iOS 6
     NSString *_fallbackFrom;    // tên bản ban đầu (vd «Thuyết Minh»)
     NSMutableSet *_embedHosts;  // tên miền các server chỉ có trình phát nhúng (báo lỗi rõ hơn khi là trình phát có khoá)
+    NSString *_directFailed;    // server phát thẳng được nhưng AVPlayer lỗi khi mở (tên) — hết server thì báo lỗi này
+    NSInteger _directFailCode;
     // Chất lượng: luồng nhiều bản (dexter.pw: 1080p / 720p / 480p…) — lõi giữ đúng một bản khi địa chỉ có ?h=<chiều cao>
     NSString *_localUrl;        // danh sách phát chính trên cổng phát nội bộ (chưa kèm ?h=)
     NSArray *_levels;           // [{h, bw}] các bản, cao → thấp (đọc từ danh sách chính); < 2 bản thì không có mục «Chất lượng»
@@ -177,6 +180,7 @@ static NSArray *CBParseSubtitles(NSString *text) {
     UIScrollView *_epGroupsStrip;
     NSInteger _panelGroup;      // bản đang xem trong bảng (chưa đổi bản đang phát cho tới khi chọn tập)
     UIButton *_closeButton, *_serverButton, *_playButton, *_prevButton, *_nextButton, *_backButton, *_fwdButton, *_retryButton;
+    UIButton *_waitButton;      // «Báo khi xem được» (tập chưa có server phát được trên iOS 6)
     UISlider *_slider;
     UIActivityIndicatorView *_spinner;
     NSTimer *_hideTimer;
@@ -305,6 +309,10 @@ static NSArray *CBParseSubtitles(NSString *text) {
     [_retryButton addTarget:self action:@selector(showServers) forControlEvents:UIControlEventTouchUpInside];
     _retryButton.hidden = YES;
     [self.view addSubview:_retryButton];
+    _waitButton = [CBTheme button:@"Báo khi xem được" primary:NO];
+    [_waitButton addTarget:self action:@selector(waitTapped) forControlEvents:UIControlEventTouchUpInside];
+    _waitButton.hidden = YES;
+    [self.view addSubview:_waitButton];
     _toast = [self overlayLabel:[CBTheme bold:22]];
     _toast.textAlignment = NSTextAlignmentCenter;
     _toast.backgroundColor = shade;
@@ -422,7 +430,10 @@ static NSArray *CBParseSubtitles(NSString *text) {
     _status.frame = CGRectMake(30, h / 2 - 10, w - 60, [CBTheme heightOf:_status.text font:_status.font width:w - 60] + 4);
     CGSize rs = [_retryButton sizeThatFits:CGSizeMake(300, 44)];
     _retryButton.frame = CGRectMake((w - rs.width) / 2, CGRectGetMaxY(_status.frame) + 14, rs.width, 44);
-    CGFloat tw = MIN(w - 40, MAX(160, ceil([_toast.text ?: @"" sizeWithFont:_toast.font].width) + 40));  // «Xem tiếp 1:05:12»
+    CGSize ws = [_waitButton sizeThatFits:CGSizeMake(360, 44)];
+    CGFloat wy = _retryButton.hidden ? CGRectGetMaxY(_status.frame) + 14 : CGRectGetMaxY(_retryButton.frame) + 10;
+    _waitButton.frame = CGRectMake((w - ws.width - 24) / 2, wy, ws.width + 24, 44);
+    CGFloat tw =MIN(w - 40, MAX(160, ceil([_toast.text ?: @"" sizeWithFont:_toast.font].width) + 40));  // «Xem tiếp 1:05:12»
     _toast.frame = CGRectMake((w - tw) / 2, h / 2 - 30, tw, 60);
     [self layoutSubtitle];
     [self layoutMenuPanel];
@@ -471,6 +482,7 @@ static NSArray *CBParseSubtitles(NSString *text) {
     _status.text = text;
     _status.hidden = NO;
     _retryButton.hidden = YES;
+    _waitButton.hidden = YES;
     [_spinner startAnimating];
     [self.view setNeedsLayout];
 }
@@ -478,6 +490,7 @@ static NSArray *CBParseSubtitles(NSString *text) {
 - (void)hideStatus {
     _status.hidden = YES;
     _retryButton.hidden = YES;
+    _waitButton.hidden = YES;
     [_spinner stopAnimating];
 }
 
@@ -497,8 +510,41 @@ static NSArray *CBParseSubtitles(NSString *text) {
         [_retryButton addTarget:self action:action forControlEvents:UIControlEventTouchUpInside];
     }
     _retryButton.hidden = !(title && action);
+    _waitButton.hidden = YES;
     [self setControlsVisible:YES];
     [self.view setNeedsLayout];
+}
+
+#pragma mark - «Báo khi xem được»
+
+/// Tập chưa có server phát được trên iOS 6: mời người xem bấm «Báo khi xem được» (CBWaitPlayable kiểm lại định kỳ)
+- (void)offerWait {
+    NSArray *eps = [self episodes];
+    if (_index >= (NSInteger)eps.count || !CBStr(eps[_index], @"url")) return;
+    [self updateWaitButton];
+    _waitButton.hidden = NO;
+    [self.view setNeedsLayout];
+}
+
+- (void)updateWaitButton {
+    BOOL on = [CBWaitPlayable has:_epUrl ?: @""];
+    [_waitButton setTitle:on ? @"✓ Sẽ báo khi xem được (chạm để bỏ)" : @"Báo khi xem được" forState:UIControlStateNormal];
+    [self.view setNeedsLayout];
+}
+
+- (void)waitTapped {
+    NSArray *eps = [self episodes], *groups = CBArr(_detail, @"groups");
+    if (_index >= (NSInteger)eps.count || !_epUrl) return;
+    if ([CBWaitPlayable has:_epUrl]) {
+        [CBWaitPlayable remove:_epUrl];
+        [CBTheme toast:@"Đã bỏ nhắc tập này."];
+    } else {
+        [CBWaitPlayable add:_detail episode:eps[_index] group:_groupIndex < (NSInteger)groups.count ? groups[_groupIndex] : nil];
+        [CBTheme toast:[NSString stringWithFormat:@"Khi %@ phát được trên iOS 6 (thường là bản KKPhim, sau vài giờ), app sẽ báo — "
+                                                  @"app kiểm lại lúc mở và 30 phút một lần.",
+                                                  CBStr(eps[_index], @"title") ?: @"tập này"]];
+    }
+    [self updateWaitButton];
 }
 
 #pragma mark - Bảng chọn tập («☰ Tập»)
@@ -683,6 +729,7 @@ static NSArray *CBParseSubtitles(NSString *text) {
     [self setServerTitle:@"Server"];
     [self clearSubtitles];
     _versionFallback = NO;
+    _directFailed = nil;
     _fallbackFrom = nil;
     _embedHosts = [NSMutableSet set];
     _localUrl = nil;
@@ -810,12 +857,9 @@ static NSArray *CBParseSubtitles(NSString *text) {
     return NO;
 }
 
-/// Link phát thẳng được bằng AVPlayer qua cổng phát nội bộ: tệp video, luồng .m3u8, hoặc luồng HLS không đuôi (`hls` — dexter.pw;
-/// đoạn fMP4 được lõi đổi thành MPEG-TS cho iOS 6)
+/// Link phát thẳng được bằng AVPlayer qua cổng phát nội bộ (đoạn fMP4 của dexter.pw được lõi đổi thành MPEG-TS cho iOS 6)
 - (BOOL)isDirect:(NSDictionary *)v {
-    NSString *url = CBStr(v, @"url");
-    if (!url) return NO;
-    return CBBool(v, @"file", NO) || CBBool(v, @"hls", NO) || [[[NSURL URLWithString:url].path lowercaseString] hasSuffix:@".m3u8"];
+    return CBVideoIsDirect(v);
 }
 
 - (void)advanceProbe:(NSInteger)t {
@@ -881,16 +925,16 @@ static NSArray *CBParseSubtitles(NSString *text) {
                  action:@selector(retryEpisode)];
         return;
     }
+    if (_directFailed) {
+        [self showError:[NSString stringWithFormat:@"Server «%@» (phát được trên iOS 6) mở không được — lỗi %ld.\n"
+                                                   @"Bấm «Thử lại»; vẫn lỗi thì xem tập khác hoặc ở trang khác.",
+                                                   _directFailed, (long)_directFailCode]
+                 button:@"Thử lại" action:@selector(retryEpisode)];
+        return;
+    }
     if (!_versionFallback && [self tryOtherVersion]) return;
     [self showError:[self noServerMessage] retry:_servers.count > 0];
-}
-
-/// Số tập trong tên («Tập 05» → «5», «Tập 130->132» → «130»); nil nếu không có số
-static NSString *CBEpisodeNumber(NSString *title) {
-    NSScanner *sc = [NSScanner scannerWithString:title ?: @""];
-    [sc scanUpToCharactersFromSet:[NSCharacterSet decimalDigitCharacterSet] intoString:NULL];
-    NSInteger n;
-    return [sc scanInteger:&n] ? [NSString stringWithFormat:@"%ld", (long)n] : nil;
+    [self offerWait];
 }
 
 /// Bản đang xem (vd Thuyết Minh) không có server phát được trên iOS 6 cho tập này — thường vì server dự phòng KKPhim của bản
@@ -901,13 +945,13 @@ static NSString *CBEpisodeNumber(NSString *title) {
     NSArray *eps = [self episodes];
     if (CBDetailSeasons(_detail) || groups.count < 2 || _index >= (NSInteger)eps.count) return NO;
     NSString *title = CBStr(eps[_index], @"title");
-    NSString *num = CBEpisodeNumber(title);
+    NSString *num = CBEpisodeNumberOf(title);
     for (NSInteger g = 0; g < (NSInteger)groups.count; g++) {
         if (g == _groupIndex) continue;
         NSArray *other = CBArr(groups[g], @"episodes");
         for (NSUInteger k = 0; k < other.count; k++) {
             NSString *t = CBStr(other[k], @"title");
-            if (![t isEqualToString:title] && !(num && [CBEpisodeNumber(t) isEqualToString:num])) continue;
+            if (![t isEqualToString:title] && !(num && [CBEpisodeNumberOf(t) isEqualToString:num])) continue;
             NSString *from = CBStr(groups[_groupIndex], @"name") ?: @"đang xem";
             NSString *to = CBStr(groups[g], @"name") ?: @"khác";
             CBLog(@"%@ bản %@: không server nào phát được — thử bản %@", title, from, to);
@@ -1056,13 +1100,21 @@ static NSString *CBEpisodeNumber(NSString *title) {
     _seekedResume = NO;
     _started = NO;  // server mới phát được thì tick mới ẩn chữ «Đang tải…», tự ẩn thanh nút, ghi nhớ server
     [self teardownPlayer];
-    // Đang phát thì rớt (Wi-Fi chập chờn): hỏi lại link chính server này một lần trước khi sang server khác
-    if (wasPlaying && !_retriedSame && _serverIdx < (NSInteger)_servers.count) {
+    // Đang phát thì rớt (Wi-Fi chập chờn), hoặc dịch vụ phát của iOS vừa khởi động lại (AVErrorMediaServicesWereReset -11819 —
+    // thoáng qua, có lúc gặp ngay khi mở): hỏi lại link chính server này một lần trước khi sang server khác
+    BOOL transient = [error.domain isEqualToString:AVFoundationErrorDomain] && error.code == AVErrorMediaServicesWereReset;
+    if ((wasPlaying || transient) && !_retriedSame && _serverIdx < (NSInteger)_servers.count) {
         _retriedSame = YES;
-        CBLog(@"Server %@ rớt giữa chừng — thử lại server này", CBStr(_servers[_serverIdx], @"label"));
+        CBLog(@"Server %@ %@ — thử lại server này", CBStr(_servers[_serverIdx], @"label"),
+              wasPlaying ? @"rớt giữa chừng" : @"lỗi dịch vụ phát của iOS");
         _probeResults = nil;
         [self tryServer:_serverIdx token:++_token];
         return;
+    }
+    // Server này phát thẳng được nhưng AVPlayer lỗi: hết server thì báo đúng lỗi này (không phải «chỉ có trình phát nhúng»)
+    if (_serverIdx < (NSInteger)_servers.count) {
+        _directFailed = CBStr(_servers[_serverIdx], @"label") ?: @"?";
+        _directFailCode = error.code;
     }
     [self tryServer:_serverIdx + 1 token:_token];
 }
@@ -1895,6 +1947,7 @@ static NSArray *CBParseLevels(NSString *text) {
     [CBSync setPlaying:NO];
     [MPNowPlayingInfoCenter defaultCenter].nowPlayingInfo = nil;
     [self.presentingViewController dismissViewControllerAnimated:YES completion:nil];
+    [CBWaitPlayable playerClosed];
 }
 
 - (void)updateNowPlaying {

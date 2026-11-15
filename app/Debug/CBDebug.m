@@ -11,6 +11,7 @@
 #import "CBPlayerViewController.h"
 #import "CBPrefs.h"
 #import "CBTheme.h"
+#import "CBWaitPlayable.h"
 #import "CBUpdate.h"
 #import "CBProfilesViewController.h"
 #import "CBSettingsViewController.h"
@@ -396,6 +397,24 @@
     } else if ([verb isEqualToString:@"sleep"]) {
         // sleep <giây> | sleep ep | sleep 0 — hẹn giờ tắt (giây để thử nhanh)
         [player setSleepAfter:[arg isEqualToString:@"ep"] ? 0 : [arg doubleValue] endOfEpisode:[arg isEqualToString:@"ep"]];
+    } else if ([verb isEqualToString:@"notifyadd"]) {
+        // notifyadd <url phim> <url tập> — như bấm «Báo khi xem được» ở trình phát (thử)
+        NSString *ep = args.count > 1 ? args[1] : @"";
+        [CBCore call:@"site.detail" args:@{@"url": args.count ? args[0] : @""} done:^(id d, NSString *err) {
+            for (id g in CBArr(d, @"groups") ?: @[]) {
+                for (id e in CBArr(g, @"episodes") ?: @[]) {
+                    if ([CBStr(e, @"url") isEqualToString:ep]) [CBWaitPlayable add:d episode:e group:g];
+                }
+            }
+            CBLog(@"[gỡ lỗi] chờ xem được: %lu tập", (unsigned long)[CBWaitPlayable list].count);
+        }];
+    } else if ([verb isEqualToString:@"notifycheck"]) {
+        [CBWaitPlayable checkNow];
+    } else if ([verb isEqualToString:@"notifylist"]) {
+        for (NSDictionary *e in [CBWaitPlayable list]) CBLog(@"[gỡ lỗi] chờ: %@ — %@ (%@) %@", e[@"title"], e[@"epTitle"], e[@"group"], e[@"ep"]);
+        CBLog(@"[gỡ lỗi] chờ xem được: %lu tập", (unsigned long)[CBWaitPlayable list].count);
+    } else if ([verb isEqualToString:@"notifydel"]) {
+        [CBWaitPlayable remove:arg];
     } else if ([verb isEqualToString:@"toast"]) {
         [CBTheme toast:arg.length ? arg : @"Thông báo thử"];
     } else if ([verb isEqualToString:@"fail"]) {

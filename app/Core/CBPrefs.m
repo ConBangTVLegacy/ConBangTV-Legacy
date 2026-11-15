@@ -776,6 +776,19 @@ NSString *CBDetailEpisodeLabel(NSDictionary *detail, NSString *epUrl, NSString *
     return [NSString stringWithFormat:@"%@, %@", CBStr(groups[g], @"name") ?: @"", title ?: @""];
 }
 
+NSString *CBEpisodeNumberOf(NSString *title) {
+    NSScanner *sc = [NSScanner scannerWithString:title ?: @""];
+    [sc scanUpToCharactersFromSet:[NSCharacterSet decimalDigitCharacterSet] intoString:NULL];
+    NSInteger n;
+    return [sc scanInteger:&n] ? [NSString stringWithFormat:@"%ld", (long)n] : nil;
+}
+
+BOOL CBVideoIsDirect(NSDictionary *video) {
+    NSString *url = CBStr(video, @"url");
+    if (!url) return NO;
+    return CBBool(video, @"file", NO) || CBBool(video, @"hls", NO) || [[[NSURL URLWithString:url].path lowercaseString] hasSuffix:@".m3u8"];
+}
+
 NSString *CBHostOf(NSString *url) {
     NSString *h = [[NSURL URLWithString:url].host lowercaseString];
     if ([h hasPrefix:@"www."]) h = [h substringFromIndex:4];

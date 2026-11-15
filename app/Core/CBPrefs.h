@@ -115,6 +115,11 @@ NSInteger CBDetailEpisodeCount(NSDictionary *detail);
 NSDictionary *CBDetailLatestEpisode(NSDictionary *detail);
 /// Tên tập để hiện: phim chia mùa ghi kèm mùa («Mùa 2, Tập 1 · …»); không tìm thấy tập thì trả fallback
 NSString *CBDetailEpisodeLabel(NSDictionary *detail, NSString *epUrl, NSString *fallback);
+/// Số tập trong tên («Tập 05» → «5», «Tập 130->132» → «130»); nil nếu không có số
+NSString *CBEpisodeNumberOf(NSString *title);
+/// Link của server (Video của lõi: {url, file, hls…}) phát thẳng được bằng AVPlayer qua cổng phát nội bộ: tệp video, luồng
+/// .m3u8, hoặc luồng HLS không đuôi (`hls` — dexter.pw). Còn lại là trình phát nhúng của trang — iOS 6 không chạy
+BOOL CBVideoIsDirect(NSDictionary *video);
 /// Chỉ số bản (nhóm tập) chứa tập epUrl; -1 = không có
 NSInteger CBDetailGroupIndexOf(NSDictionary *detail, NSString *epUrl);
 /// Tên miền (bỏ «www.»)
