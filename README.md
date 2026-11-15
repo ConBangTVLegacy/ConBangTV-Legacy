@@ -29,6 +29,8 @@ Cổng phát nội bộ 127.0.0.1 (media_proxy: bỏ quảng cáo, cắt PNG ng�
 | `tools/build-core.sh` | Dựng lõi chung: clone repo chính vào `upstream/`, áp `patches/*.patch`, dựng `conbang-ffi` thành thư viện tĩnh |
 | `tools/rust/` | Target `armv7-apple-ios6.json`, `cargo-ios6.sh` (cargo nightly + build-std), `vendor-ring.sh` (vá ring) |
 | `tools/cblaunch/` | Mở app / đánh thức / mở khoá máy từ SSH (SpringBoardServices) |
+| `tools/cbscreen/` | Chụp toàn màn hình máy (cả màn hình chính / màn khoá) ra PNG, nhấn nút Home giả — từ SSH (`cbscreen <tệp.png> [rộng cao]`, `cbscreen home`) |
+| `design/` | Nguồn logo / biểu tượng (SVG trong `icon.html`: vòng ensō vàng + ấn 鵬 nổi khối 3D trên đĩa kính tròn trong suốt); `node design/render.mjs ios a` xuất `Icon*.png` + `Default*.png` vào `app/Resources`, `web a <thư mục>` xuất logo cho trang giới thiệu / nguồn Cydia |
 | `tools/symcheck/`, `tools/symlist.py` | Tra trên máy iOS 6 mọi ký hiệu tệp chạy cần — bắt lỗi «dyld: Symbol not found» trước khi chạy |
 | `patches/` | Bản vá tạm cho lõi chung (3 bản vá đầu đã vào repo chính 14/11/2026; còn `0001-sync-ios-platform` — xem README trong đó) |
 | `app/` | **App thật — Côn Bằng TV Legacy** (`vn.conbangtv.legacy`; tên dưới biểu tượng: «Côn Bằng TV») — các màn ở mục «App» dưới đây |
@@ -116,6 +118,10 @@ Máy đang chạy bản cũ hơn 0.4.0 (chưa có `cbupdate`) cài bản mới m
   50 ms (`ffi-ios-wakeup.patch`).
 - **Cài bản mới:** đừng chạy `uicache` lúc app đang mở (SpringBoard đơ, phải respring); cài xong mở lại app ngay — bản thử giữ màn
   hình sáng, máy khoá lâu thì tắt Wi-Fi, mất SSH.
+- **Đổi biểu tượng:** SpringBoard giữ biểu tượng đã dựng trong `/var/mobile/Library/Caches/com.apple.IconsCache/` (tệp
+  `vn.conbangtv.legacy_…`) — thay `Icon*.png` rồi respring vẫn hiện bản cũ. `postinst` xoá các mục đó; biểu tượng mới hiện ở lần
+  respring / khởi động lại máy tiếp theo. Biểu tượng có kênh alpha: iOS 6 giữ phần trong suốt, không tự bo góc, không thêm bóng
+  (đã thử trên iPhone 5 bằng `tools/cbscreen` 15/11/2026).
 
 ## Kết quả trên iPhone 5 (iOS 6.1.4)
 

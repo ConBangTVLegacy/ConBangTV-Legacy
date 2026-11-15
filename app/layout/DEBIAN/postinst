@@ -2,4 +2,7 @@
 # Công cụ cài bản cập nhật (OTA) cần quyền root: dpkg -i, đóng / mở lại app — xem app/Helper/cbupdate.c
 chown root:wheel /usr/libexec/conbangtv/cbupdate
 chmod 4755 /usr/libexec/conbangtv/cbupdate
+# SpringBoard iOS 6 giữ biểu tượng đã dựng trong IconsCache (respring cũng không đọc lại Icon*.png): xoá mục của app để
+# biểu tượng mới hiện ở lần khởi động lại SpringBoard / máy tiếp theo. Chỉ là bộ đệm, SpringBoard tự dựng lại.
+rm -f /var/mobile/Library/Caches/com.apple.IconsCache/vn.conbangtv.legacy_*
 exit 0

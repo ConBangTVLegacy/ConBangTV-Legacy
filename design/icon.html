@@ -1,0 +1,237 @@
+<!doctype html>
+<!--
+  Logo / biểu tượng Côn Bằng TV Legacy — bản 3D, nền tròn trong suốt.
+  Dựng từ logo gốc của Côn Bằng TV (repo chính, design/logo.html — phương án «Ấn triện»): vòng bút ensō vàng + ấn đỏ chữ 鵬.
+  Xuất PNG: node design/render.mjs <mode> [phương án] (xem đầu render.mjs).
+  ?mode=variants          : mọi phương án, cỡ 1024 / 114 / 57 (để xem trước)
+  ?mode=ios&v=a           : bộ Icon*.png + Default*.png cho app/Resources
+  ?mode=web&v=a           : logo cho trang giới thiệu (assets/logo.png) + nguồn Cydia (repo/CydiaIcon.png)
+  Đã chọn phương án A (15/11/2026); B, C giữ lại để so.
+-->
+<html>
+<head>
+<meta charset="utf-8">
+<link href="https://fonts.googleapis.com/css2?family=Yuji+Boku&display=block" rel="stylesheet">
+<style>
+  html, body { margin: 0; background: transparent; }
+  .asset { position: absolute; left: 0; }
+  svg { display: block; }
+</style>
+</head>
+<body>
+<script>
+const P = new URLSearchParams(location.search);
+const C = 256; // tâm, hệ toạ độ 512
+
+// ---------- defs dùng chung ----------
+// Ánh sáng chung: chiếu từ trên-trái (azimuth 235°), để vòng vàng, ấn đỏ, đĩa kính cùng một hướng sáng.
+const LIGHT = `<feDistantLight azimuth="235" elevation="40"/>`;
+const DEFS = `
+  <linearGradient id="gold" x1="0" y1="0" x2="0" y2="1">
+    <stop offset="0" stop-color="#ffe7a0"/><stop offset=".4" stop-color="#f5bf45"/>
+    <stop offset=".75" stop-color="#d48d22"/><stop offset="1" stop-color="#9c5a14"/>
+  </linearGradient>
+  <linearGradient id="sealRed" x1="0" y1="0" x2="1" y2="1">
+    <stop offset="0" stop-color="#e5453f"/><stop offset=".5" stop-color="#c3272b"/><stop offset="1" stop-color="#8c161b"/>
+  </linearGradient>
+  <linearGradient id="cream" x1="0" y1="0" x2="0" y2="1">
+    <stop offset="0" stop-color="#fff6e2"/><stop offset="1" stop-color="#ecd3a2"/>
+  </linearGradient>
+
+  <filter id="brush" x="-10%" y="-10%" width="120%" height="120%">
+    <feTurbulence type="fractalNoise" baseFrequency=".035 .6" numOctaves="2" seed="3" result="n"/>
+    <feDisplacementMap in="SourceGraphic" in2="n" scale="9"/>
+  </filter>
+  <filter id="stamp" x="-10%" y="-10%" width="120%" height="120%">
+    <feTurbulence type="fractalNoise" baseFrequency=".9" numOctaves="2" seed="7" result="n"/>
+    <feDisplacementMap in="SourceGraphic" in2="n" scale="5"/>
+  </filter>
+
+  <!-- Khối nổi: lấy độ mờ của hình làm bản đồ cao, chiếu sáng khuếch tán + phản quang -->
+  <filter id="bevelGold" x="-15%" y="-15%" width="130%" height="130%" color-interpolation-filters="sRGB">
+    <feGaussianBlur in="SourceAlpha" stdDeviation="7" result="h"/>
+    <feDiffuseLighting in="h" surfaceScale="10" diffuseConstant="1.1" result="diff">${LIGHT}</feDiffuseLighting>
+    <feSpecularLighting in="h" surfaceScale="10" specularConstant="1.05" specularExponent="30" lighting-color="#fff4d2" result="spec">${LIGHT}</feSpecularLighting>
+    <feComposite in="SourceGraphic" in2="diff" operator="arithmetic" k1="1.3" result="shade"/>
+    <feComposite in="spec" in2="SourceAlpha" operator="in" result="specIn"/>
+    <feComposite in="shade" in2="specIn" operator="arithmetic" k2="1" k3=".85" result="lit"/>
+    <feComposite in="lit" in2="SourceAlpha" operator="in"/>
+  </filter>
+  <filter id="bevelSeal" x="-15%" y="-15%" width="130%" height="130%" color-interpolation-filters="sRGB">
+    <feGaussianBlur in="SourceAlpha" stdDeviation="5" result="h"/>
+    <feDiffuseLighting in="h" surfaceScale="7" diffuseConstant="1.1" result="diff">${LIGHT}</feDiffuseLighting>
+    <feSpecularLighting in="h" surfaceScale="7" specularConstant=".9" specularExponent="30" lighting-color="#ffe9e0" result="spec">${LIGHT}</feSpecularLighting>
+    <feComposite in="SourceGraphic" in2="diff" operator="arithmetic" k1="1.3" result="shade"/>
+    <feComposite in="spec" in2="SourceAlpha" operator="in" result="specIn"/>
+    <feComposite in="shade" in2="specIn" operator="arithmetic" k2="1" k3=".7" result="lit"/>
+    <feComposite in="lit" in2="SourceAlpha" operator="in"/>
+  </filter>
+  <filter id="bevelGlyph" x="-15%" y="-15%" width="130%" height="130%" color-interpolation-filters="sRGB">
+    <feGaussianBlur in="SourceAlpha" stdDeviation="1.6" result="h"/>
+    <feDiffuseLighting in="h" surfaceScale="3" diffuseConstant="1.05" result="diff">${LIGHT}</feDiffuseLighting>
+    <feComposite in="SourceGraphic" in2="diff" operator="arithmetic" k1="1.35" result="shade"/>
+    <feComposite in="shade" in2="SourceAlpha" operator="in" result="lit"/>
+    <!-- bóng chữ đổ xuống nền đỏ: chữ như nổi lên khỏi mặt ấn -->
+    <feOffset in="SourceAlpha" dx="2" dy="3" result="off"/>
+    <feGaussianBlur in="off" stdDeviation="1.5" result="offb"/>
+    <feFlood flood-color="#4a0508" flood-opacity=".6"/>
+    <feComposite in2="offb" operator="in" result="sh"/>
+    <feMerge><feMergeNode in="sh"/><feMergeNode in="lit"/></feMerge>
+  </filter>
+
+  <filter id="drop" x="-20%" y="-20%" width="140%" height="150%">
+    <feDropShadow dx="0" dy="8" stdDeviation="8" flood-color="#000" flood-opacity=".45"/>
+  </filter>
+  <filter id="dropSoft" x="-20%" y="-20%" width="140%" height="150%">
+    <feDropShadow dx="0" dy="6" stdDeviation="6" flood-color="#000" flood-opacity=".45"/>
+  </filter>
+  <filter id="blur6" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="6"/></filter>
+  <filter id="glow" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="16"/></filter>
+
+  <!-- Kính tối trong suốt (nền đen cũ) -->
+  <radialGradient id="glass" cx="50%" cy="36%" r="68%">
+    <stop offset="0" stop-color="#4b2f1b" stop-opacity=".62"/>
+    <stop offset=".62" stop-color="#1c110a" stop-opacity=".55"/>
+    <stop offset="1" stop-color="#080503" stop-opacity=".72"/>
+  </radialGradient>
+  <linearGradient id="gloss" x1="0" y1="0" x2="0" y2="1">
+    <stop offset="0" stop-color="#ffffff" stop-opacity=".4"/>
+    <stop offset=".45" stop-color="#ffffff" stop-opacity=".1"/>
+    <stop offset=".8" stop-color="#ffffff" stop-opacity="0"/>
+  </linearGradient>
+  <linearGradient id="rim" x1=".15" y1="0" x2=".85" y2="1">
+    <stop offset="0" stop-color="#fff4d0" stop-opacity=".95"/>
+    <stop offset=".45" stop-color="#d7a94f" stop-opacity=".45"/>
+    <stop offset="1" stop-color="#3a2108" stop-opacity=".9"/>
+  </linearGradient>
+  <radialGradient id="edgeLight" cx="50%" cy="50%" r="50%">
+    <stop offset=".8" stop-color="#ffd98a" stop-opacity="0"/>
+    <stop offset=".97" stop-color="#ffd98a" stop-opacity=".22"/>
+    <stop offset="1" stop-color="#ffd98a" stop-opacity="0"/>
+  </radialGradient>`;
+
+// ---------- các phần của dấu hình ----------
+// Vòng ensō vàng nổi khối (tâm C, bán kính r, bề rộng nét w)
+function enso(r, w) {
+  const a0 = -100 * Math.PI / 180, a1 = 235 * Math.PI / 180;
+  const p = (a, rr) => `${C + rr * Math.cos(a)} ${C + rr * Math.sin(a)}`;
+  const k = r + w * .3;
+  return `
+  <g filter="url(#drop)"><g filter="url(#bevelGold)"><g filter="url(#brush)">
+    <path d="M${p(a0, r)} A${r} ${r} 0 1 1 ${p(a1, r)}" stroke="url(#gold)" stroke-width="${w}" fill="none" stroke-linecap="round"/>
+  </g></g></g>
+  <g filter="url(#brush)" opacity=".45">
+    <path d="M${p(a0 + .25, k)} A${k} ${k} 0 1 1 ${p(a1 - .35, k)}" stroke="#fff6d4" stroke-width="${w * .08}" fill="none"/>
+  </g>`;
+}
+
+// Ấn đỏ chữ 鵬 nổi khối — tâm (C, cy), cạnh s
+function seal(cy, s) {
+  const x = C - s / 2, y = cy - s / 2, b = s * .09;
+  return `
+  <g filter="url(#drop)"><g filter="url(#bevelSeal)"><g filter="url(#stamp)">
+    <rect x="${x}" y="${y}" width="${s}" height="${s}" rx="${s * .09}" fill="url(#sealRed)"/>
+  </g></g></g>
+  <g filter="url(#bevelGlyph)"><g filter="url(#stamp)">
+    <rect x="${x + b}" y="${y + b}" width="${s - 2 * b}" height="${s - 2 * b}" rx="${s * .045}" fill="none" stroke="url(#cream)" stroke-width="${s * .036}"/>
+    <text x="${C}" y="${cy + s * .02}" text-anchor="middle" dominant-baseline="central" font-family="Yuji Boku" font-size="${s * .7}" fill="url(#cream)">鵬</text>
+  </g></g>`;
+}
+
+// Đĩa kính tròn trong suốt bán kính R (thay cho nền vuông đen)
+function glassDisc(R) {
+  return `
+  <defs>
+    <clipPath id="discClip"><circle cx="${C}" cy="${C}" r="${R}"/></clipPath>
+    <mask id="outsideDisc"><rect width="512" height="512" fill="#fff"/><circle cx="${C}" cy="${C}" r="${R - 1}" fill="#000"/></mask>
+  </defs>
+  <!-- bóng đổ chỉ nằm ngoài đĩa, để đĩa vẫn trong -->
+  <g mask="url(#outsideDisc)"><circle cx="${C}" cy="${C + 5}" r="${R}" fill="#000" opacity=".5" filter="url(#blur6)"/></g>
+  <circle cx="${C}" cy="${C}" r="${R}" fill="url(#glass)"/>
+  <circle cx="${C}" cy="${C}" r="${R}" fill="url(#edgeLight)"/>
+  <g clip-path="url(#discClip)">
+    <ellipse cx="${C}" cy="${C - R * .42}" rx="${R * 1.05}" ry="${R * .66}" fill="url(#gloss)"/>
+  </g>
+  <circle cx="${C}" cy="${C}" r="${R - 2.5}" fill="none" stroke="url(#rim)" stroke-width="5"/>`;
+}
+
+// Ô kính bo góc toàn khung (đúng dáng mặt nạ biểu tượng iOS 6)
+function glassTile() {
+  const rx = 90;
+  return `
+  <defs><clipPath id="tileClip"><rect width="512" height="512" rx="${rx}"/></clipPath></defs>
+  <rect width="512" height="512" rx="${rx}" fill="url(#glass)"/>
+  <g clip-path="url(#tileClip)">
+    <ellipse cx="${C}" cy="40" rx="380" ry="230" fill="url(#gloss)"/>
+  </g>
+  <rect x="3" y="3" width="506" height="506" rx="${rx - 3}" fill="none" stroke="url(#rim)" stroke-width="6"/>`;
+}
+
+// ---------- phương án ----------
+const variants = {
+  a: { name: 'Đĩa kính tròn', note: 'Nền đen thành đĩa kính tròn trong suốt, viền sáng, vòng vàng và ấn nổi khối',
+       body: () => `${glassDisc(238)}
+         <circle cx="${C}" cy="${C}" r="160" fill="#f0b443" opacity=".16" filter="url(#glow)"/>
+         ${enso(186, 42)}${seal(263, 206)}` },
+  b: { name: 'Không nền', note: 'Bỏ hẳn nền đen, chỉ còn vòng vàng và ấn nổi khối, có bóng đổ',
+       body: () => `<circle cx="${C}" cy="${C}" r="170" fill="#f0b443" opacity=".2" filter="url(#glow)"/>
+         ${enso(200, 48)}${seal(263, 220)}` },
+  c: { name: 'Ô kính bo góc', note: 'Giữ dáng ô vuông bo góc, nền đen thành kính trong suốt',
+       body: () => `${glassTile()}
+         <circle cx="${C}" cy="${C}" r="160" fill="#f0b443" opacity=".16" filter="url(#glow)"/>
+         ${enso(182, 42)}${seal(262, 200)}` },
+};
+
+function iconSvg(v, px) {
+  return `<svg width="${px}" height="${px}" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
+    <defs>${DEFS}</defs>${variants[v].body()}</svg>`;
+}
+
+// Ảnh khởi động: nền màu app (CBTheme bg #0E1014), dấu hình ở giữa — cỡ dấu hình theo cạnh ngắn
+function launchSvg(v, w, h, scale) {
+  const s = Math.round(Math.min(w, h) * .4);
+  const x = (w - s) / 2, y = (h - s) / 2;
+  return `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" xmlns="http://www.w3.org/2000/svg">
+    <rect width="${w}" height="${h}" fill="#0E1014"/>
+    <svg x="${x}" y="${y}" width="${s}" height="${s}" viewBox="0 0 512 512"><defs>${DEFS}</defs>${variants[v].body()}</svg></svg>`;
+}
+
+function place(items) {
+  let y = 0;
+  for (const [name, svg] of items) {
+    const div = document.createElement('div');
+    div.className = 'asset';
+    div.dataset.name = name;
+    div.style.top = y + 'px';
+    div.innerHTML = svg;
+    document.body.appendChild(div);
+    y += div.firstElementChild.getAttribute('height') * 1 + 20;
+  }
+}
+
+function render() {
+  const mode = P.get('mode') || 'variants', v = P.get('v') || 'a';
+  const items = [];
+  if (mode === 'variants') {
+    for (const k of Object.keys(variants))
+      for (const px of [1024, 144, 114, 57]) items.push([`${k}-${px}.png`, iconSvg(k, px)]);
+  } else if (mode === 'ios') {
+    for (const [n, px] of [['Icon', 57], ['Icon@2x', 114], ['Icon-72', 72], ['Icon-72@2x', 144], ['Icon-Small', 29],
+                           ['Icon-Small@2x', 58], ['Icon-Small-50', 50], ['Icon-Small-50@2x', 100]])
+      items.push([`${n}.png`, iconSvg(v, px)]);
+    for (const [n, w, h] of [['Default', 320, 480], ['Default@2x', 640, 960], ['Default-568h@2x', 640, 1136],
+                             ['Default-Portrait~ipad', 768, 1024], ['Default-Portrait@2x~ipad', 1536, 2048],
+                             ['Default-Landscape~ipad', 1024, 768], ['Default-Landscape@2x~ipad', 2048, 1536]])
+      items.push([`${n}.png`, launchSvg(v, w, h)]);
+  } else if (mode === 'web') {
+    items.push(['logo.png', iconSvg(v, 256)]);
+    items.push(['logo-1024.png', iconSvg(v, 1024)]);
+    items.push(['CydiaIcon.png', iconSvg(v, 144)]);
+  }
+  place(items);
+}
+document.fonts.load('40px "Yuji Boku"', '鵬').then(() => document.fonts.ready)
+  .then(() => { render(); document.title = 'ready'; });
+</script>
+</body>
+</html>
