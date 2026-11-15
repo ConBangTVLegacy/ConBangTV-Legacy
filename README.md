@@ -77,9 +77,14 @@ App (từ 0.4.0) tự kiểm [GitHub Releases](https://github.com/ConBangTVLegac
 `vn.conbangtv.legacy_<bản>_iphoneos-arm.deb` thì hỏi «Cập nhật / Để sau», tải qua lõi (iOS 6 không tự vào được GitHub), kiểm
 kích thước + SHA-256 (`digest` GitHub ghi sẵn), rồi gọi `/usr/libexec/conbangtv/cbupdate` (`Helper/cbupdate.c`, setuid root —
 `layout/DEBIAN/postinst` đặt quyền): chỉ cài `.deb` trong `Documents/ConBangTV-update/` đúng gói `vn.conbangtv.legacy`, đóng app,
-`dpkg -i`, mở lại app — **không `uicache`** (trên iOS 6 từng làm SpringBoard của iPad treo; chỉ khi đổi tên hiện dưới
-biểu tượng mới `uicache` + khởi động lại SpringBoard) (nhật ký `Documents/ConBangTV-update/install.log`). Thử: pref `update_api` trỏ tới danh sách
-release khác.
+`dpkg -i`, **khởi động lại SpringBoard** (nhận biểu tượng / tên mới) rồi mở lại app (thử tới khi app thật sự ở trước màn hình,
+tối đa ~90 giây) — **không `uicache`** (trên iOS 6 từng làm SpringBoard của iPad treo; chỉ khi đổi tên hiện dưới biểu tượng)
+(nhật ký `Documents/ConBangTV-update/install.log`). Thử: pref `update_api` trỏ tới danh sách release khác.
+
+`cbupdate` ≤ 0.4.2 không khởi động lại SpringBoard: `postinst` của gói mới nhận ra (không có biến `CONBANG_OTA` mà `cbupdate`
+mới đặt, tệp .deb còn trong thư mục tải) và gọi `cbupdate --respring` của bản vừa cài — chờ bản cũ cài xong (xoá tệp .deb), khởi
+động lại SpringBoard, mở lại app. Cài bằng Cydia: `postinst` xin nút «Restart SpringBoard». 15/11/2026 đã thử cả hai đường trên
+iPhone 5 (0.4.2 → 0.4.3 và 0.4.3 → 0.4.3): app mở lại sau ~15 giây, biểu tượng mới.
 
 Phát hành bản mới:
 
@@ -119,8 +124,8 @@ Máy đang chạy bản cũ hơn 0.4.0 (chưa có `cbupdate`) cài bản mới m
 - **Cài bản mới:** đừng chạy `uicache` lúc app đang mở (SpringBoard đơ, phải respring); cài xong mở lại app ngay — bản thử giữ màn
   hình sáng, máy khoá lâu thì tắt Wi-Fi, mất SSH.
 - **Đổi biểu tượng:** SpringBoard giữ biểu tượng đã dựng trong `/var/mobile/Library/Caches/com.apple.IconsCache/` (tệp
-  `vn.conbangtv.legacy_…`) — thay `Icon*.png` rồi respring vẫn hiện bản cũ. `postinst` xoá các mục đó; biểu tượng mới hiện ở lần
-  respring / khởi động lại máy tiếp theo. Biểu tượng có kênh alpha: iOS 6 giữ phần trong suốt, không tự bo góc, không thêm bóng
+  `vn.conbangtv.legacy_…`) — thay `Icon*.png` rồi respring vẫn hiện bản cũ. `postinst` xoá các mục đó, cập nhật OTA khởi động lại
+  SpringBoard nên biểu tượng mới hiện ngay. Biểu tượng có kênh alpha: iOS 6 giữ phần trong suốt, không tự bo góc, không thêm bóng
   (đã thử trên iPhone 5 bằng `tools/cbscreen` 15/11/2026).
 
 ## Kết quả trên iPhone 5 (iOS 6.1.4)

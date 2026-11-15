@@ -3,6 +3,23 @@
 chown root:wheel /usr/libexec/conbangtv/cbupdate
 chmod 4755 /usr/libexec/conbangtv/cbupdate
 # SpringBoard iOS 6 giữ biểu tượng đã dựng trong IconsCache (respring cũng không đọc lại Icon*.png): xoá mục của app để
-# biểu tượng mới hiện ở lần khởi động lại SpringBoard / máy tiếp theo. Chỉ là bộ đệm, SpringBoard tự dựng lại.
+# biểu tượng mới hiện khi SpringBoard khởi động lại. Chỉ là bộ đệm, SpringBoard tự dựng lại.
 rm -f /var/mobile/Library/Caches/com.apple.IconsCache/vn.conbangtv.legacy_*
+# Khởi động lại SpringBoard sau khi cập nhật (nhận biểu tượng / tên mới):
+# - cbupdate từ 0.4.3 tự làm sau dpkg (đặt CONBANG_OTA=1) → bỏ qua ở đây;
+# - cbupdate cũ (≤ 0.4.2) không làm: lúc dpkg chạy tệp .deb còn trong thư mục tải của app → giao cho cbupdate mới vừa cài
+#   («--respring»: chờ cài xong, khởi động lại SpringBoard, mở lại app);
+# - Cydia: xin nút «Restart SpringBoard». Cài tay bằng dpkg qua SSH: không làm gì.
+if [ "$1" = configure ] && [ -z "$CONBANG_OTA" ]; then
+    if [ -n "$CYDIA" ]; then
+        eval "echo 'finish:restart' >&${CYDIA%% *}"
+    else
+        # (mỗi tệp một tiến trình chờ; tệp sót lại không bị xoá thì tiến trình đó tự thôi sau 2 phút)
+        for deb in /var/mobile/Documents/ConBangTV-update/*.deb; do
+            if [ -f "$deb" ]; then
+                /usr/libexec/conbangtv/cbupdate --respring "$deb" </dev/null >/dev/null 2>&1 &
+            fi
+        done
+    fi
+fi
 exit 0

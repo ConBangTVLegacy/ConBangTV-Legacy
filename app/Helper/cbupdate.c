@@ -1,10 +1,15 @@
 // cbupdate — cài bản cập nhật (OTA) của Côn Bằng TV Legacy, chạy quyền root (setuid, postinst đặt chown root + chmod 4755).
 //   /usr/libexec/conbangtv/cbupdate <tệp .deb> [pid app]
+//   /usr/libexec/conbangtv/cbupdate --respring <tệp .deb>   (postinst gọi khi bản cài là cbupdate cũ ≤ 0.4.2 — xem dưới)
 // App tải .deb từ GitHub Releases (qua lõi, đã kiểm SHA-256) vào /var/mobile/Documents/ConBangTV-update/ rồi gọi công cụ này.
 // Chỉ nhận tệp .deb nằm trong đúng thư mục đó và đúng gói vn.conbangtv.legacy (dpkg-deb -f … Package) — không cài gói khác.
-// Kiểm xong thì tách nền (app chờ được mã thoát ngay), đóng app, dpkg -i, xoá tệp, mở lại app (SpringBoardServices, quyền
-// com.apple.springboard.launchapplications như tools/cblaunch). Không uicache, trừ khi bản mới đổi tên hiện dưới biểu tượng
-// (khi đó uicache rồi khởi động lại SpringBoard) — uicache trên iOS 6 từng làm SpringBoard của iPad treo.
+// Kiểm xong thì tách nền (app chờ được mã thoát ngay), đóng app, dpkg -i, xoá tệp, khởi động lại SpringBoard (để nhận biểu
+// tượng / tên mới — postinst đã xoá bộ đệm biểu tượng), rồi mở lại app (SpringBoardServices, quyền
+// com.apple.springboard.launchapplications như tools/cblaunch). Không uicache, trừ khi bản mới đổi tên hiện dưới biểu tượng —
+// uicache trên iOS 6 từng làm SpringBoard của iPad treo.
+// dpkg chạy với CONBANG_OTA=1 để postinst biết cbupdate này tự khởi động lại SpringBoard. cbupdate ≤ 0.4.2 không làm việc đó:
+// postinst thấy tệp .deb còn trong thư mục tải (cbupdate cũ chỉ xoá sau khi dpkg xong) thì gọi «--respring»: chờ tệp bị xoá
+// (dpkg xong), khởi động lại SpringBoard, mở lại app.
 // Nhật ký: /var/mobile/Documents/ConBangTV-update/install.log
 #include <CoreFoundation/CoreFoundation.h>
 #include <dlfcn.h>
@@ -111,23 +116,100 @@ static int launchApp(void) {
     return result;
 }
 
-int main(int argc, char **argv) {
-    if (argc < 2) {
-        fprintf(stderr, "cách dùng: cbupdate <tệp .deb trong " UPDATE_DIR "> [pid app]\n");
-        return 64;
+/// App đang ở trước màn hình?
+static int appIsFrontmost(void) {
+    void *sbs = dlopen("/System/Library/PrivateFrameworks/SpringBoardServices.framework/SpringBoardServices", RTLD_LAZY);
+    CFStringRef (*copyFront)(void) = sbs ? (CFStringRef (*)(void))dlsym(sbs, "SBSCopyFrontmostApplicationDisplayIdentifier") : NULL;
+    if (!copyFront) return 0;
+    CFStringRef front = copyFront();
+    int yes = front && CFStringCompare(front, CFSTR(PACKAGE), 0) == kCFCompareEqualTo;
+    if (front) CFRelease(front);
+    return yes;
+}
+
+/// Khởi động lại SpringBoard rồi mở lại app: SpringBoard lên lại mất ~15–30 giây (lúc đầu nhận lệnh mở app mà chưa mở thật),
+/// nên thử tới khi app thật sự ở trước màn hình (tối đa ~90 giây)
+static int respringAndRelaunch(void) {
+    char *respring[] = {"/usr/bin/killall", "-9", "SpringBoard", NULL};
+    run(respring, NULL, 0);
+    logf_("đã khởi động lại SpringBoard%s", "");
+    sleep(12);
+    for (int i = 0; i < 39; i++) {
+        if (launchApp() == 0) {
+            sleep(2);
+            if (appIsFrontmost()) return 0;
+        } else {
+            sleep(2);
+        }
     }
-    // 1. Tệp: đúng thư mục tải của app, đuôi .deb, tệp thường (realpath gỡ hết liên kết tượng trưng — trên iOS /var là liên
-    //    kết tới /private/var nên so với realpath của chính thư mục tải)
-    char real[PATH_MAX], dir[PATH_MAX];
-    if (!realpath(argv[1], real) || !realpath(UPDATE_DIR, dir)) return 65;
-    strlcat(dir, "/", sizeof(dir));
+    return -1;
+}
+
+/// Tệp hợp lệ: đúng thư mục tải của app, đuôi .deb, tệp thường (realpath gỡ hết liên kết tượng trưng — trên iOS /var là liên
+/// kết tới /private/var nên so với realpath của chính thư mục tải)
+static int validDeb(const char *arg, char real[PATH_MAX]) {
+    char dir[PATH_MAX];
+    if (!realpath(arg, real) || !realpath(UPDATE_DIR, dir)) return 0;
+    strlcat(dir, "/", PATH_MAX);
     size_t n = strlen(real), dn = strlen(dir);
     struct stat st;
     if (strncmp(real, dir, dn) != 0 || n < dn + 5 || strcmp(real + n - 4, ".deb") != 0 || strchr(real + dn, '/') ||
         stat(real, &st) != 0 || !S_ISREG(st.st_mode)) {
         fprintf(stderr, "tệp không hợp lệ: %s\n", real);
-        return 65;
+        return 0;
     }
+    return 1;
+}
+
+/// Tách nền (cha thoát ngay), ghi nhật ký vào install.log. Trả 1 ở tiến trình con, 0 ở cha, -1 lỗi
+static int detach(void) {
+    pid_t child = fork();
+    if (child < 0) return -1;
+    if (child > 0) return 0;
+    setsid();
+    int logfd = open(UPDATE_DIR "install.log", O_WRONLY | O_CREAT | O_APPEND, 0644);
+    if (logfd >= 0) {
+        dup2(logfd, 1);
+        dup2(logfd, 2);
+        close(logfd);
+    }
+    int devnull = open("/dev/null", O_RDONLY);
+    if (devnull >= 0) dup2(devnull, 0);
+    return 1;
+}
+
+/// «--respring <tệp .deb>»: bản cài đang chạy là cbupdate cũ — chờ nó cài xong (xoá tệp .deb) rồi khởi động lại SpringBoard và
+/// mở lại app. Tệp không bị xoá trong 2 phút (tệp sót lại, không phải đang cài) thì thôi.
+static int respringMode(const char *arg) {
+    char real[PATH_MAX];
+    if (!validDeb(arg, real)) return 65;
+    if (setgid(0) != 0 || setuid(0) != 0) return 66;
+    setenv("PATH", "/usr/bin:/bin:/usr/sbin:/sbin", 1);
+    int d = detach();
+    if (d <= 0) return d == 0 ? 0 : 70;
+    struct stat st;
+    int i = 0;
+    for (; i < 600 && stat(real, &st) == 0; i++) usleep(200000);
+    if (i == 600) {
+        logf_("--respring: %s vẫn còn sau 2 phút — bỏ, không khởi động lại SpringBoard", real);
+        return 1;
+    }
+    logf_("--respring: bản cài cũ đã cài xong%s", "");
+    char code[16];
+    snprintf(code, sizeof(code), "%d", respringAndRelaunch());
+    logf_("mở lại app sau khi khởi động lại SpringBoard → %s", code);
+    return 0;
+}
+
+int main(int argc, char **argv) {
+    if (argc >= 3 && strcmp(argv[1], "--respring") == 0) return respringMode(argv[2]);
+    if (argc < 2) {
+        fprintf(stderr, "cách dùng: cbupdate <tệp .deb trong " UPDATE_DIR "> [pid app]\n");
+        return 64;
+    }
+    // 1. Tệp: đúng thư mục tải của app (xem validDeb)
+    char real[PATH_MAX];
+    if (!validDeb(argv[1], real)) return 65;
     // 2. Quyền root (bit setuid do postinst đặt)
     if (setgid(0) != 0 || setuid(0) != 0) {
         fprintf(stderr, "cbupdate cần quyền root (setuid) — cài lại gói " PACKAGE "\n");
@@ -145,18 +227,8 @@ int main(int argc, char **argv) {
     }
     pid_t app = argc > 2 ? (pid_t)atoi(argv[2]) : 0;
     // 4. Tách nền: app nhận mã 0 ngay (đã kiểm xong), phần cài chạy tiếp sau khi app bị đóng
-    pid_t child = fork();
-    if (child < 0) return 70;
-    if (child > 0) return 0;
-    setsid();
-    int logfd = open(UPDATE_DIR "install.log", O_WRONLY | O_CREAT | O_APPEND, 0644);
-    if (logfd >= 0) {
-        dup2(logfd, 1);
-        dup2(logfd, 2);
-        close(logfd);
-    }
-    int devnull = open("/dev/null", O_RDONLY);
-    if (devnull >= 0) dup2(devnull, 0);
+    int d = detach();
+    if (d <= 0) return d == 0 ? 0 : 70;
     logf_("cài %s", real);
     sleep(1);
     if (app > 1) {
@@ -168,6 +240,7 @@ int main(int argc, char **argv) {
     char before[256], after[256];
     displayName(before, sizeof(before));
     char *install[] = {"/usr/bin/dpkg", "-i", real, NULL};
+    setenv("CONBANG_OTA", "1", 1);  // postinst: cbupdate này tự khởi động lại SpringBoard
     int rc = run(install, NULL, 0);
     char code[16];
     snprintf(code, sizeof(code), "%d", rc);
@@ -176,7 +249,7 @@ int main(int argc, char **argv) {
     displayName(after, sizeof(after));
     // Cập nhật thường KHÔNG chạy uicache: app vẫn ở chỗ cũ nên SpringBoard mở được ngay; uicache trên iOS 6 có lúc làm
     // SpringBoard treo (iPad mini 1, 14/11/2026 — phải khởi động lại SpringBoard). Chỉ khi đổi tên hiện dưới biểu tượng mới
-    // uicache (quyền mobile) rồi khởi động lại SpringBoard để nhận tên mới — kể cả uicache làm treo thì cũng được gỡ ngay.
+    // uicache (quyền mobile) để nhận tên mới — kể cả uicache làm treo thì bước khởi động lại SpringBoard ngay sau cũng gỡ được.
     if (rc == 0 && strcmp(before, after) != 0) {
         logf_("đổi tên app → %s: uicache + khởi động lại SpringBoard", after);
         pid_t u = fork();
@@ -192,16 +265,19 @@ int main(int argc, char **argv) {
             for (int i = 0; i < 300 && waitpid(u, &status, WNOHANG) == 0; i++) usleep(100000);  // tối đa 30 giây
             kill(u, SIGKILL);
         }
-        char *respring[] = {"/usr/bin/killall", "-9", "SpringBoard", NULL};
-        run(respring, NULL, 0);
-        sleep(10);
-    } else {
-        sleep(1);
     }
-    int launched = launchApp();
-    if (launched != 0) {  // SpringBoard đang bận: thử lại một lần
-        sleep(3);
+    int launched;
+    if (rc == 0) {
+        // Cài xong: khởi động lại SpringBoard để nhận biểu tượng / tên mới (postinst đã xoá bộ đệm biểu tượng), rồi mở lại app
+        launched = respringAndRelaunch();
+    } else {
+        // Cài lỗi: bản cũ vẫn nguyên, chỉ mở lại app
+        sleep(1);
         launched = launchApp();
+        if (launched != 0) {  // SpringBoard đang bận: thử lại một lần
+            sleep(3);
+            launched = launchApp();
+        }
     }
     snprintf(code, sizeof(code), "%d", launched);
     logf_("mở lại app → %s", code);
