@@ -181,6 +181,7 @@ static NSArray *CBParseSubtitles(NSString *text) {
     NSInteger _panelGroup;      // bản đang xem trong bảng (chưa đổi bản đang phát cho tới khi chọn tập)
     UIButton *_closeButton, *_serverButton, *_playButton, *_prevButton, *_nextButton, *_backButton, *_fwdButton, *_retryButton;
     UIButton *_waitButton;      // «Báo khi xem được» (tập chưa có server phát được trên iOS 6)
+    UIButton *_venetiumButton;  // «Mở trong Venetium» (trình duyệt Chromium cho iOS cũ — trang phát bằng trình phát của nó)
     UISlider *_slider;
     UIActivityIndicatorView *_spinner;
     NSTimer *_hideTimer;
@@ -313,6 +314,10 @@ static NSArray *CBParseSubtitles(NSString *text) {
     [_waitButton addTarget:self action:@selector(waitTapped) forControlEvents:UIControlEventTouchUpInside];
     _waitButton.hidden = YES;
     [self.view addSubview:_waitButton];
+    _venetiumButton = [CBTheme button:@"Mở trong Venetium" primary:NO];
+    [_venetiumButton addTarget:self action:@selector(openInVenetium) forControlEvents:UIControlEventTouchUpInside];
+    _venetiumButton.hidden = YES;
+    [self.view addSubview:_venetiumButton];
     _toast = [self overlayLabel:[CBTheme bold:22]];
     _toast.textAlignment = NSTextAlignmentCenter;
     _toast.backgroundColor = shade;
@@ -433,6 +438,9 @@ static NSArray *CBParseSubtitles(NSString *text) {
     CGSize ws = [_waitButton sizeThatFits:CGSizeMake(360, 44)];
     CGFloat wy = _retryButton.hidden ? CGRectGetMaxY(_status.frame) + 14 : CGRectGetMaxY(_retryButton.frame) + 10;
     _waitButton.frame = CGRectMake((w - ws.width - 24) / 2, wy, ws.width + 24, 44);
+    CGSize vs = [_venetiumButton sizeThatFits:CGSizeMake(360, 44)];
+    CGFloat vy = !_waitButton.hidden ? CGRectGetMaxY(_waitButton.frame) + 10 : wy;
+    _venetiumButton.frame = CGRectMake((w - vs.width - 24) / 2, vy, vs.width + 24, 44);
     CGFloat tw =MIN(w - 40, MAX(160, ceil([_toast.text ?: @"" sizeWithFont:_toast.font].width) + 40));  // «Xem tiếp 1:05:12»
     _toast.frame = CGRectMake((w - tw) / 2, h / 2 - 30, tw, 60);
     [self layoutSubtitle];
@@ -483,6 +491,7 @@ static NSArray *CBParseSubtitles(NSString *text) {
     _status.hidden = NO;
     _retryButton.hidden = YES;
     _waitButton.hidden = YES;
+    _venetiumButton.hidden = YES;
     [_spinner startAnimating];
     [self.view setNeedsLayout];
 }
@@ -491,6 +500,7 @@ static NSArray *CBParseSubtitles(NSString *text) {
     _status.hidden = YES;
     _retryButton.hidden = YES;
     _waitButton.hidden = YES;
+    _venetiumButton.hidden = YES;
     [_spinner stopAnimating];
 }
 
@@ -511,6 +521,7 @@ static NSArray *CBParseSubtitles(NSString *text) {
     }
     _retryButton.hidden = !(title && action);
     _waitButton.hidden = YES;
+    _venetiumButton.hidden = YES;
     [self setControlsVisible:YES];
     [self.view setNeedsLayout];
 }
@@ -523,7 +534,42 @@ static NSArray *CBParseSubtitles(NSString *text) {
     if (_index >= (NSInteger)eps.count || !CBStr(eps[_index], @"url")) return;
     [self updateWaitButton];
     _waitButton.hidden = NO;
+    _venetiumButton.hidden = ![self venetiumInstalled];
     [self.view setNeedsLayout];
+}
+
+#pragma mark - «Mở trong Venetium»
+
+/// Venetium (Chromium cho iOS 5–10 đã jailbreak, nguồn Cydia computershik73.github.io/repo/beta) đã cài: lược đồ venetium://
+- (BOOL)venetiumInstalled {
+    return [[UIApplication sharedApplication] canOpenURL:[NSURL URLWithString:@"venetium://open"]];
+}
+
+/// Trang mở trong Venetium: trang web thường → trang tập (trình phát + nút server của chính trang); trang dạng API (KKPhim,
+/// NguonC, VSMOV… — địa chỉ tập do app đặt, không phải trang xem được) → trang trình phát nhúng của server đầu tiên chỉ có
+/// trình phát nhúng
+- (NSString *)browserPageURL {
+    id api = [CBCore sync:@"api.isKnown" args:@{@"url": _epUrl ?: @""}];
+    BOOL isApi = [api respondsToSelector:@selector(boolValue)] && [api boolValue];
+    if (!isApi) return _epUrl;
+    for (id v in _probeResults ?: @[]) {
+        if (CBIsDict(v) && CBStr(v, @"url") && !CBVideoIsDirect(v)) return CBStr(v, @"url");
+    }
+    return _epUrl;
+}
+
+/// Mở trang trong Venetium: trang tự phát bằng trình phát của nó trong một trình duyệt thật (như GeckoView / WebView2 của các
+/// bản khác) — app không đụng vào luồng; lần xem đó app không ghi được chỗ xem
+- (void)openInVenetium {
+    NSString *page = [self browserPageURL];
+    if (!page.length) return;
+    NSString *enc = (__bridge_transfer NSString *)CFURLCreateStringByAddingPercentEscapes(
+        NULL, (__bridge CFStringRef)page, NULL, CFSTR(":/?#[]@!$&'()*+,;="), kCFStringEncodingUTF8);
+    NSURL *u = [NSURL URLWithString:[@"venetium://open?url=" stringByAppendingString:enc]];
+    CBLog(@"Mở trong Venetium: %@", page);
+    [self savePosition];
+    [_player pause];
+    [[UIApplication sharedApplication] openURL:u];
 }
 
 - (void)updateWaitButton {
@@ -1492,6 +1538,7 @@ static NSArray *CBParseSubtitles(NSString *text) {
     else if (_sleepAt) sleep = [NSString stringWithFormat:@"Hẹn giờ tắt: còn %lld phút", MAX(1, (_sleepAt - CBNowMs() + 59999) / 60000)];
     [items addObject:@[sleep, ^{ [weakSelf showSleep]; }]];
     [items addObject:@[@"Tải lại tập này", ^{ [weakSelf reloadEpisode]; }]];
+    if ([self venetiumInstalled]) [items addObject:@[@"Mở trang này trong Venetium", ^{ [weakSelf openInVenetium]; }]];
     [self sheet:CBStr(_detail, @"title") items:items];
 }
 
