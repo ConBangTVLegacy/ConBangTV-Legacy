@@ -14,6 +14,8 @@ static const NSUInteger CBMaxProfiles = 8;
 @implementation CBProfilesViewController {
     NSArray *_profiles;
     NSMutableArray *_tiles;
+    UIScrollView *_scroll;  // nhiều người xem (tối đa 8) không vừa một màn iPhone
+    UIButton *_closeButton;
     UILabel *_title;
     NSDictionary *_pending;  // người xem đang hỏi mã PIN
 }
@@ -21,14 +23,44 @@ static const NSUInteger CBMaxProfiles = 8;
 - (void)viewDidLoad {
     [super viewDidLoad];
     self.view.backgroundColor = [CBTheme bg];
+    _scroll = [[UIScrollView alloc] initWithFrame:self.view.bounds];
+    _scroll.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    _scroll.alwaysBounceVertical = YES;
+    [self.view addSubview:_scroll];
+    if (self.closable) {
+        _closeButton = [UIButton buttonWithType:UIButtonTypeCustom];
+        [_closeButton setTitle:@"✕ Đóng" forState:UIControlStateNormal];
+        [_closeButton setTitleColor:[CBTheme dim] forState:UIControlStateNormal];
+        [_closeButton setTitleColor:[CBTheme text] forState:UIControlStateHighlighted];
+        _closeButton.titleLabel.font = [CBTheme bold:16];
+        [_closeButton addTarget:self action:@selector(closeTapped) forControlEvents:UIControlEventTouchUpInside];
+        [self.view addSubview:_closeButton];
+    }
     _title = [[UILabel alloc] init];
     _title.backgroundColor = [UIColor clearColor];
     _title.textColor = [CBTheme text];
     _title.font = [CBTheme bold:24];
     _title.textAlignment = NSTextAlignmentCenter;
     _title.text = @"Ai đang xem?";
-    [self.view addSubview:_title];
+    [_scroll addSubview:_title];
     [self buildTiles];
+}
+
+// iPhone: dọc như các màn khác (màn trình bày đè lên không theo khoá chiều của thanh điều hướng)
+- (BOOL)shouldAutorotate {
+    return YES;
+}
+
+- (UIInterfaceOrientationMask)supportedInterfaceOrientations {
+    return [CBTheme isPad] ? UIInterfaceOrientationMaskAll : UIInterfaceOrientationMaskPortrait;
+}
+
+- (UIInterfaceOrientation)preferredInterfaceOrientationForPresentation {
+    return [CBTheme isPad] ? [UIApplication sharedApplication].statusBarOrientation : UIInterfaceOrientationPortrait;
+}
+
+- (void)closeTapped {
+    [self.presentingViewController dismissViewControllerAnimated:YES completion:nil];
 }
 
 - (UIButton *)tileWithAvatar:(UIView *)avatar name:(NSString *)text tag:(NSInteger)tag {
@@ -82,18 +114,21 @@ static const NSUInteger CBMaxProfiles = 8;
         [(UILabel *)[add viewWithTag:2] setTextColor:[CBTheme dim]];
         [_tiles addObject:add];
     }
-    for (UIView *v in _tiles) [self.view addSubview:v];
+    for (UIView *v in _tiles) [_scroll addSubview:v];
     [self.view setNeedsLayout];
 }
 
 - (void)viewDidLayoutSubviews {
     [super viewDidLayoutSubviews];
     CGFloat w = self.view.bounds.size.width, h = self.view.bounds.size.height;
-    CGFloat tw = 110, th = 120;
-    NSInteger cols = MAX(1, MIN((NSInteger)_tiles.count, (NSInteger)floor((w - 20) / tw)));
+    _closeButton.frame = CGRectMake(8, 20, 90, 44);
+    // iPhone dọc: 3 cột (ô 100 điểm) — trước 2 cột, 6 người xem trở lên tràn khỏi màn
+    CGFloat tw = [CBTheme isPad] ? 110 : MIN(110, floor((w - 12) / 3)), th = 120;
+    NSInteger cols = MAX(1, MIN((NSInteger)_tiles.count, (NSInteger)floor((w - 12) / tw)));
     NSInteger rows = ((NSInteger)_tiles.count + cols - 1) / cols;
-    CGFloat y0 = MAX(80, (h - rows * th) / 2);
+    CGFloat y0 = MAX(110, (h - rows * th) / 2);
     _title.frame = CGRectMake(0, y0 - 60, w, 34);
+    _scroll.contentSize = CGSizeMake(w, y0 + rows * th + 30);
     for (NSUInteger i = 0; i < _tiles.count; i++) {
         NSInteger r = (NSInteger)i / cols, c = (NSInteger)i % cols;
         NSInteger inRow = MIN(cols, (NSInteger)_tiles.count - r * cols);
@@ -145,8 +180,7 @@ static const NSUInteger CBMaxProfiles = 8;
     }
     NSString *text = [[a textFieldAtIndex:0].text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
     if (a.tag == CBAskAdd) {
-        if (!text.length) return;
-        NSDictionary *np = [CBPrefs addProfile:text];
+        NSDictionary *np = [CBPrefs addProfile:text];  // tên trống → «Người xem» (như ở Cài đặt)
         CBLog(@"Thêm người xem %@", CBStr(np, @"name"));
         [self buildTiles];
         return;

@@ -26,6 +26,7 @@
     NSMutableDictionary *_offsets;  // id hàng → chỗ đã cuộn ngang
     NSDictionary *_longItem;
     NSString *_profileShown;
+    NSString *_contFirst, *_freshFirst;  // phim đầu hàng «Xem tiếp» / «Có tập mới» lần dựng trước
 }
 
 - (instancetype)init {
@@ -141,9 +142,19 @@
     if (_profileShown && ![_profileShown isEqualToString:[self homeSignature]]) {
         [self reload];
     } else {
+        [self saveVisibleOffsets];
         [self rebuildHead];
         [self buildChips];
         [self.tableView reloadData];
+    }
+}
+
+/// Giữ vị trí cuộn ngang của các hàng đang hiện (trước khi dựng lại hàng)
+- (void)saveVisibleOffsets {
+    for (UITableViewCell *c in self.tableView.visibleCells) {
+        if ([c isKindOfClass:[CBRowCell class]] && [(CBRowCell *)c rowId]) {
+            _offsets[[(CBRowCell *)c rowId]] = @([(CBRowCell *)c offset]);
+        }
     }
 }
 
@@ -162,6 +173,7 @@
 #pragma mark - Dữ liệu
 
 - (void)syncDataChanged {
+    [self saveVisibleOffsets];
     [self rebuildHead];
     [self.tableView reloadData];
 }
@@ -192,6 +204,12 @@
         if (cont.count >= 20) break;
     }
     if (cont.count) [rows addObject:@{@"id": @"continue", @"title": @"Xem tiếp", @"items": cont, @"more": @"history:"}];
+    // Phim vừa xem lên đầu «Xem tiếp» / có tập mới khác đầu hàng: cuộn hàng về đầu (giữ vị trí cũ thì phim vừa xem bị khuất)
+    NSString *contFirst = cont.count ? CBStr(cont[0], @"url") : nil, *freshFirst = fresh.count ? CBStr(fresh[0], @"url") : nil;
+    if (!(contFirst == _contFirst || [contFirst isEqualToString:_contFirst])) [_offsets removeObjectForKey:@"continue"];
+    if (!(freshFirst == _freshFirst || [freshFirst isEqualToString:_freshFirst])) [_offsets removeObjectForKey:@"new-eps"];
+    _contFirst = contFirst;
+    _freshFirst = freshFirst;
     _headRows = rows;
 }
 
@@ -202,7 +220,17 @@
 
 - (void)reload {
     NSInteger t = ++_token;
-    _profileShown = [self homeSignature];
+    NSString *sig = [self homeSignature];
+    if (_profileShown && ![_profileShown isEqualToString:sig]) {
+        // Đổi người xem / hồ sơ trẻ em / trang phim / kiểu trang chủ: bỏ ngay hàng phim của trang chủ cũ (không để hàng của
+        // người trước nằm đó tới khi tải xong — hay mãi nếu tải lỗi)
+        _feedRows = nil;
+        _categories = nil;
+        [_offsets removeAllObjects];
+        [self buildChips];
+    }
+    _profileShown = sig;
+    [self saveVisibleOffsets];
     [self rebuildHead];
     if (!_feedRows.count) _note = @"Đang tải trang chủ…";
     [self.tableView reloadData];
@@ -268,6 +296,7 @@
     if (t != _token) return;
     [self.refreshControl endRefreshing];
     if (!_feedRows.count) _note = [NSString stringWithFormat:@"Không tải được trang chủ.\n%@\nKéo xuống để thử lại.", err ?: @""];
+    else [CBTheme toast:[NSString stringWithFormat:@"Không làm mới được trang chủ: %@", err ?: @"lỗi mạng"]];
     [self.tableView reloadData];
 }
 
@@ -386,6 +415,7 @@
         __weak CBHomeViewController *weakSelf = self;
         cell.onSelect = ^(NSDictionary *item) { [weakSelf open:item]; };
         cell.onLongPress = ^(NSDictionary *item) { [weakSelf longPress:item]; };
+        cell.rowId = rid;
         [cell setItems:CBArr(row, @"items") offset:[_offsets[rid] floatValue]];
         return cell;
     }
@@ -411,10 +441,9 @@
 }
 
 - (void)tableView:(UITableView *)tableView didEndDisplayingCell:(UITableViewCell *)cell forRowAtIndexPath:(NSIndexPath *)ip {
-    NSArray *rows = [self allRows];
-    if ([cell isKindOfClass:[CBRowCell class]] && ip.section < (NSInteger)rows.count) {
-        NSString *rid = CBStr(rows[ip.section], @"id");
-        if (rid) _offsets[rid] = @([(CBRowCell *)cell offset]);
+    // Theo mã hàng gắn trên ô: lúc này hàng có thể đã dựng lại (chỉ số dòng cũ trỏ sang hàng khác)
+    if ([cell isKindOfClass:[CBRowCell class]] && [(CBRowCell *)cell rowId]) {
+        _offsets[[(CBRowCell *)cell rowId]] = @([(CBRowCell *)cell offset]);
     }
 }
 
@@ -473,6 +502,7 @@
     if ([CBStr(_longItem, @"kind") isEqualToString:@"continue"]) [CBPrefs removeHistory:CBStr(_longItem, @"url")];
     else [CBPrefs unfollow:CBStr(_longItem, @"url")];
     _longItem = nil;
+    [self saveVisibleOffsets];
     [self rebuildHead];
     [self.tableView reloadData];
 }
@@ -486,9 +516,9 @@
 }
 
 - (void)openProfiles {
+    // Đổi người xem: viewWillAppear (khi màn chọn đóng) thấy chữ ký trang chủ đổi thì tải lại — không tải thêm lần nữa ở đây
     CBProfilesViewController *p = [[CBProfilesViewController alloc] init];
-    __weak CBHomeViewController *weakSelf = self;
-    p.onDone = ^{ [weakSelf reload]; };
+    p.closable = YES;
     [self presentViewController:p animated:YES completion:nil];
 }
 

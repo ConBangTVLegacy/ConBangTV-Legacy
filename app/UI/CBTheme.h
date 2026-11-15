@@ -32,4 +32,7 @@
 + (NSString *)time:(double)seconds;
 /// Lời báo ngắn ở cuối màn hình (tự ẩn sau vài giây; lời mới thay lời cũ)
 + (void)toast:(NSString *)text;
+/// Đặt UISegmentedControl (nằm trong strip) vừa khung: đủ chỗ thì chia đều; nhiều bản không đủ chỗ (chữ bị cắt «Thuyết…»)
+/// thì mỗi nút rộng theo chữ, strip cuộn ngang
++ (void)layoutSegments:(UISegmentedControl *)seg inStrip:(UIScrollView *)strip frame:(CGRect)frame;
 @end

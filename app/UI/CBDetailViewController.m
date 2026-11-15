@@ -73,6 +73,7 @@
     UILabel *_titleLabel, *_otherLabel, *_infoLabel, *_countLabel, *_messageLabel;
     UIButton *_playButton, *_followButton;
     UISegmentedControl *_groups;
+    UIScrollView *_groupsStrip;
     UIActivityIndicatorView *_spinner;
     CGFloat _headerHeight;
     UILabel *_descLabel;
@@ -225,7 +226,8 @@
     _otherLabel.text = CBStr(_detail, @"otherTitle");
     _infoLabel.text = CBStr(_detail, @"info");
     NSArray *groups = CBArr(_detail, @"groups");
-    [_groups removeFromSuperview];
+    [_groupsStrip removeFromSuperview];
+    _groupsStrip = nil;
     _groups = nil;
     if (groups.count > 1) {
         NSMutableArray *names = [NSMutableArray array];
@@ -234,7 +236,9 @@
         _groups.segmentedControlStyle = UISegmentedControlStyleBar;
         _groups.selectedSegmentIndex = _group;
         [_groups addTarget:self action:@selector(groupChanged) forControlEvents:UIControlEventValueChanged];
-        [_header addSubview:_groups];
+        _groupsStrip = [[UIScrollView alloc] init];
+        [_groupsStrip addSubview:_groups];
+        [_header addSubview:_groupsStrip];
     }
     NSArray *eps = [self episodes];
     _countLabel.text = _detail ? (eps.count ? [NSString stringWithFormat:@"Danh sách tập (%lu)", (unsigned long)eps.count]
@@ -246,6 +250,10 @@
     NSString *play = histEp ? [NSString stringWithFormat:@"▶︎ Xem tiếp: %@", histEp] : (eps.count > 1 ? @"▶︎ Xem từ tập đầu" : @"▶︎ Xem");
     [_playButton setTitle:play forState:UIControlStateNormal];
     _playButton.enabled = _detail && (eps.count || histEp);
+    if (!_detail && _error) {  // tải lỗi: nút Xem thành «Thử lại» (trước phải lùi ra rồi vào lại)
+        [_playButton setTitle:@"↻ Thử lại" forState:UIControlStateNormal];
+        _playButton.enabled = YES;
+    }
     BOOL following = [CBPrefs followOf:CBStr(_detail, @"url") ?: CBStr(_item, @"url") ?: @""] != nil;
     [_followButton setTitle:following ? @"Đang theo dõi" : @"Theo dõi" forState:UIControlStateNormal];
     _followButton.enabled = _detail != nil;
@@ -275,7 +283,7 @@
     _playButton.frame = CGRectMake(12, y, w - 36 - fw, 40);
     y += 52;
     if (_groups) {
-        _groups.frame = CGRectMake(12, y, w - 24, 32);
+        [CBTheme layoutSegments:_groups inStrip:_groupsStrip frame:CGRectMake(12, y, w - 24, 32)];
         y += 44;
     }
     if (_messageLabel.text) {
@@ -452,6 +460,13 @@
 }
 
 - (void)playTapped {
+    if (!_detail) {  // «↻ Thử lại» sau khi tải lỗi
+        _error = nil;
+        [self relayout];
+        [_spinner startAnimating];
+        [self load];
+        return;
+    }
     NSString *histEp = CBStr(_hist, @"epUrl");
     if (histEp) {
         [self playEpisode:histEp resume:YES];

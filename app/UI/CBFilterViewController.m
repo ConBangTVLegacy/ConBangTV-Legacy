@@ -13,6 +13,7 @@
     UIScrollView *_scroll;
     UILabel *_message;
     UIActivityIndicatorView *_spinner;
+    UIButton *_retryButton;
 }
 
 + (BOOL)isApi:(NSString *)base {
@@ -33,7 +34,10 @@
 - (instancetype)initGenres:(BOOL)genres {
     if ((self = [super initWithNibName:nil bundle:nil])) {
         _genres = genres;
-        self.title = genres ? @"Thể loại" : @"Quốc gia";
+        // Bộ lọc là của trang phim đang chọn (cả khi trang chủ tổng hợp) — ghi tên trang cho khỏi nhầm
+        NSString *host = [[NSURL URLWithString:[CBPrefs baseUrl] ?: @""].host stringByReplacingOccurrencesOfString:@"www." withString:@""];
+        self.title = [NSString stringWithFormat:@"%@%@", genres ? @"Thể loại" : @"Quốc gia",
+                                                host.length ? [@" · " stringByAppendingString:host] : @""];
     }
     return self;
 }
@@ -51,6 +55,10 @@
     _spinner.hidesWhenStopped = YES;
     [self.view addSubview:_spinner];
     _buttons = [NSMutableArray array];
+    _retryButton = [CBTheme button:@"Thử lại" primary:YES];
+    [_retryButton addTarget:self action:@selector(load) forControlEvents:UIControlEventTouchUpInside];
+    _retryButton.hidden = YES;
+    [self.view addSubview:_retryButton];
     [self load];
 }
 
@@ -61,6 +69,8 @@
     for (id c in list) if (CBStr(c, @"title") && CBStr(c, @"url")) [items addObject:c];
     _items = items;
     _message.text = items.count ? nil : [NSString stringWithFormat:@"Không tải được danh sách.%@", err ? [@"\n" stringByAppendingString:err] : @""];
+    _retryButton.hidden = items.count > 0;
+    [self.view setNeedsLayout];
     CBLog(@"%@ của %@: %lu mục%@", self.title, [CBPrefs baseUrl], (unsigned long)items.count, err ? [@" — LỖI " stringByAppendingString:err] : @"");
     for (UIView *b in _buttons) [b removeFromSuperview];
     [_buttons removeAllObjects];
@@ -84,6 +94,8 @@
 }
 
 - (void)load {
+    _retryButton.hidden = YES;
+    _message.text = nil;
     NSString *base = [CBPrefs baseUrl];
     if ([CBFilterViewController isApi:base]) {
         [self apply:[CBCore sync:@"api.filters" args:@{@"baseUrl": base}] error:nil];
@@ -101,6 +113,8 @@
     CGFloat w = self.view.bounds.size.width;
     _message.frame = CGRectMake(20, 30, w - 40, 100);
     _spinner.center = CGPointMake(w / 2, 40);
+    CGSize rs = [_retryButton sizeThatFits:CGSizeMake(300, 44)];
+    _retryButton.frame = CGRectMake((w - rs.width - 40) / 2, 140, rs.width + 40, 44);
     CGFloat pad = 12, gap = 10, bh = [CBTheme isPad] ? 52 : 46;
     NSInteger cols = MAX(2, (NSInteger)floor((w - 2 * pad + gap) / ([CBTheme isPad] ? 170 : 140)));
     CGFloat bw = floor((w - 2 * pad - gap * (cols - 1)) / cols);

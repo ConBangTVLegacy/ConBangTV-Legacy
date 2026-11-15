@@ -18,4 +18,9 @@
 /// Bảng chọn tập (gỡ lỗi: lệnh «eps» / «ep <số>»)
 - (void)toggleEpisodes;
 - (void)selectEpisode:(NSInteger)i;
+/// Phụ đề rời WebVTT / SRT từ địa chỉ http (gỡ lỗi: lệnh «sub <url>»)
+- (void)loadSubtitles:(NSString *)url;
+/// Gỡ lỗi: giả server đang phát bị rớt (lệnh «fail») / giả hết tập (lệnh «end»)
+- (void)debugStreamFailed;
+- (void)debugPlayedToEnd;
 @end

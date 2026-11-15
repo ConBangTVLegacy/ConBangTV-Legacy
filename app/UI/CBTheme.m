@@ -109,10 +109,39 @@
                      : [NSString stringWithFormat:@"%02ld:%02ld", s / 60, s % 60];
 }
 
++ (void)layoutSegments:(UISegmentedControl *)seg inStrip:(UIScrollView *)strip frame:(CGRect)frame {
+    strip.frame = frame;
+    strip.showsHorizontalScrollIndicator = NO;
+    strip.scrollsToTop = NO;
+    UIFont *font = [UIFont boldSystemFontOfSize:13];  // chữ của UISegmentedControlStyleBar
+    NSMutableArray *widths = [NSMutableArray array];
+    CGFloat total = 0;
+    for (NSUInteger i = 0; i < seg.numberOfSegments; i++) {
+        CGFloat tw = ceil([[seg titleForSegmentAtIndex:i] ?: @"" sizeWithFont:font].width) + 28;
+        [widths addObject:@(tw)];
+        total += tw;
+    }
+    BOOL fits = total <= frame.size.width;
+    for (NSUInteger i = 0; i < seg.numberOfSegments; i++) [seg setWidth:fits ? 0 : [widths[i] floatValue] forSegmentAtIndex:i];
+    seg.frame = CGRectMake(0, 0, fits ? frame.size.width : total, frame.size.height);
+    strip.contentSize = seg.frame.size;
+}
+
 static UILabel *gToast;
 
+/// Chỗ gắn thông báo: màn trên cùng của cửa sổ chính. Trên iOS 6 cửa sổ không xoay theo máy (chỉ màn của nó xoay) — gắn vào
+/// cửa sổ thì nằm ngang chữ ở iPad ngang / trình phát iPhone; và không lấy keyWindow (lúc bấm nút hộp thoại, keyWindow là cửa
+/// sổ riêng của hộp thoại — thông báo biến mất theo hộp thoại).
++ (UIView *)toastHost {
+    id<UIApplicationDelegate> d = [UIApplication sharedApplication].delegate;
+    UIWindow *w = [d respondsToSelector:@selector(window)] ? d.window : [UIApplication sharedApplication].keyWindow;
+    UIViewController *vc = w.rootViewController;
+    while (vc.presentedViewController && !vc.presentedViewController.isBeingDismissed) vc = vc.presentedViewController;
+    return vc.isViewLoaded ? vc.view : w;
+}
+
 + (void)toast:(NSString *)text {
-    UIWindow *w = [UIApplication sharedApplication].keyWindow;
+    UIView *w = [self toastHost];
     if (!w || !text.length) return;
     [gToast removeFromSuperview];
     UILabel *l = [[UILabel alloc] init];
@@ -128,10 +157,9 @@ static UILabel *gToast;
     CGFloat h = [self heightOf:text font:l.font width:maxW - 24] + 20;
     CGSize one = [text sizeWithFont:l.font];
     CGFloat lw = MIN(maxW, one.width + 32);
-    l.frame = CGRectMake((w.bounds.size.width - lw) / 2, w.bounds.size.height - h - 60, lw, h);
+    l.frame = CGRectMake((w.bounds.size.width - lw) / 2, w.bounds.size.height - h - 100, lw, h);
     l.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin | UIViewAutoresizingFlexibleRightMargin | UIViewAutoresizingFlexibleTopMargin;
     l.alpha = 0;
-    // Trên mọi màn (kể cả màn trình bày đè lên): gắn vào cửa sổ, đặt trên cùng
     [w addSubview:l];
     gToast = l;
     [UIView animateWithDuration:0.2 animations:^{ l.alpha = 1; }];

@@ -60,11 +60,20 @@ static void CBCallback(uint64_t cid, const char *json) {
         if (ms > 1500) CBLog(@"[lõi] %@ chậm: %lld ms", h[2], ms);
         if ([err isKindOfClass:[NSString class]]) {
             CBLog(@"[lõi] %@ lỗi sau %lld ms: %@", h[2], CBNowMs() - [h[3] longLongValue], err);
-            done(nil, err);
+            done(nil, CBCleanError(err));
         } else {
             done(CBUnNull(msg[@"ok"]), nil);
         }
     });
+}
+
+NSString *CBCleanError(NSString *err) {
+    if (![err isKindOfClass:[NSString class]]) return @"";
+    NSRange bar = [err rangeOfString:@"|"];
+    if (bar.location == NSNotFound || bar.location == 0 || bar.location > 8) return err;
+    NSString *tag = [err substringToIndex:bar.location];
+    NSCharacterSet *notTag = [[NSCharacterSet lowercaseLetterCharacterSet] invertedSet];
+    return [tag rangeOfCharacterFromSet:notTag].location == NSNotFound ? [err substringFromIndex:bar.location + 1] : err;
 }
 
 @implementation CBCore
@@ -105,7 +114,7 @@ static void CBCallback(uint64_t cid, const char *json) {
     id err = v[@"err"];
     if ([err isKindOfClass:[NSString class]]) {
         CBLog(@"[lõi] %@ lỗi: %@", method, err);
-        if (error) *error = err;
+        if (error) *error = CBCleanError(err);
         return nil;
     }
     return CBUnNull(v[@"ok"]);

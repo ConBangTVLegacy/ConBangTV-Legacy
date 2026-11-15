@@ -579,7 +579,7 @@ static NSString *Sha256Hex(NSString *s) {
 }
 
 + (BOOL)unblock {
-    return [self boolKey:@"unblock" def:NO];
+    return [self boolKey:@"unblock" def:YES];  // như lõi (prefs.rs flag_on): chưa có khoá = bật
 }
 
 + (void)setUnblock:(BOOL)on {

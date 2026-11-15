@@ -45,6 +45,9 @@
     UISearchBar *_searchBar;
     UILabel *_message;
     UIActivityIndicatorView *_spinner;
+    UIButton *_retryButton;
+    NSString *_lastQuery;
+    long long _pageFailedAt;  // trang sau vừa tải lỗi (ms) — chờ 5 giây mới tự thử lại khi cuộn
 }
 
 - (instancetype)initWithListUrl:(NSString *)url title:(NSString *)title {
@@ -217,6 +220,10 @@
     _spinner.hidesWhenStopped = YES;
     _spinner.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin | UIViewAutoresizingFlexibleRightMargin;
     [self.view addSubview:_spinner];
+    _retryButton = [CBTheme button:@"Thử lại" primary:YES];
+    [_retryButton addTarget:self action:@selector(retryTapped) forControlEvents:UIControlEventTouchUpInside];
+    _retryButton.hidden = YES;
+    [self.view addSubview:_retryButton];
 
     if (_searchMode) {
         _searchBar = [[UISearchBar alloc] initWithFrame:CGRectMake(0, 0, self.view.bounds.size.width, 44)];
@@ -224,6 +231,9 @@
         _searchBar.placeholder = @"Tên phim (tìm trên mọi trang)";
         _searchBar.delegate = self;
         _searchBar.tintColor = [CBTheme surface];
+        // Tên phim gõ không dấu / tên riêng: không để bàn phím tự sửa / tự viết hoa
+        _searchBar.autocorrectionType = UITextAutocorrectionTypeNo;
+        _searchBar.autocapitalizationType = UITextAutocapitalizationTypeNone;
         [self.view addSubview:_searchBar];
         _cv.frame = CGRectMake(0, 44, self.view.bounds.size.width, self.view.bounds.size.height - 44);
         [self showMessage:@"Gõ tên phim rồi bấm Tìm."];
@@ -247,12 +257,27 @@
     CGFloat top = _searchBar ? 44 : 0;
     _message.frame = CGRectMake(20, top + 30, self.view.bounds.size.width - 40, 100);
     _spinner.center = CGPointMake(self.view.bounds.size.width / 2, top + 40);
+    CGSize rs = [_retryButton sizeThatFits:CGSizeMake(300, 44)];
+    _retryButton.frame = CGRectMake((self.view.bounds.size.width - rs.width - 40) / 2, top + 140, rs.width + 40, 44);
     [_cv.collectionViewLayout invalidateLayout];
 }
 
 - (void)showMessage:(NSString *)text {
     _message.text = text;
     _message.hidden = text == nil;
+    _retryButton.hidden = YES;
+}
+
+/// Lỗi tải (danh sách trống): kèm nút «Thử lại» — trước phải lùi ra rồi vào lại
+- (void)showError:(NSString *)text {
+    [self showMessage:text];
+    _retryButton.hidden = NO;
+}
+
+- (void)retryTapped {
+    _retryButton.hidden = YES;
+    if (_searchMode) [self search:_lastQuery ?: _searchBar.text];
+    else if (_listUrl) [self loadPage:_listUrl];
 }
 
 #pragma mark - Tải
@@ -277,7 +302,10 @@
     if (_loading) return;
     _loading = YES;
     NSInteger t = ++_token;
-    if (!_sections.count) [_spinner startAnimating];
+    if (!_sections.count) {
+        [self showMessage:nil];
+        [_spinner startAnimating];
+    }
     // «imdb:top» = trang «Điểm IMDb cao» của lõi (các nhóm phim KKPhim xếp theo IMDb), không phải địa chỉ trang
     BOOL imdb = [url isEqualToString:@"imdb:top"];
     long long t0 = CBNowMs();
@@ -289,7 +317,13 @@
         self->_loading = NO;
         [self->_spinner stopAnimating];
         if (!CBIsDict(ok)) {
-            if (!self->_sections.count) [self showMessage:[NSString stringWithFormat:@"Không tải được danh sách.\n%@", err ?: @""]];
+            if (!self->_sections.count) {
+                [self showError:[NSString stringWithFormat:@"Không tải được danh sách.\n%@", err ?: @""]];
+            } else {
+                // Trang sau lỗi: báo một lần, khỏi tự thử lại liên tục mỗi lần cuộn (thử lại sau 5 giây)
+                self->_pageFailedAt = CBNowMs();
+                [CBTheme toast:[NSString stringWithFormat:@"Không tải được trang sau: %@", err ?: @"lỗi mạng"]];
+            }
             return;
         }
         NSArray *more = [self sectionsOfPage:ok];
@@ -310,6 +344,7 @@
 - (void)search:(NSString *)query {
     NSString *q = [query stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
     if (!q.length) return;
+    _lastQuery = q;
     _searchBar.text = q;
     [_searchBar resignFirstResponder];
     NSInteger t = ++_token;
@@ -325,16 +360,71 @@
         if (t != self->_token) return;
         self->_loading = NO;
         [self->_spinner stopAnimating];
-        self->_sections = CBIsDict(ok) ? [self sectionsOfPage:ok] : @[];
+        self->_sections = CBIsDict(ok) ? [self dropJunk:[self sectionsOfPage:ok] query:q] : @[];
         NSUInteger n = 0;
         for (NSDictionary *s in self->_sections) n += CBArr(s, @"items").count;
         CBLog(@"Tìm «%@»: %lu phim, %lu nhóm sau %lld ms%@", q, (unsigned long)n, (unsigned long)self->_sections.count,
               CBNowMs() - t0, err ? [@" — LỖI " stringByAppendingString:err] : @"");
-        [self showMessage:self->_sections.count ? nil
-                                               : (err ? [NSString stringWithFormat:@"Không tìm được.\n%@", err]
-                                                      : [NSString stringWithFormat:@"Không thấy phim nào tên «%@».", q])];
+        if (!self->_sections.count && err) [self showError:[NSString stringWithFormat:@"Không tìm được.\n%@", err]];
+        else [self showMessage:self->_sections.count ? nil : [NSString stringWithFormat:@"Không thấy phim nào tên «%@».", q]];
         [self->_cv reloadData];
     }];
+}
+
+/// Chữ thường, bỏ dấu (cả «đ»), dấu gạch → cách — để so tên phim với từ khoá
+static NSString *CBFold(NSString *s) {
+    NSString *f = [[s ?: @"" lowercaseString] stringByReplacingOccurrencesOfString:@"đ" withString:@"d"];
+    f = [f stringByFoldingWithOptions:NSDiacriticInsensitiveSearch locale:nil];
+    return [[f stringByReplacingOccurrencesOfString:@"-" withString:@" "] stringByReplacingOccurrencesOfString:@"_" withString:@" "];
+}
+
+/// Có trang tìm hỏng trả cả loạt phim không liên quan (phimmois.fun: ~60 phim mới nhất cho mọi từ khoá). Thận trọng để không bỏ
+/// nhầm phim tìm theo tên gốc / tên tiếng Anh (tên hiển thị là tên Việt):
+/// - trang kiểu «next» (họ phimmois — tìm kiếm đang hỏng) mà gần như không phim nào khớp từ khoá → chỉ giữ phim khớp;
+/// - trang nào trả từ 30 phim trở lên mà không phim nào khớp → bỏ cả nhóm;
+/// - còn lại giữ nguyên.
+- (NSArray *)dropJunk:(NSArray *)sections query:(NSString *)q {
+    NSMutableArray *words = [NSMutableArray array];
+    for (NSString *w in [CBFold(q) componentsSeparatedByCharactersInSet:[NSCharacterSet whitespaceCharacterSet]]) {
+        if (w.length) [words addObject:w];
+    }
+    if (!words.count) return sections;
+    NSMutableArray *out = [NSMutableArray array];
+    for (NSDictionary *s in sections) {
+        NSArray *items = CBArr(s, @"items") ?: @[];
+        NSMutableArray *hits = [NSMutableArray array];
+        for (NSDictionary *it in items) {
+            NSString *slug = [[NSURL URLWithString:CBStr(it, @"url") ?: @""].path lastPathComponent];
+            NSString *hay = [NSString stringWithFormat:@"%@ %@", CBFold(CBStr(it, @"title")), CBFold(slug)];
+            BOOL all = YES;
+            for (NSString *w in words) if ([hay rangeOfString:w].location == NSNotFound) { all = NO; break; }
+            if (all) [hits addObject:it];
+        }
+        NSString *host = items.count ? CBHostOf(CBStr(items[0], @"url") ?: @"") : nil;
+        BOOL next = host && [[CBCore sync:@"next.isKnown" args:@{@"url": [@"https://" stringByAppendingString:host]}] boolValue];
+        BOOL junk = (next && items.count >= 8 && hits.count * 5 <= items.count) || (items.count >= 30 && !hits.count);
+        if (!junk) {
+            [out addObject:s];
+            continue;
+        }
+        CBLog(@"Tìm «%@»: nhóm %@ trả %lu phim, chỉ %lu khớp từ khoá — bỏ phần không liên quan", q, CBStr(s, @"title"),
+              (unsigned long)items.count, (unsigned long)hits.count);
+        if (hits.count) {
+            NSMutableDictionary *keep = [s mutableCopy];
+            keep[@"items"] = hits;
+            // Tiêu đề nhóm của lõi ghi số phim («phimmois.fun — 60 phim»): đếm lại theo số còn giữ
+            NSString *title = CBStr(s, @"title") ?: @"";
+            NSRegularExpression *count = [NSRegularExpression regularExpressionWithPattern:@"\\d+ phim" options:0 error:NULL];
+            keep[@"title"] = [count stringByReplacingMatchesInString:title options:0 range:NSMakeRange(0, title.length)
+                                                         withTemplate:[NSString stringWithFormat:@"%lu phim", (unsigned long)hits.count]];
+            [out addObject:keep];
+        }
+    }
+    return out;
+}
+
+- (void)scrollViewWillBeginDragging:(UIScrollView *)sv {
+    [_searchBar resignFirstResponder];  // cuộn kết quả thì cất bàn phím
 }
 
 - (void)searchBarSearchButtonClicked:(UISearchBar *)searchBar {
@@ -342,7 +432,8 @@
 }
 
 - (void)scrollViewDidScroll:(UIScrollView *)sv {
-    if (_nextUrl && !_loading && sv.contentOffset.y + sv.bounds.size.height > sv.contentSize.height - 400) {
+    if (_nextUrl && !_loading && CBNowMs() - _pageFailedAt > 5000 &&
+        sv.contentOffset.y + sv.bounds.size.height > sv.contentSize.height - 400) {
         [self loadPage:_nextUrl];
     }
 }

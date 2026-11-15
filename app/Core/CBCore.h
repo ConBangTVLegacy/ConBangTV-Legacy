@@ -17,3 +17,7 @@
 /// → mở lại (bản vá patches/0002, hàm net.revive). Gọi mỗi lần app hoạt động lại; cổng còn sống thì không làm gì.
 + (void)reviveLocalPorts;
 @end
+
+/// Câu báo lỗi của lõi để hiện cho người xem: bỏ dấu máy «socks|» / «ss|» lõi gắn vào đầu (lỗi qua proxy); nil → @"".
+/// CBCore đã làm sạch lỗi trả về cho call / sync — hàm này cho chỗ ghép câu từ lỗi lấy nơi khác.
+NSString *CBCleanError(NSString *err);

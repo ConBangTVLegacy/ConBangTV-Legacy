@@ -57,9 +57,8 @@
 
 - (void)askProfile {
     if ([CBPrefs profiles].count < 2 || ![CBPrefs askProfile]) return;
+    // Chọn xong: trang chủ tự tải lại ở viewWillAppear nếu người xem đổi (trước đây tải thêm một lần nữa ở đây)
     CBProfilesViewController *p = [[CBProfilesViewController alloc] init];
-    CBHomeViewController *home = _home;
-    p.onDone = ^{ [home reload]; };
     [self.nav presentViewController:p animated:NO completion:nil];
 }
 

@@ -29,6 +29,47 @@ static double CBDuration(AVPlayerItem *item) {
 }
 @end
 
+/// Giây từ mốc thời gian phụ đề: «01:02:03.456», «02:03.456» (WebVTT) hoặc «01:02:03,456» (SRT); âm = không đọc được
+static double CBSubTime(NSString *s) {
+    NSArray *parts = [[s stringByReplacingOccurrencesOfString:@"," withString:@"."] componentsSeparatedByString:@":"];
+    if (parts.count < 2 || parts.count > 3) return -1;
+    double t = 0;
+    for (NSString *p in parts) t = t * 60 + [p doubleValue];
+    return t;
+}
+
+/// Đọc phụ đề WebVTT / SRT → [{s, e, t}] theo thời gian bắt đầu; bỏ thẻ định dạng (<i>, <c.vi>, {\an8}…)
+static NSArray *CBParseSubtitles(NSString *text) {
+    static NSRegularExpression *tags;
+    if (!tags) tags = [NSRegularExpression regularExpressionWithPattern:@"<[^>]*>|\\{\\\\[^}]*\\}" options:0 error:NULL];
+    NSString *norm = [[text stringByReplacingOccurrencesOfString:@"\r\n" withString:@"\n"] stringByReplacingOccurrencesOfString:@"\r"
+                                                                                                                withString:@"\n"];
+    NSMutableArray *cues = [NSMutableArray array];
+    for (NSString *block in [norm componentsSeparatedByString:@"\n\n"]) {
+        NSArray *lines = [block componentsSeparatedByString:@"\n"];
+        NSUInteger i = 0;
+        while (i < lines.count && [lines[i] rangeOfString:@"-->"].location == NSNotFound) i++;
+        if (i >= lines.count) continue;
+        NSArray *se = [lines[i] componentsSeparatedByString:@"-->"];
+        NSString *a = [se[0] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+        NSString *b = [[[se[1] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]]
+            componentsSeparatedByString:@" "] firstObject];  // bỏ «align:… position:…» sau mốc kết thúc
+        double s = CBSubTime(a), e = CBSubTime(b);
+        if (s < 0 || e <= s) continue;
+        NSMutableArray *textLines = [NSMutableArray array];
+        for (NSUInteger k = i + 1; k < lines.count; k++) {
+            NSString *l = [tags stringByReplacingMatchesInString:lines[k] options:0 range:NSMakeRange(0, [lines[k] length]) withTemplate:@""];
+            l = [[[[l stringByReplacingOccurrencesOfString:@"&amp;" withString:@"&"] stringByReplacingOccurrencesOfString:@"&lt;" withString:@"<"]
+                stringByReplacingOccurrencesOfString:@"&gt;" withString:@">"] stringByReplacingOccurrencesOfString:@"&nbsp;" withString:@" "];
+            l = [l stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+            if (l.length) [textLines addObject:l];
+        }
+        if (textLines.count) [cues addObject:@{@"s": @(s), @"e": @(e), @"t": [textLines componentsJoinedByString:@"\n"]}];
+    }
+    [cues sortUsingComparator:^NSComparisonResult(NSDictionary *x, NSDictionary *y) { return [x[@"s"] compare:y[@"s"]]; }];
+    return cues;
+}
+
 #pragma mark - Ô tập trong bảng chọn tập
 
 @interface CBPlayerEpCell : UICollectionViewCell
@@ -79,6 +120,16 @@ static double CBDuration(AVPlayerItem *item) {
     int _resumeAt;
     BOOL _started, _closed, _dragging, _seekedResume;
     BOOL _appeared, _limitWarned;
+    BOOL _everPlayed;   // tập này đã phát được (rớt về sau là mất kết nối, không phải «iOS 6 không phát được»)
+    BOOL _retriedSame;  // đã thử lại server đang phát sau khi rớt giữa chừng
+    BOOL _ended;        // đang ở cuối tập (hiện «Hết tập.»)
+    BOOL _seeking;      // đang tua — chưa cập nhật thanh tua theo thời gian cũ
+    NSUInteger _tickCount;
+    // Phụ đề rời (server riêng của PhimMoi): lõi phục vụ tệp WebVTT ở cổng phát nội bộ; AVPlayer iOS 6 không gắn được → tự vẽ
+    NSArray *_cues;      // [{s, e, t}] theo thời gian bắt đầu
+    NSUInteger _cueIdx;
+    NSInteger _subToken;
+    UILabel *_subLabel;
     CBLimitBlock _pendingBlock;  // hết giờ xem trước khi màn hiện xong — xử lý lúc viewDidAppear
     NSString *_blockedEp;
     long long _lastSave;
@@ -95,6 +146,7 @@ static double CBDuration(AVPlayerItem *item) {
     UIView *_epPanel;
     UICollectionView *_epGrid;
     UISegmentedControl *_epGroups;
+    UIScrollView *_epGroupsStrip;
     NSInteger _panelGroup;      // bản đang xem trong bảng (chưa đổi bản đang phát cho tới khi chọn tập)
     UIButton *_closeButton, *_serverButton, *_playButton, *_prevButton, *_nextButton, *_backButton, *_fwdButton, *_retryButton;
     UISlider *_slider;
@@ -162,6 +214,9 @@ static double CBDuration(AVPlayerItem *item) {
     _closeButton = [self barButton:@"✕ Đóng" action:@selector(close)];
     [_top addSubview:_closeButton];
     _serverButton = [self barButton:@"Server" action:@selector(showServers)];
+    _serverButton.titleLabel.lineBreakMode = NSLineBreakByTruncatingTail;
+    _serverButton.titleLabel.adjustsFontSizeToFitWidth = YES;
+    _serverButton.titleLabel.minimumScaleFactor = 0.75;
     [_top addSubview:_serverButton];
     _episodesButton = [self barButton:@"☰ Tập" action:@selector(toggleEpisodes)];
     _episodesButton.hidden = YES;
@@ -175,7 +230,7 @@ static double CBDuration(AVPlayerItem *item) {
     [self.view addSubview:_bottom];
     _prevButton = [self barButton:@"« Tập trước" action:@selector(previousEpisode)];
     _backButton = [self barButton:[NSString stringWithFormat:@"−%lds", (long)[CBPrefs seekStep]] action:@selector(backTapped)];
-    _playButton = [self barButton:@"Dừng" action:@selector(togglePlay)];
+    _playButton = [self barButton:@"Tạm dừng" action:@selector(togglePlay)];
     _fwdButton = [self barButton:[NSString stringWithFormat:@"+%lds", (long)[CBPrefs seekStep]] action:@selector(fwdTapped)];
     _nextButton = [self barButton:@"Tập sau »" action:@selector(nextEpisode)];
     for (UIButton *b in @[_prevButton, _backButton, _playButton, _fwdButton, _nextButton]) [_bottom addSubview:b];
@@ -192,6 +247,20 @@ static double CBDuration(AVPlayerItem *item) {
     _durLabel.textAlignment = NSTextAlignmentRight;
     [_bottom addSubview:_timeLabel];
     [_bottom addSubview:_durLabel];
+
+    _subLabel = [[UILabel alloc] init];
+    _subLabel.backgroundColor = [UIColor colorWithWhite:0 alpha:0.45];
+    _subLabel.textColor = [UIColor whiteColor];
+    _subLabel.font = [CBTheme bold:[CBTheme isPad] ? 24 : 17];
+    _subLabel.numberOfLines = 0;
+    _subLabel.textAlignment = NSTextAlignmentCenter;
+    _subLabel.shadowColor = [UIColor blackColor];
+    _subLabel.shadowOffset = CGSizeMake(1, 1);
+    _subLabel.layer.cornerRadius = 4;
+    _subLabel.clipsToBounds = YES;
+    _subLabel.hidden = YES;
+    _subLabel.userInteractionEnabled = NO;
+    [self.view addSubview:_subLabel];
 
     _spinner = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleWhiteLarge];
     _spinner.hidesWhenStopped = YES;
@@ -231,14 +300,19 @@ static double CBDuration(AVPlayerItem *item) {
     if (_detail) {
         [self start:_detail];
     } else {
-        [self showLoading:@"Đang tải phim…"];
-        NSInteger t = ++_token;
-        [CBCore call:@"site.detail" args:@{@"url": _filmUrl ?: @""} done:^(id ok, NSString *err) {
-            if (t != self->_token || self->_closed) return;
-            if (CBIsDict(ok)) [self start:ok];
-            else [self showError:[NSString stringWithFormat:@"Không tải được phim.\n%@", err ?: @""] retry:NO];
-        }];
+        [self loadFilm];
     }
+}
+
+- (void)loadFilm {
+    [self showLoading:@"Đang tải phim…"];
+    NSInteger t = ++_token;
+    [CBCore call:@"site.detail" args:@{@"url": _filmUrl ?: @""} done:^(id ok, NSString *err) {
+        if (t != self->_token || self->_closed) return;
+        if (CBIsDict(ok)) [self start:ok];
+        else [self showError:[NSString stringWithFormat:@"Không tải được phim.\n%@", CBCleanError(err)] button:@"Thử lại"
+                      action:@selector(loadFilm)];
+    }];
 }
 
 - (void)viewWillAppear:(BOOL)animated {
@@ -291,9 +365,11 @@ static double CBDuration(AVPlayerItem *item) {
     CGFloat topH = 44;
     _top.frame = CGRectMake(0, 0, w, topH);
     _closeButton.frame = CGRectMake(4, 0, 90, topH);
-    _serverButton.frame = CGRectMake(w - 94, 0, 90, topH);
-    _episodesButton.frame = CGRectMake(w - 184, 0, 86, topH);
-    _titleLabel.frame = CGRectMake(98, 0, w - 196 - (_episodesButton.hidden ? 0 : 90), topH);
+    // Nút server rộng theo tên server (vd «HLS (bỏ quảng cáo)» — trước bị cắt còn «HLS…cáo)»), tối đa ~1/3 màn
+    CGFloat sw = MIN(MIN(w * 0.32, 240), MAX(90, ceil([_serverButton.titleLabel.text sizeWithFont:_serverButton.titleLabel.font].width) + 20));
+    _serverButton.frame = CGRectMake(w - sw - 4, 0, sw, topH);
+    _episodesButton.frame = CGRectMake(w - sw - 94, 0, 86, topH);
+    _titleLabel.frame = CGRectMake(98, 0, w - sw - 106 - (_episodesButton.hidden ? 0 : 90), topH);
     [self layoutEpisodePanel];
     CGFloat bottomH = 88;
     _bottom.frame = CGRectMake(0, h - bottomH, w, bottomH);
@@ -308,7 +384,14 @@ static double CBDuration(AVPlayerItem *item) {
     _status.frame = CGRectMake(30, h / 2 - 10, w - 60, [CBTheme heightOf:_status.text font:_status.font width:w - 60] + 4);
     CGSize rs = [_retryButton sizeThatFits:CGSizeMake(300, 44)];
     _retryButton.frame = CGRectMake((w - rs.width) / 2, CGRectGetMaxY(_status.frame) + 14, rs.width, 44);
-    _toast.frame = CGRectMake((w - 160) / 2, h / 2 - 30, 160, 60);
+    CGFloat tw = MIN(w - 40, MAX(160, ceil([_toast.text ?: @"" sizeWithFont:_toast.font].width) + 40));  // «Xem tiếp 1:05:12»
+    _toast.frame = CGRectMake((w - tw) / 2, h / 2 - 30, tw, 60);
+    [self layoutSubtitle];
+}
+
+- (void)setServerTitle:(NSString *)title {
+    [_serverButton setTitle:title ?: @"Server" forState:UIControlStateNormal];
+    [self.view setNeedsLayout];
 }
 
 - (void)setControlsVisible:(BOOL)visible {
@@ -318,6 +401,7 @@ static double CBDuration(AVPlayerItem *item) {
     [UIView animateWithDuration:0.2 animations:^{
         self->_top.alpha = visible ? 1 : 0;
         self->_bottom.alpha = visible ? 1 : 0;
+        [self layoutSubtitle];
     }];
     if (visible && _player.rate > 0) {
         _hideTimer = [NSTimer scheduledTimerWithTimeInterval:4 target:self selector:@selector(autoHide) userInfo:nil repeats:NO];
@@ -338,6 +422,7 @@ static double CBDuration(AVPlayerItem *item) {
 
 - (void)showToast:(NSString *)text {
     _toast.text = text;
+    [self.view setNeedsLayout];
     _toast.alpha = 1;
     [UIView animateWithDuration:0.4 delay:0.6 options:0 animations:^{ self->_toast.alpha = 0; } completion:nil];
 }
@@ -357,11 +442,21 @@ static double CBDuration(AVPlayerItem *item) {
 }
 
 - (void)showError:(NSString *)text retry:(BOOL)retry {
-    CBLog(@"Trình phát báo lỗi: %@", [text stringByReplacingOccurrencesOfString:@"\n" withString:@" "]);
+    [self showError:text button:retry ? @"Chọn server" : nil action:@selector(showServers)];
+}
+
+/// Báo lỗi / trạng thái giữa màn kèm một nút (nil = không nút): «Thử lại», «Chọn server», «Tập sau »»…
+- (void)showError:(NSString *)text button:(NSString *)title action:(SEL)action {
+    CBLog(@"Trình phát: %@", [text stringByReplacingOccurrencesOfString:@"\n" withString:@" "]);
     [_spinner stopAnimating];
     _status.text = text;
     _status.hidden = NO;
-    _retryButton.hidden = !retry;
+    [_retryButton removeTarget:nil action:NULL forControlEvents:UIControlEventAllEvents];
+    if (title && action) {
+        [_retryButton setTitle:title forState:UIControlStateNormal];
+        [_retryButton addTarget:self action:action forControlEvents:UIControlEventTouchUpInside];
+    }
+    _retryButton.hidden = !(title && action);
     [self setControlsVisible:YES];
     [self.view setNeedsLayout];
 }
@@ -384,7 +479,9 @@ static double CBDuration(AVPlayerItem *item) {
         _epGroups.segmentedControlStyle = UISegmentedControlStyleBar;
         _epGroups.selectedSegmentIndex = _panelGroup;
         [_epGroups addTarget:self action:@selector(panelGroupChanged) forControlEvents:UIControlEventValueChanged];
-        [_epPanel addSubview:_epGroups];
+        _epGroupsStrip = [[UIScrollView alloc] init];
+        [_epGroupsStrip addSubview:_epGroups];
+        [_epPanel addSubview:_epGroupsStrip];
     }
     UICollectionViewFlowLayout *layout = [[UICollectionViewFlowLayout alloc] init];
     layout.minimumLineSpacing = 8;
@@ -410,6 +507,7 @@ static double CBDuration(AVPlayerItem *item) {
     _epPanel = nil;
     _epGrid = nil;
     _epGroups = nil;
+    _epGroupsStrip = nil;
     [_episodesButton setTitle:@"☰ Tập" forState:UIControlStateNormal];
     [self setControlsVisible:YES];
 }
@@ -421,7 +519,8 @@ static double CBDuration(AVPlayerItem *item) {
     _epPanel.frame = CGRectMake(0, y, w, h - y - 88);
     CGFloat gy = 0;
     if (_epGroups) {
-        _epGroups.frame = CGRectMake(12, 10, MIN(w - 24, 120.0 * _epGroups.numberOfSegments), 30);
+        [CBTheme layoutSegments:_epGroups inStrip:_epGroupsStrip
+                          frame:CGRectMake(12, 10, MIN(w - 24, 140.0 * _epGroups.numberOfSegments), 30)];
         gy = 46;
     }
     _epGrid.frame = CGRectMake(0, gy, w, _epPanel.bounds.size.height - gy);
@@ -521,6 +620,17 @@ static double CBDuration(AVPlayerItem *item) {
     }
     [self savePosition];
     [self teardownPlayer];
+    // Bỏ server / kết quả hỏi link của tập trước: đang tải tập mới mà bấm «Server» thì không phát nhầm tập cũ dưới tên tập mới
+    _source = nil;
+    _servers = nil;
+    _probeResults = nil;
+    _probing = NO;
+    _serverIdx = 0;
+    _everPlayed = NO;
+    _retriedSame = NO;
+    _ended = NO;
+    [self setServerTitle:@"Server"];
+    [self clearSubtitles];
     _index = i;
     NSDictionary *ep = eps[i];
     _epUrl = CBStr(ep, @"url");
@@ -553,8 +663,8 @@ static double CBDuration(AVPlayerItem *item) {
     [CBCore call:@"kk.source" args:args done:^(id ok, NSString *err) {
         if (t != self->_token || self->_closed) return;
         if (!CBIsDict(ok)) {
-            [self showError:[NSString stringWithFormat:@"Không mở được %@.\n%@", CBStr(ep, @"title") ?: @"tập này", err ?: @""]
-                      retry:NO];
+            [self showError:[NSString stringWithFormat:@"Không mở được %@.\n%@", CBStr(ep, @"title") ?: @"tập này", CBCleanError(err)]
+                     button:@"Thử lại" action:@selector(retryEpisode)];
             return;
         }
         self->_source = ok;
@@ -653,22 +763,26 @@ static double CBDuration(AVPlayerItem *item) {
                 });
             }
             NSDictionary *s = _servers[_probeNext];
-            [_serverButton setTitle:CBStr(s, @"label") ?: @"Server" forState:UIControlStateNormal];
+            [self setServerTitle:CBStr(s, @"label")];
             return;  // chờ server đứng trước trả lời
         }
         NSDictionary *s = _servers[_probeNext];
         NSString *url = CBStr(v, @"url");
         NSString *path = [[NSURL URLWithString:url].path lowercaseString];
         BOOL playable = url && (CBBool(v, @"file", NO) || [path hasSuffix:@".m3u8"]);
-        NSString *local = nil;
+        NSString *local = nil, *sub = nil;
         if (playable) {
             NSMutableDictionary *args = [@{@"src": url, @"page": CBStr(_source, @"epUrl") ?: @"", @"hls": @NO} mutableCopy];
             if (CBStr(v, @"subtitle")) args[@"sub"] = CBStr(v, @"subtitle");
-            local = CBStr([CBCore sync:@"media.open" args:args], @"url");
+            id opened = [CBCore sync:@"media.open" args:args];
+            local = CBStr(opened, @"url");
+            sub = CBStr(opened, @"subtitle");  // phụ đề rời qua cổng phát nội bộ (WebVTT)
         }
         if (local) {
             _serverIdx = _probeNext;
-            [_serverButton setTitle:CBStr(s, @"label") ?: @"Server" forState:UIControlStateNormal];
+            [self setServerTitle:CBStr(s, @"label")];
+            if (sub) [self loadSubtitles:sub];
+            else [self clearSubtitles];
             [self showLoading:[NSString stringWithFormat:@"Đang tải %@…", CBStr(s, @"label") ?: @"server"]];
             CBLog(@"Phát %@ qua %@ (server %@, bắt đầu %ds)", url, local, CBStr(s, @"label"), _resumeAt);
             _probing = NO;
@@ -680,9 +794,29 @@ static double CBDuration(AVPlayerItem *item) {
         _probeNext++;
     }
     _probing = NO;
+    if (_everPlayed) {
+        // Đã phát được rồi mới rớt: mất mạng / server chập chờn — không phải lỗi «iOS 6 không phát được»
+        [self showError:@"Mất kết nối tới server phát.\nKiểm tra Wi-Fi rồi bấm «Thử lại»." button:@"Thử lại"
+                 action:@selector(retryEpisode)];
+        return;
+    }
     [self showError:@"Không server nào phát được trên iOS 6 (các server còn lại chỉ có trình phát nhúng của trang).\n"
                     @"Chọn lại server hoặc xem ở trang phim khác (vd KKPhim)."
               retry:_servers.count > 0];
+}
+
+- (void)debugStreamFailed {
+    [self playbackFailed:[NSError errorWithDomain:@"gỡ lỗi" code:-1 userInfo:nil]];
+}
+
+- (void)debugPlayedToEnd {
+    [_player pause];  // như hết tập thật: AVPlayer dừng ở cuối
+    [self playedToEnd:nil];
+}
+
+/// «Thử lại»: mở lại tập đang xem (hỏi lại server / link từ đầu), xem tiếp từ chỗ đã lưu
+- (void)retryEpisode {
+    [self openEpisode:_index];
 }
 
 #pragma mark - AVPlayer
@@ -700,7 +834,7 @@ static double CBDuration(AVPlayerItem *item) {
     [nc addObserver:self selector:@selector(playedToEnd:) name:AVPlayerItemDidPlayToEndTimeNotification object:_item];
     [nc addObserver:self selector:@selector(failedToEnd:) name:AVPlayerItemFailedToPlayToEndTimeNotification object:_item];
     __weak CBPlayerViewController *weakSelf = self;
-    _timeObs = [_player addPeriodicTimeObserverForInterval:CMTimeMake(1, 2) queue:dispatch_get_main_queue()
+    _timeObs = [_player addPeriodicTimeObserverForInterval:CMTimeMake(1, 4) queue:dispatch_get_main_queue()
                                                 usingBlock:^(CMTime time) { [weakSelf tick]; }];
     [_player play];
 }
@@ -721,6 +855,7 @@ static double CBDuration(AVPlayerItem *item) {
     [(AVPlayerLayer *)_video.layer setPlayer:nil];
     _player = nil;
     _item = nil;
+    [_playButton setTitle:@"Phát" forState:UIControlStateNormal];  // không còn gì đang phát (đổi server, lỗi)
 }
 
 - (void)observeValueForKeyPath:(NSString *)keyPath ofObject:(id)object change:(NSDictionary *)change context:(void *)context {
@@ -745,7 +880,7 @@ static double CBDuration(AVPlayerItem *item) {
             if (self->_item.playbackLikelyToKeepUp || self->_player.rate > 0) [self->_spinner stopAnimating];
             else if (self->_started) [self->_spinner startAnimating];
         } else if ([keyPath isEqualToString:@"rate"]) {
-            [self->_playButton setTitle:self->_player.rate > 0 ? @"Dừng" : @"Phát" forState:UIControlStateNormal];
+            [self->_playButton setTitle:self->_player.rate > 0 ? @"Tạm dừng" : @"Phát" forState:UIControlStateNormal];
             [self updateNowPlaying];
         }
     });
@@ -759,9 +894,19 @@ static double CBDuration(AVPlayerItem *item) {
           (long)error.code, under.domain, (long)under.code, (long)ev.errorStatusCode, ev.errorDomain, ev.errorComment);
     // Giữ chỗ đang xem rồi thử server sau
     double now = CMTimeGetSeconds(_player.currentTime);
+    BOOL wasPlaying = _started;
     if (_started && isfinite(now) && now > 5) _resumeAt = (int)now;
     _seekedResume = NO;
+    _started = NO;  // server mới phát được thì tick mới ẩn chữ «Đang tải…», tự ẩn thanh nút, ghi nhớ server
     [self teardownPlayer];
+    // Đang phát thì rớt (Wi-Fi chập chờn): hỏi lại link chính server này một lần trước khi sang server khác
+    if (wasPlaying && !_retriedSame && _serverIdx < (NSInteger)_servers.count) {
+        _retriedSame = YES;
+        CBLog(@"Server %@ rớt giữa chừng — thử lại server này", CBStr(_servers[_serverIdx], @"label"));
+        _probeResults = nil;
+        [self tryServer:_serverIdx token:++_token];
+        return;
+    }
     [self tryServer:_serverIdx + 1 token:_token];
 }
 
@@ -776,11 +921,14 @@ static double CBDuration(AVPlayerItem *item) {
     dispatch_async(dispatch_get_main_queue(), ^{
         if (self->_closed) return;
         [CBPrefs savePosition:self->_epUrl seconds:0 film:self->_filmUrl];
-        if ([CBPrefs autoNext] && self->_index + 1 < (NSInteger)[self episodes].count) {
+        BOOL more = self->_index + 1 < (NSInteger)[self episodes].count;
+        if ([CBPrefs autoNext] && more) {
             CBLog(@"Hết tập — tự chuyển tập sau");
             [self openEpisode:self->_index + 1];
         } else {
-            [self showError:@"Hết phim." retry:NO];
+            self->_ended = YES;
+            if (more) [self showError:@"Hết tập." button:@"Tập sau »" action:@selector(nextEpisode)];
+            else [self showError:@"Hết phim." button:nil action:NULL];
         }
     });
 }
@@ -789,14 +937,21 @@ static double CBDuration(AVPlayerItem *item) {
     if (!_player || _closed) return;
     double now = CMTimeGetSeconds(_player.currentTime);
     double dur = CBDuration(_item);
+    [self updateSubtitle:now];
+    if (_ended && _player.rate > 0) {  // phát lại sau «Hết tập.» (tua lùi, nút trên màn khoá…)
+        _ended = NO;
+        [self hideStatus];
+    }
     if (!_started && now > 0.5 && _player.rate > 0) {
         _started = YES;
+        _everPlayed = YES;
         [self hideStatus];
         [self setControlsVisible:NO];
         NSString *type = _serverIdx < (NSInteger)_servers.count ? CBStr(_servers[_serverIdx], @"type") : nil;
         if (type) [CBPrefs set:[self workedKey:_source] value:type];
     }
-    if (!_dragging) {
+    if (++_tickCount % 2) return;  // phần dưới mỗi 0,5 giây (nhịp 0,25 giây chỉ để phụ đề khớp hơn)
+    if (!_dragging && !_seeking) {
         _timeLabel.text = [CBTheme time:now];
         _durLabel.text = [CBTheme time:dur];
         _slider.value = isfinite(dur) && dur > 0 ? (float)(now / dur) : 0;
@@ -857,14 +1012,28 @@ static double CBDuration(AVPlayerItem *item) {
 
 - (void)togglePlay {
     if (!_player) return;
-    if (_player.rate > 0) [_player pause];
-    else [_player play];
+    if (_player.rate > 0) {
+        [_player pause];
+    } else {
+        double now = CMTimeGetSeconds(_player.currentTime), dur = CBDuration(_item);
+        if (_ended && isfinite(dur) && isfinite(now) && now >= dur - 1) [self seekTo:0];  // «Phát» ở cuối tập: xem lại từ đầu
+        [_player play];
+    }
     [self setControlsVisible:YES];
 }
 
 - (void)seekTo:(double)seconds {
     if (!_player) return;
-    [_player seekToTime:CMTimeMakeWithSeconds(MAX(0, seconds), 600)];
+    // Chưa tua xong thì tick không đặt lại thanh tua theo thời gian cũ (núm tua nhảy về chỗ cũ rồi mới tới)
+    _seeking = YES;
+    _cueIdx = 0;
+    __weak CBPlayerViewController *weakSelf = self;
+    [_player seekToTime:CMTimeMakeWithSeconds(MAX(0, seconds), 600) completionHandler:^(BOOL finished) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            CBPlayerViewController *s = weakSelf;
+            if (s) s->_seeking = NO;
+        });
+    }];
 }
 
 - (void)seekBy:(double)delta {
@@ -922,7 +1091,10 @@ static double CBDuration(AVPlayerItem *item) {
 }
 
 - (void)showServers {
-    if (!_servers.count) return;
+    if (!_servers.count) {
+        [self showToast:@"Đang tìm server…"];
+        return;
+    }
     UIActionSheet *sheet = [[UIActionSheet alloc] initWithTitle:@"Chọn server" delegate:self cancelButtonTitle:nil
                                          destructiveButtonTitle:nil otherButtonTitles:nil];
     for (NSUInteger i = 0; i < _servers.count; i++) {
@@ -948,8 +1120,68 @@ static double CBDuration(AVPlayerItem *item) {
     [self savePosition];
     [self teardownPlayer];
     _started = NO;
+    _retriedSame = NO;
+    _ended = NO;
     _probeResults = nil;  // lượt hỏi cũ (mã cũ) bị bỏ — hỏi lại
     [self tryServer:index token:++_token];
+}
+
+#pragma mark - Phụ đề rời
+
+- (void)clearSubtitles {
+    _subToken++;
+    _cues = nil;
+    _cueIdx = 0;
+    _subLabel.hidden = YES;
+    _subLabel.text = nil;
+}
+
+/// Tải tệp phụ đề (WebVTT / SRT) từ cổng phát nội bộ, đọc ở luồng nền
+- (void)loadSubtitles:(NSString *)url {
+    [self clearSubtitles];
+    NSInteger t = _subToken;
+    NSURLRequest *req = [NSURLRequest requestWithURL:[NSURL URLWithString:url] cachePolicy:NSURLRequestReloadIgnoringLocalCacheData
+                                     timeoutInterval:30];
+    if (!req.URL) return;
+    __weak CBPlayerViewController *weakSelf = self;
+    [NSURLConnection sendAsynchronousRequest:req queue:[[NSOperationQueue alloc] init]
+                           completionHandler:^(NSURLResponse *resp, NSData *data, NSError *err) {
+        NSString *text = data.length ? [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] : nil;
+        if (!text && data.length) text = [[NSString alloc] initWithData:data encoding:NSWindowsCP1252StringEncoding];
+        NSArray *cues = text ? CBParseSubtitles(text) : nil;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            CBPlayerViewController *s = weakSelf;
+            if (!s || t != s->_subToken || s->_closed) return;
+            CBLog(@"Phụ đề: %lu câu%@", (unsigned long)cues.count, err ? [@" — lỗi " stringByAppendingString:err.localizedDescription] : @"");
+            s->_cues = cues.count ? cues : nil;
+            s->_cueIdx = 0;
+        });
+    }];
+}
+
+- (void)updateSubtitle:(double)now {
+    if (!_cues || !isfinite(now)) return;
+    NSUInteger n = _cues.count;
+    if (_cueIdx >= n || [_cues[_cueIdx][@"s"] doubleValue] > now) _cueIdx = 0;  // tua lùi
+    while (_cueIdx + 1 < n && [_cues[_cueIdx + 1][@"s"] doubleValue] <= now) _cueIdx++;
+    NSDictionary *c = _cues[_cueIdx];
+    NSString *text = ([c[@"s"] doubleValue] <= now && now < [c[@"e"] doubleValue]) ? c[@"t"] : nil;
+    if ([text isEqualToString:_subLabel.text] || (!text && _subLabel.hidden)) return;
+    _subLabel.text = text;
+    _subLabel.hidden = !text;
+    [self layoutSubtitle];
+}
+
+- (void)layoutSubtitle {
+    if (_subLabel.hidden || !_subLabel.text.length) return;
+    CGFloat w = self.view.bounds.size.width, h = self.view.bounds.size.height;
+    CGFloat maxW = w * 0.86;
+    CGFloat th = [CBTheme heightOf:_subLabel.text font:_subLabel.font width:maxW - 16];
+    CGSize one = [_subLabel.text sizeWithFont:_subLabel.font];
+    CGFloat lw = MIN(maxW, ceil(one.width) + 16);
+    // Trên thanh nút dưới khi thanh đang hiện
+    CGFloat bottom = _bottom.alpha > 0.5 ? 88 + 8 : 16;
+    _subLabel.frame = CGRectMake((w - lw) / 2, h - bottom - th - 8, lw, th + 8);
 }
 
 - (void)close {

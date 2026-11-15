@@ -10,6 +10,8 @@
 #import "CBNavController.h"
 #import "CBPlayerViewController.h"
 #import "CBPrefs.h"
+#import "CBTheme.h"
+#import "CBUpdate.h"
 #import "CBProfilesViewController.h"
 #import "CBSettingsViewController.h"
 #import "CBSyncViewController.h"
@@ -144,7 +146,9 @@
     } else if ([verb isEqualToString:@"settings"]) {
         [nav pushViewController:[[CBSettingsViewController alloc] init] animated:YES];
     } else if ([verb isEqualToString:@"profiles"]) {
-        [[self top] presentViewController:[[CBProfilesViewController alloc] init] animated:YES completion:nil];
+        CBProfilesViewController *p = [[CBProfilesViewController alloc] init];
+        p.closable = YES;  // như bấm ảnh người xem ở trang chủ
+        [[self top] presentViewController:p animated:YES completion:nil];
     } else if ([verb isEqualToString:@"rows"] || [verb isEqualToString:@"row"]) {
         UIViewController *root = nav.viewControllers.count ? nav.viewControllers[0] : nil;
         if (![root isKindOfClass:[CBHomeViewController class]]) return;
@@ -326,6 +330,16 @@
         CGFloat y = [arg doubleValue] < 0 ? maxY : MIN(maxY, [arg doubleValue]);
         [sv setContentOffset:CGPointMake(sv.contentOffset.x, y) animated:NO];
         CBLog(@"[gỡ lỗi] cuộn %@ tới %.0f / %.0f", NSStringFromClass([sv class]), y, maxY);
+    } else if ([verb isEqualToString:@"update"]) {
+        [CBUpdate checkManual];  // như chạm «Phiên bản» trong Cài đặt
+    } else if ([verb isEqualToString:@"toast"]) {
+        [CBTheme toast:arg.length ? arg : @"Thông báo thử"];
+    } else if ([verb isEqualToString:@"fail"]) {
+        [player debugStreamFailed];
+    } else if ([verb isEqualToString:@"end"]) {
+        [player debugPlayedToEnd];
+    } else if ([verb isEqualToString:@"sub"]) {
+        [player loadSubtitles:arg];
     } else if ([verb isEqualToString:@"status"]) {
         CBLog(@"[trạng thái] %@", [CBImages debugStatus]);
         CBLog(@"[trạng thái] màn %@ | RAM %.1f MB%@", NSStringFromClass([[self top] class]), CBResidentMB(),

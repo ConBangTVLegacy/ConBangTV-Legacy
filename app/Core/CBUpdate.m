@@ -19,7 +19,9 @@ static const NSTimeInterval kCheckEvery = 6 * 3600;
 static const NSTimeInterval kSnooze = 24 * 3600;
 
 static NSDate *gLastCheck;
-static BOOL gBusy;
+static BOOL gBusy;      // đang tải / cài
+static BOOL gChecking;  // đang hỏi GitHub (tự kiểm lúc mở app và chạm «Phiên bản» cùng lúc: chỉ một lượt)
+static BOOL gPrompting; // đang hiện hộp «Có bản mới» (không chồng hai hộp)
 
 @implementation CBUpdate
 
@@ -63,7 +65,11 @@ static BOOL gBusy;
 }
 
 + (void)check:(BOOL)manual {
-    if (gBusy) return;
+    if (gBusy || gChecking || gPrompting) {
+        if (manual) [CBTheme toast:gBusy ? @"Đang cập nhật…" : @"Đang kiểm tra bản mới…"];
+        return;
+    }
+    gChecking = YES;
     gLastCheck = [NSDate date];
     id override = [CBPrefs get:@"update_api"];  // thử: trỏ tới danh sách release khác
     NSString *api = CBIsStr(override) && [override length] ? override : kReleasesApi;
@@ -71,6 +77,7 @@ static BOOL gBusy;
     [CBCore call:@"http.get" args:@{@"url": api, @"headers": @{@"Accept": @"application/vnd.github+json",
                                                                 @"User-Agent": @"ConBangTVLegacy"}}
             done:^(id ok, NSString *err) {
+        gChecking = NO;
         NSDictionary *rel = nil;
         if (CBIsDict(ok) && CBNum(ok, @"code", 0) == 200) {
             id j = [NSJSONSerialization JSONObjectWithData:[CBStr(ok, @"text") ?: @"" dataUsingEncoding:NSUTF8StringEncoding]
@@ -122,8 +129,10 @@ static BOOL gBusy;
     notes = [notes stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
     if (notes.length > 500) notes = [[notes substringToIndex:500] stringByAppendingString:@"…"];
     NSString *msg = [NSString stringWithFormat:@"Đang dùng bản %@.%@%@", cur, notes.length ? @"\n\n" : @"", notes];
+    gPrompting = YES;
     [[CBAlert title:[NSString stringWithFormat:@"Có bản mới %@", version] message:msg cancel:@"Để sau" others:@[@"Cập nhật"]
                done:^(CBAlert *a, NSInteger index) {
+        gPrompting = NO;
         if (index == a.cancelButtonIndex) {
             [CBPrefs set:@"update_snooze" value:@{@"version": version, @"until": @(CBNowMs() + (long long)(kSnooze * 1000))}];
             return;
@@ -137,6 +146,7 @@ static BOOL gBusy;
 }
 
 + (void)download:(NSDictionary *)asset version:(NSString *)version {
+    if (gBusy) return;  // đang tải bản khác: không xoá thư mục tải dưới chân lượt đang chạy
     if (![self helperReady]) {
         [[CBAlert title:@"Không tự cập nhật được" message:@"Thiếu công cụ cài (cbupdate) — bản đang dùng cài từ trước khi có cập nhật "
                                                           @"tự động. Cài bản mới một lần bằng tay (xem trang conbangtvlegacy.github.io), "
@@ -150,9 +160,18 @@ static BOOL gBusy;
     [fm removeItemAtPath:dir error:NULL];
     [fm createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:NULL];
     NSString *name = [CBStr(asset, @"name") lastPathComponent];
-    NSString *path = [dir stringByAppendingPathComponent:name];
-    UIAlertView *progress = [[UIAlertView alloc] initWithTitle:[NSString stringWithFormat:@"Đang tải bản %@…", version] message:@"0%"
-                                                      delegate:nil cancelButtonTitle:nil otherButtonTitles:nil];
+    // Tên riêng cho mỗi lượt tải: lượt đã huỷ (lõi vẫn tải nốt ở nền) không ghi đè tệp của lượt sau
+    NSString *path = [dir stringByAppendingPathComponent:[NSString stringWithFormat:@"%@-%lld.deb",
+                                                                                     [name stringByDeletingPathExtension], CBNowMs()]];
+    // Có nút «Huỷ»: tải qua lõi chậm (0,1–0,3 MB/s) hay mạng treo thì không bị kẹt hộp thoại không có lối ra
+    __block BOOL cancelled = NO, finished = NO;
+    CBAlert *progress = [CBAlert title:[NSString stringWithFormat:@"Đang tải bản %@…", version] message:@"0%" cancel:@"Huỷ" others:nil
+                                  done:^(CBAlert *a, NSInteger i) {
+        if (finished) return;
+        cancelled = YES;
+        gBusy = NO;
+        CBLog(@"Cập nhật: huỷ tải bản %@", version);
+    }];
     [progress show];
     long long t0 = CBNowMs();
     CBLog(@"Cập nhật: tải %@", CBStr(asset, @"browser_download_url"));
@@ -161,7 +180,12 @@ static BOOL gBusy;
         if ([p respondsToSelector:@selector(doubleValue)]) progress.message = [NSString stringWithFormat:@"%.0f%%", [p doubleValue] * 100];
     }
             done:^(id ok, NSString *err) {
-        [progress dismissWithClickedButtonIndex:0 animated:YES];
+        if (cancelled) {
+            [fm removeItemAtPath:path error:NULL];
+            return;
+        }
+        finished = YES;
+        [progress dismissWithClickedButtonIndex:progress.cancelButtonIndex animated:YES];
         NSString *problem = err ? [@"Không tải được: " stringByAppendingString:err] : [self verify:path asset:asset];
         CBLog(@"Cập nhật: tải xong sau %lld ms%@", CBNowMs() - t0, problem ? [@" — " stringByAppendingString:problem] : @"");
         if (problem) {

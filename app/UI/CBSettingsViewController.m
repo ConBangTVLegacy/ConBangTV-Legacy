@@ -14,12 +14,15 @@
 #import "CBTheme.h"
 
 typedef NS_ENUM(NSInteger, CBSection) { CBSecProfile, CBSecSites, CBSecPlayer, CBSecNet, CBSecData, CBSecAbout, CBSecCount };
-typedef NS_ENUM(NSInteger, CBSettingsAlert) { CBAlertAdd = 1, CBAlertRename, CBAlertPin, CBAlertDelete, CBAlertClear };
+typedef NS_ENUM(NSInteger, CBSettingsAlert) {
+    CBAlertAdd = 1, CBAlertRename, CBAlertPin, CBAlertPinConfirm, CBAlertPinRemove, CBAlertDelete, CBAlertClear
+};
 
 @interface CBSettingsViewController () <UIAlertViewDelegate>
 @end
 
 @implementation CBSettingsViewController {
+    NSString *_pinDraft;  // mã PIN lần nhập đầu, chờ nhập lại
     NSArray *_sites;
     NSMutableDictionary *_siteNames;
 }
@@ -147,7 +150,7 @@ typedef NS_ENUM(NSInteger, CBSettingsAlert) { CBAlertAdd = 1, CBAlertRename, CBA
                 }
                 case 1: return [self cell:tv text:@"Thêm người xem…" detail:nil];
                 case 2: return [self cell:tv text:@"Đổi tên người này…" detail:nil];
-                case 3: return [self cell:tv text:@"Mã PIN" detail:CBStr(p, @"pin") ? @"Đang khoá — bấm để bỏ" : @"Không khoá"];
+                case 3: return [self cell:tv text:@"Mã PIN" detail:CBStr(p, @"pin") ? @"Đang khoá" : @"Không khoá"];
                 case 4: return [self switchCell:tv text:@"Hỏi người xem khi mở app" on:[CBPrefs askProfile] tag:1];
                 case 5: {
                     UITableViewCell *c = [self cell:tv text:@"Giới hạn giờ xem"
@@ -276,6 +279,7 @@ typedef NS_ENUM(NSInteger, CBSettingsAlert) { CBAlertAdd = 1, CBAlertRename, CBA
     if (ip.section == CBSecProfile) {
         if (ip.row == 0) {
             CBProfilesViewController *vc = [[CBProfilesViewController alloc] init];
+            vc.closable = YES;
             __weak CBSettingsViewController *weakSelf = self;
             vc.onDone = ^{ [weakSelf.tableView reloadData]; };
             [self presentViewController:vc animated:YES completion:nil];
@@ -289,8 +293,11 @@ typedef NS_ENUM(NSInteger, CBSettingsAlert) { CBAlertAdd = 1, CBAlertRename, CBA
             [a show];
         } else if (ip.row == 3) {
             if (CBStr(p, @"pin")) {
-                [CBPrefs setProfilePin:CBStr(p, @"id") ?: @"" pin:nil];
-                [tv reloadData];
+                // Bỏ khoá phải nhập đúng mã đang dùng (trẻ khỏi tự mở khoá người xem của bố mẹ)
+                UIAlertView *a = [self ask:@"Bỏ mã PIN" message:@"Nhập mã PIN đang dùng của người này" tag:CBAlertPinRemove
+                                     style:UIAlertViewStyleSecureTextInput ok:@"Bỏ khoá"];
+                [a textFieldAtIndex:0].keyboardType = UIKeyboardTypeNumberPad;
+                [a show];
             } else {
                 UIAlertView *a = [self ask:@"Đặt mã PIN" message:@"4 chữ số — khoá cho trẻ khỏi vào nhầm người xem" tag:CBAlertPin
                                      style:UIAlertViewStyleSecureTextInput ok:@"Đặt"];
@@ -346,14 +353,50 @@ typedef NS_ENUM(NSInteger, CBSettingsAlert) { CBAlertAdd = 1, CBAlertRename, CBA
             NSString *pin = [text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
             if (pin.length == 4 && [pin rangeOfCharacterFromSet:[[NSCharacterSet decimalDigitCharacterSet] invertedSet]].location ==
                                        NSNotFound) {
-                [CBPrefs setProfilePin:pid pin:pin];
+                // Nhập lại lần nữa (gõ nhầm một lần là khoá luôn người xem bằng mã không ai biết)
+                _pinDraft = pin;
+                UIAlertView *again = [self ask:@"Nhập lại mã PIN" message:nil tag:CBAlertPinConfirm
+                                         style:UIAlertViewStyleSecureTextInput ok:@"Đặt"];
+                [again textFieldAtIndex:0].keyboardType = UIKeyboardTypeNumberPad;
+                [again show];
             } else {
                 [[[UIAlertView alloc] initWithTitle:@"Mã PIN phải là 4 chữ số" message:nil delegate:nil cancelButtonTitle:@"OK"
                                   otherButtonTitles:nil] show];
             }
             break;
         }
-        case CBAlertDelete: [CBPrefs deleteProfile:pid]; break;
+        case CBAlertPinConfirm: {
+            NSString *pin = [text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+            if (_pinDraft && [pin isEqualToString:_pinDraft]) {
+                [CBPrefs setProfilePin:pid pin:pin];
+                [CBTheme toast:@"Đã đặt mã PIN."];
+            } else {
+                [[[UIAlertView alloc] initWithTitle:@"Hai lần nhập không khớp" message:@"Mã PIN chưa được đặt." delegate:nil
+                                  cancelButtonTitle:@"OK" otherButtonTitles:nil] show];
+            }
+            _pinDraft = nil;
+            break;
+        }
+        case CBAlertPinRemove:
+            if ([CBPrefs checkPin:text ?: @"" profile:p]) {
+                [CBPrefs setProfilePin:pid pin:nil];
+                [CBTheme toast:@"Đã bỏ mã PIN."];
+            } else {
+                [[[UIAlertView alloc] initWithTitle:@"Sai mã PIN" message:nil delegate:nil cancelButtonTitle:@"OK"
+                                  otherButtonTitles:nil] show];
+            }
+            break;
+        case CBAlertDelete:
+            if ([CBPrefs deleteProfile:pid]) {
+                // Đã chuyển sang người xem khác: người đó có khoá / còn nhiều người → hỏi «Ai đang xem?» (không vào thẳng)
+                if ([CBPrefs profiles].count > 1 || CBStr([CBPrefs currentProfile], @"pin")) {
+                    CBProfilesViewController *vc = [[CBProfilesViewController alloc] init];
+                    __weak CBSettingsViewController *weakSelf = self;
+                    vc.onDone = ^{ [weakSelf.tableView reloadData]; };
+                    dispatch_async(dispatch_get_main_queue(), ^{ [self presentViewController:vc animated:YES completion:nil]; });
+                }
+            }
+            break;
         case CBAlertClear: [CBPrefs clearHistory]; break;
     }
     [self.tableView reloadData];

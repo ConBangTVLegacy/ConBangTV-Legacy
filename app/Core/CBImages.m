@@ -17,6 +17,8 @@ static NSMutableArray *gQueue;      // việc chờ (mới nhất ở cuối —
 static NSMutableDictionary *gActive;  // url → CBImageJob đang tải
 static NSString *gDiskDir;
 static NSInteger gFailed, gDone;  // đếm để gỡ lỗi (lệnh status)
+/// Trang ảnh mà iOS 6 không bắt tay TLS được (vd phimmoi.courses: lỗi SSL -1200) — ảnh của trang đó tải thẳng bằng lõi (rustls)
+static NSMutableSet *gCoreHosts;
 
 /// Giải mã base64 (NSData initWithBase64EncodedString chỉ có từ iOS 7)
 static NSData *CBBase64Decode(NSString *s) {
@@ -125,6 +127,7 @@ static UIImage *CBDecode(NSData *data, CGFloat maxPx) {
 @property (nonatomic, strong) NSMutableData *data;
 @property (nonatomic, strong) NSURLConnection *conn;
 @property (nonatomic) NSInteger status;
+@property (nonatomic) BOOL viaCore;  // đang / đã tải bằng lõi (không thử lại lần nữa)
 @end
 
 @implementation CBImages
@@ -133,7 +136,13 @@ static UIImage *CBDecode(NSData *data, CGFloat maxPx) {
     static dispatch_once_t once;
     dispatch_once(&once, ^{
         gMemory = [[NSCache alloc] init];
-        gMemory.totalCostLimit = 12 * 1024 * 1024;  // ~12 MB ảnh đã giải mã (iPad mini 1 chỉ có 512 MB RAM)
+        // Ảnh đã giải mã: 12 MB chỉ giữ ~30 ảnh bìa — cuộn qua lại là ảnh tải / mờ dần lại. Máy 1 GB RAM (iPhone 5) giữ nhiều hơn;
+        // iPad mini 1 chỉ có 512 MB
+        BOOL bigRam = [NSProcessInfo processInfo].physicalMemory >= 900ull * 1024 * 1024;
+        gMemory.totalCostLimit = (bigRam ? 28 : 16) * 1024 * 1024;
+        // Trang lỗi TLS đã biết từ lần trước: khỏi chờ lỗi (lần đầu mất tới 15–20 giây) mỗi lần mở app
+        NSArray *known = [[NSUserDefaults standardUserDefaults] arrayForKey:@"CBCoreImageHosts"];
+        gCoreHosts = [NSMutableSet setWithArray:[known isKindOfClass:[NSArray class]] ? known : @[]];
         gQueue = [NSMutableArray array];
         gActive = [NSMutableDictionary dictionary];
         NSArray *dirs = NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES);
@@ -205,6 +214,8 @@ static UIImage *CBDecode(NSData *data, CGFloat maxPx) {
         url = [[path substringToIndex:path.length - 5] stringByAppendingFormat:@".webp%@",
                                                                               q.location == NSNotFound ? @"" : [url substringFromIndex:q.location]];
     }
+    // Đang hiện đúng ảnh này (quay lại màn, bấm Theo dõi, đổi bản…): giữ nguyên, không xoá rồi mờ dần lại
+    if (iv.image && url.length && [objc_getAssociatedObject(iv, kUrlKey) isEqualToString:url]) return;
     objc_setAssociatedObject(iv, kUrlKey, url, OBJC_ASSOCIATION_COPY_NONATOMIC);
     iv.image = nil;
     if (!url.length) return;
@@ -231,7 +242,9 @@ static UIImage *CBDecode(NSData *data, CGFloat maxPx) {
             if (img) {
                 [gMemory setObject:img forKey:[self memKey:url px:maxPx] cost:(NSUInteger)(img.size.width * img.size.height * 4 *
                                                                                          img.scale * img.scale)];
-                deliver(img);
+                // Ảnh có sẵn trên máy: hiện ngay, không mờ dần (mờ dần chỉ cho ảnh vừa tải về)
+                UIImageView *v = weakIv;
+                if (v && [objc_getAssociatedObject(v, kUrlKey) isEqualToString:url]) v.image = img;
                 return;
             }
             [self enqueue:url maxPx:maxPx file:file deliver:deliver];
@@ -269,26 +282,59 @@ static NSMutableDictionary *gWaiters;  // url → mảng khối deliver
            !([sitesOnly respondsToSelector:@selector(boolValue)] && [sitesOnly boolValue]);
 }
 
+/// Tải bằng lõi (http.download): proxy cho cả app, hoặc trang ảnh iOS 6 không bắt tay TLS được
++ (void)fetchViaCore:(CBImageJob *)job {
+    job.viaCore = YES;
+    NSString *tmp = [NSTemporaryDirectory() stringByAppendingPathComponent:[@"img-" stringByAppendingString:CBMd5(job.url)]];
+    [CBCore call:@"http.download" args:@{@"url": job.url, @"path": tmp} done:^(id ok, NSString *err) {
+        NSData *d = err ? nil : [NSData dataWithContentsOfFile:tmp];
+        [[NSFileManager defaultManager] removeItemAtPath:tmp error:NULL];
+        if (err) CBLog(@"Ảnh lỗi (qua lõi): %@ — %@", err, job.url);
+        else gDone++;
+        [self finish:job data:d];
+    }];
+}
+
+/// iOS 6 tải ảnh lỗi: lỗi TLS / chứng chỉ (máy cũ thiếu bộ mã / gốc mới) hay hết thời gian chờ (bắt tay TLS treo) → thử bằng lõi
++ (BOOL)shouldRetryViaCore:(NSError *)error {
+    if (![error.domain isEqualToString:NSURLErrorDomain]) return NO;
+    NSInteger c = error.code;
+    return c == NSURLErrorTimedOut || c == NSURLErrorUserCancelledAuthentication || c == NSURLErrorCancelled ||
+           (c <= NSURLErrorSecureConnectionFailed && c >= NSURLErrorClientCertificateRequired);
+}
+
++ (void)retryViaCore:(CBImageJob *)job error:(NSError *)error {
+    NSString *host = [NSURL URLWithString:job.url].host;
+    // Cả trang đó tải qua lõi từ giờ (khỏi chờ lỗi từng ảnh — bắt tay TLS treo thì mỗi ảnh mất 15 giây mới báo hết giờ).
+    // Lỗi TLS thì nhớ sang lần mở app sau; hết thời gian chờ (có thể chỉ do mạng chập chờn) thì chỉ trong lần này
+    if (host && ![gCoreHosts containsObject:host]) {
+        [gCoreHosts addObject:host];
+        BOOL tls = error.code != NSURLErrorTimedOut;
+        CBLog(@"Ảnh của %@: iOS 6 %@ — tải qua lõi", host, tls ? @"không kết nối TLS được" : @"chờ quá lâu");
+        if (tls) {
+            NSMutableArray *keep = [[[NSUserDefaults standardUserDefaults] arrayForKey:@"CBCoreImageHosts"] ?: @[] mutableCopy];
+            if (![keep containsObject:host]) [keep addObject:host];
+            [[NSUserDefaults standardUserDefaults] setObject:keep forKey:@"CBCoreImageHosts"];
+        }
+    }
+    job.conn = nil;
+    [self fetchViaCore:job];
+}
+
 + (void)pump {
     BOOL viaCore = gQueue.count ? [self viaCore] : NO;
     while (gActive.count < kMaxActive && gQueue.count) {
         CBImageJob *job = gQueue.lastObject;
         [gQueue removeLastObject];
         gActive[job.url] = job;
-        if (viaCore) {
-            NSString *tmp = [NSTemporaryDirectory() stringByAppendingPathComponent:[@"img-" stringByAppendingString:CBMd5(job.url)]];
-            [CBCore call:@"http.download" args:@{@"url": job.url, @"path": tmp} done:^(id ok, NSString *err) {
-                NSData *d = err ? nil : [NSData dataWithContentsOfFile:tmp];
-                [[NSFileManager defaultManager] removeItemAtPath:tmp error:NULL];
-                if (err) CBLog(@"Ảnh lỗi (qua lõi / proxy): %@ — %@", err, job.url);
-                else gDone++;
-                [self finish:job data:d];
-            }];
+        NSString *host = gCoreHosts.count ? [NSURL URLWithString:job.url].host : nil;
+        if (viaCore || (host && [gCoreHosts containsObject:host])) {
+            [self fetchViaCore:job];
             continue;
         }
         NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:job.url]
                                                            cachePolicy:NSURLRequestReloadIgnoringLocalCacheData
-                                                       timeoutInterval:20];
+                                                       timeoutInterval:15];
         if (!req.URL) {
             [self finish:job data:nil];
             continue;
@@ -358,6 +404,10 @@ static NSMutableDictionary *gWaiters;  // url → mảng khối deliver
 
 - (void)connection:(NSURLConnection *)connection didFailWithError:(NSError *)error {
     CBLog(@"Ảnh lỗi mạng %ld (%@): %@", (long)error.code, error.localizedDescription, self.url);
+    if (!self.viaCore && [CBImages shouldRetryViaCore:error]) {
+        [CBImages retryViaCore:self error:error];
+        return;
+    }
     [CBImages finish:self data:nil];
 }
 

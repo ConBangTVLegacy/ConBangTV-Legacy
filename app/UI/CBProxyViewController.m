@@ -105,7 +105,7 @@ static void CBSetSecret(NSString *name, NSString *value) {
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
     switch (section) {
         case CBProxyMain:
-            return @"Cho app đi qua proxy của anh (vượt chặn / đổi vùng). Proxy lỗi thì app báo lỗi chứ không lặng lẽ đi thẳng. Mật khẩu / "
+            return @"Cho app đi qua proxy của bạn (vượt chặn / đổi vùng). Proxy lỗi thì app báo lỗi chứ không lặng lẽ đi thẳng. Mật khẩu / "
                    @"khoá lưu riêng trong máy (secret.json của app), không nằm trong cài đặt đồng bộ.";
         case CBProxyServer:
             return [self isSs] ? @"Dán link ss:// (3X-UI: nút Copy của người dùng) là tự điền máy chủ, cổng, mã hoá và khoá." : nil;
@@ -214,7 +214,7 @@ static void CBSetSecret(NSString *name, NSString *value) {
             if (ip.row == 0) return [self switchCell:tv text:@"DNS qua proxy" on:CBBoolPref(@"proxy_remote_dns", YES) tag:2];
             return [self switchCell:tv text:@"Chỉ trang phim qua proxy" on:CBBoolPref(@"proxy_sites_only", NO) tag:3];
         default: {
-            UITableViewCell *c = [self cell:tv text:_testing ? @"Đang thử…" : @"Thử kết nối" detail:nil];
+            UITableViewCell *c = [self cell:tv text:_testing ? @"Đang kiểm tra…" : @"Kiểm tra proxy" detail:nil];  // tên như ở mục miễn trừ
             c.textLabel.textColor = [CBTheme brand];
             return c;
         }
