@@ -57,6 +57,7 @@
 + (NSString *)baseUrl;
 + (void)setBaseUrl:(NSString *)url;
 + (NSArray *)sites;
++ (void)setSites:(NSArray *)sites;
 + (BOOL)homeMix;
 /// Hồ sơ trẻ em (khoá kids — đặt từ bản Windows / Android, đồng bộ hồ sơ)
 + (BOOL)kids;

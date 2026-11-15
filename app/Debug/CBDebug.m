@@ -81,6 +81,34 @@
     return nil;
 }
 
++ (UIButton *)buttonIn:(UIView *)v prefix:(NSString *)prefix {
+    if ([v isKindOfClass:[UIButton class]] && !v.hidden && [[(UIButton *)v titleForState:UIControlStateNormal] hasPrefix:prefix]) {
+        return (UIButton *)v;
+    }
+    for (UIView *s in v.subviews) {
+        UIButton *b = [self buttonIn:s prefix:prefix];
+        if (b) return b;
+    }
+    return nil;
+}
+
++ (UIActionSheet *)visibleSheet {
+    for (UIWindow *w in [[UIApplication sharedApplication].windows reverseObjectEnumerator]) {
+        UIActionSheet *s = [self sheetIn:w];
+        if (s) return s;
+    }
+    return nil;
+}
+
++ (UIActionSheet *)sheetIn:(UIView *)v {
+    if ([v isKindOfClass:[UIActionSheet class]]) return (UIActionSheet *)v;
+    for (UIView *s in v.subviews) {
+        UIActionSheet *a = [self sheetIn:s];
+        if (a) return a;
+    }
+    return nil;
+}
+
 + (UIAlertView *)alertIn:(UIView *)v {
     if ([v isKindOfClass:[UIAlertView class]]) return (UIAlertView *)v;
     for (UIView *s in v.subviews) {
@@ -161,9 +189,16 @@
         NSArray *rows = [home rows];
         for (NSUInteger r = 0; r < rows.count; r++) {
             NSArray *items = rows[r][@"items"];
-            NSMutableArray *urls = [NSMutableArray array];
-            for (NSDictionary *it in items) [urls addObject:[NSString stringWithFormat:@"%@ <%@>", it[@"title"], it[@"url"]]];
-            CBLog(@"[hàng %lu] %@ (%lu phim): %@", (unsigned long)r, rows[r][@"title"], (unsigned long)items.count,
+            NSMutableArray *urls = [NSMutableArray array], *multi = [NSMutableArray array];
+            for (NSUInteger i = 0; i < items.count; i++) {
+                NSDictionary *it = items[i];
+                [urls addObject:[NSString stringWithFormat:@"%@ <%@>", it[@"title"], it[@"url"]]];
+                // phim có ở nhiều trang (nút «⇄» ở trang phim): «mục:số nguồn»
+                if ([it[@"links"] count] > 1) [multi addObject:[NSString stringWithFormat:@"%lu:%lu", (unsigned long)i,
+                                                                                         (unsigned long)[it[@"links"] count]]];
+            }
+            CBLog(@"[hàng %lu] %@ (%lu phim; nhiều nguồn: %@): %@", (unsigned long)r, rows[r][@"title"], (unsigned long)items.count,
+                  multi.count ? [multi componentsJoinedByString:@" "] : @"không",
                   [[urls subarrayWithRange:NSMakeRange(0, MIN(urls.count, 6u))] componentsJoinedByString:@" | "]);
         }
     } else if ([verb isEqualToString:@"core"]) {
@@ -332,6 +367,35 @@
         CBLog(@"[gỡ lỗi] cuộn %@ tới %.0f / %.0f", NSStringFromClass([sv class]), y, maxY);
     } else if ([verb isEqualToString:@"update"]) {
         [CBUpdate checkManual];  // như chạm «Phiên bản» trong Cài đặt
+    } else if ([verb isEqualToString:@"sheet"]) {
+        // sheet <số nút> — bấm nút của bảng chọn đang hiện (bảng tự vẽ của trình phát, hoặc UIActionSheet); số âm = nút Huỷ
+        if (player && [player pressMenuItem:[arg integerValue]]) {
+            CBLog(@"[gỡ lỗi] bảng chọn của trình phát: bấm mục %@", arg);
+            return;
+        }
+        UIActionSheet *s = [self visibleSheet];
+        if (!s) {
+            CBLog(@"[gỡ lỗi] không có bảng chọn nào");
+            return;
+        }
+        NSInteger i = [arg integerValue] < 0 ? s.cancelButtonIndex : [arg integerValue];
+        CBLog(@"[gỡ lỗi] bảng chọn «%@»: bấm nút %ld «%@»", s.title, (long)i, [s buttonTitleAtIndex:i]);
+        [s.delegate actionSheet:s clickedButtonAtIndex:i];
+        [s dismissWithClickedButtonIndex:i animated:NO];
+    } else if ([verb isEqualToString:@"tap"]) {
+        // tap <chữ đầu> — bấm nút đang hiện có tên bắt đầu bằng chữ đó (màn trên cùng)
+        UIViewController *top = [self top];
+        if ([top isKindOfClass:[UINavigationController class]]) top = [(UINavigationController *)top topViewController];
+        UIButton *b = [self buttonIn:top.view prefix:arg];
+        CBLog(@"[gỡ lỗi] tap «%@» → %@", arg, b ? [b titleForState:UIControlStateNormal] : @"không thấy nút");
+        [b sendActionsForControlEvents:UIControlEventTouchUpInside];
+    } else if ([verb isEqualToString:@"menu"]) {
+        [player showMenu];
+    } else if ([verb isEqualToString:@"speed"]) {
+        [player setSpeed:[arg floatValue]];
+    } else if ([verb isEqualToString:@"sleep"]) {
+        // sleep <giây> | sleep ep | sleep 0 — hẹn giờ tắt (giây để thử nhanh)
+        [player setSleepAfter:[arg isEqualToString:@"ep"] ? 0 : [arg doubleValue] endOfEpisode:[arg isEqualToString:@"ep"]];
     } else if ([verb isEqualToString:@"toast"]) {
         [CBTheme toast:arg.length ? arg : @"Thông báo thử"];
     } else if ([verb isEqualToString:@"fail"]) {

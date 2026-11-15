@@ -27,6 +27,8 @@
     NSDictionary *_longItem;
     NSString *_profileShown;
     NSString *_contFirst, *_freshFirst;  // phim đầu hàng «Xem tiếp» / «Có tập mới» lần dựng trước
+    NSArray *_fresh;       // «fresh» của lõi: phim đang xem dở có tập mới ở bất kỳ nguồn nào [{c: thẻ, k: tên chuẩn, e: tập}]
+    long long _loadedAt;   // lần tải trang chủ gần nhất (ms) — quay lại app sau 20 phút thì tải lại
 }
 
 - (instancetype)init {
@@ -46,6 +48,8 @@
     [self.refreshControl addTarget:self action:@selector(reload) forControlEvents:UIControlEventValueChanged];
     // Đồng bộ vừa gộp dữ liệu của máy khác: vẽ lại «Có tập mới» / «Xem tiếp» (người xem có thể đã đổi)
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(syncDataChanged) name:CBSyncDataChanged object:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(appActive)
+                                                 name:UIApplicationDidBecomeActiveNotification object:nil];
     UIBarButtonItem *search = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemSearch target:self
                                                                             action:@selector(openSearch)];
     UIBarButtonItem *settings = [[UIBarButtonItem alloc] initWithTitle:@"Cài đặt" style:UIBarButtonItemStyleBordered target:self
@@ -139,7 +143,7 @@
     [self updateProfileButton];
     // Đổi người xem / kiểu trang chủ / hồ sơ trẻ em / trang phim (màn khác) → tải lại cả trang chủ; không thì chỉ làm mới
     // «Xem tiếp» / «Có tập mới»
-    if (_profileShown && ![_profileShown isEqualToString:[self homeSignature]]) {
+    if ((_profileShown && ![_profileShown isEqualToString:[self homeSignature]]) || [self stale]) {
         [self reload];
     } else {
         [self saveVisibleOffsets];
@@ -156,6 +160,17 @@
             _offsets[[(CBRowCell *)c rowId]] = @([(CBRowCell *)c offset]);
         }
     }
+}
+
+/// Để app lâu (≥ 20 phút) rồi quay lại: trang chủ cũ — tải lại (như bản Windows / iPad). Chỉ khi đang ở trang chủ.
+- (BOOL)stale {
+    return _loadedAt && CBNowMs() - _loadedAt > 20 * 60 * 1000;
+}
+
+- (void)appActive {
+    if (![self stale] || self.navigationController.topViewController != self || self.presentedViewController) return;
+    CBLog(@"Quay lại app sau %lld phút — tải lại trang chủ", (CBNowMs() - _loadedAt) / 60000);
+    [self reload];
 }
 
 - (void)updateProfileButton {
@@ -191,6 +206,30 @@
         if (CBStr(f, @"latest")) item[@"sub"] = CBStr(f, @"latest");
         [fresh addObject:item];
     }
+    // + phim đang xem dở (không theo dõi) có tập mới ở bất kỳ nguồn nào (fresh của lõi); đã mở phim từ lúc đó thì thôi
+    if (_fresh.count) {
+        NSMutableSet *followed = [NSMutableSet set], *shown = [NSMutableSet set];
+        for (NSDictionary *f in [CBPrefs follows]) {
+            id n = [CBCore sync:@"kk.norm" args:@{@"s": CBStr(f, @"title") ?: @""}];
+            if (CBIsStr(n)) [followed addObject:n];
+        }
+        for (NSDictionary *it in fresh) if (CBStr(it, @"url")) [shown addObject:CBStr(it, @"url")];
+        id seenAll = [CBPrefs get:[CBPrefs k:@"seen_eps"]];
+        for (id a in _fresh) {
+            NSString *key = CBStr(a, @"k");
+            if (!key.length || [followed containsObject:key]) continue;
+            id seen = CBIsDict(seenAll) ? seenAll[key] : nil;
+            if ([seen respondsToSelector:@selector(doubleValue)] && [seen doubleValue] >= CBNum(a, @"e", 0)) continue;
+            NSDictionary *card = CBDict(a, @"c");
+            NSMutableDictionary *item = [CBItemFromFilm(CBDict(card, @"film")) mutableCopy];
+            if (!item[@"url"] || [shown containsObject:item[@"url"]]) continue;
+            if (CBStr(card, @"chip")) item[@"badge"] = CBStr(card, @"chip");
+            if (CBArr(card, @"links").count > 1) item[@"links"] = CBArr(card, @"links");
+            [shown addObject:item[@"url"]];
+            [fresh addObject:item];
+        }
+    }
+    if (_fresh.count) CBLog(@"Có tập mới: %lu phim theo dõi + tự động (lõi đưa %lu)", (unsigned long)fresh.count, (unsigned long)_fresh.count);
     if (fresh.count) [rows addObject:@{@"id": @"new-eps", @"title": @"Có tập mới", @"items": fresh, @"more": @"follows:"}];
     // Xem tiếp: lịch sử (bấm là phát tiếp)
     NSMutableArray *cont = [NSMutableArray array];
@@ -220,12 +259,14 @@
 
 - (void)reload {
     NSInteger t = ++_token;
+    _loadedAt = CBNowMs();
     NSString *sig = [self homeSignature];
     if (_profileShown && ![_profileShown isEqualToString:sig]) {
         // Đổi người xem / hồ sơ trẻ em / trang phim / kiểu trang chủ: bỏ ngay hàng phim của trang chủ cũ (không để hàng của
         // người trước nằm đó tới khi tải xong — hay mãi nếu tải lỗi)
         _feedRows = nil;
         _categories = nil;
+        _fresh = nil;
         [_offsets removeAllObjects];
         [self buildChips];
     }
@@ -265,6 +306,7 @@
                 [self finishWithError:err token:t];
                 return;
             }
+            [self siteMoved:base to:CBStr(ok, @"movedTo")];
             NSMutableArray *rows = [NSMutableArray array];
             for (id s in CBArr(ok, @"sections") ?: @[]) {
                 NSMutableArray *items = [NSMutableArray array];
@@ -310,6 +352,7 @@
         for (id card in CBArr(r, @"cards") ?: @[]) {
             NSMutableDictionary *item = [CBItemFromFilm(CBDict(card, @"film")) mutableCopy];
             if (CBStr(card, @"chip")) item[@"badge"] = CBStr(card, @"chip");
+            if (CBArr(card, @"links").count > 1) item[@"links"] = CBArr(card, @"links");  // trang phim: «⇄ đổi nguồn»
             if (item[@"url"]) [items addObject:item];
         }
         if (!items.count) continue;
@@ -318,12 +361,34 @@
         [rows addObject:row];
     }
     _feedRows = rows;
+    NSDictionary *moved = CBDict(snap, @"movedTo");
+    if (moved && [CBStr(moved, @"old") isEqualToString:[CBPrefs baseUrl]]) [self siteMoved:CBStr(moved, @"old") to:CBStr(moved, @"new")];
+    _fresh = CBArr(snap, @"fresh");
+    [self saveVisibleOffsets];
+    [self rebuildHead];
     NSArray *cats = CBArr(snap, @"categories");
     _categories = [self menuWith:cats.count ? cats : [CBCore sync:@"site.menu" args:@{@"baseUrl": [CBPrefs baseUrl]}]];
     [self buildChips];
     NSString *note = CBStr(snap, @"note");
     _note = rows.count ? note : (note ?: (CBBool(snap, @"empty", NO) ? @"Chưa đọc được phim nào — kéo xuống để thử lại." : nil));
     [self.tableView reloadData];
+}
+
+/// Trang phim đổi tên miền (lõi đọc được chuyển hướng): đổi theo trong danh sách trang + trang đang chọn (như bản Windows)
+- (void)siteMoved:(NSString *)old to:(NSString *)now {
+    if (!old.length || !now.length) return;
+    NSString *n = [now stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+    while ([n hasSuffix:@"/"]) n = [n substringToIndex:n.length - 1];
+    if (![n hasPrefix:@"http://"] && ![n hasPrefix:@"https://"]) n = [@"https://" stringByAppendingString:n];
+    if (![NSURL URLWithString:n].host || [n isEqualToString:old]) return;
+    NSMutableArray *sites = [[CBPrefs sites] mutableCopy] ?: [NSMutableArray array];
+    NSUInteger i = [sites indexOfObject:old];
+    if (i != NSNotFound) sites[i] = n;
+    [CBPrefs setSites:sites];
+    [CBPrefs setBaseUrl:n];
+    _profileShown = [self homeSignature];  // không tải lại cả trang chủ chỉ vì đổi địa chỉ
+    CBLog(@"Trang %@ đã chuyển sang %@", old, n);
+    [CBTheme toast:[NSString stringWithFormat:@"Trang đã chuyển sang %@ — app đã đổi theo.", [NSURL URLWithString:n].host]];
 }
 
 /// Danh mục (dải nút đầu trang, giống menu bản Windows): Điểm IMDb cao, Thể loại… / Quốc gia… (trang có bộ lọc), danh mục của trang

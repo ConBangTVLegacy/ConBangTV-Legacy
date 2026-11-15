@@ -39,10 +39,10 @@ Cổng phát nội bộ 127.0.0.1 (media_proxy: bỏ quảng cáo, cắt PNG ng�
 
 | Màn | Có gì |
 | --- | --- |
-| Trang chủ | «Có tập mới», «Xem tiếp», các hàng của trang chủ tổng hợp (`home.load` / `home.late`); cuối trang: ★ Điểm IMDb cao (`imdb.page`), danh mục của trang, Thể loại… / Quốc gia… (`api.filters` / `next.filters`) |
+| Trang chủ | «Có tập mới» (phim theo dõi + phim đang xem dở có tập mới ở bất kỳ nguồn nào — `fresh` của lõi, lọc theo `seen_eps`), «Xem tiếp», các hàng của trang chủ tổng hợp (`home.load` / `home.late`); dải nút đầu trang: ★ Điểm IMDb cao (`imdb.page`), Thể loại… / Quốc gia… (`api.filters` / `next.filters`), danh mục của trang; quay lại app sau ≥ 20 phút thì tải lại; trang phim đổi tên miền (`movedTo`) thì đổi theo |
 | Tìm kiếm | tìm trên mọi trang (`site.searchAll`) |
-| Trang phim | thông tin, Xem / Xem tiếp, Theo dõi, chọn bản (Vietsub / Thuyết minh), lưới tập, mô tả, **phim liên quan** (`related.load`) |
-| Trình phát | AVPlayer qua cổng phát nội bộ, tự chọn server phát được trên iOS 6, nhớ chỗ xem, tự chuyển tập, **bảng chọn tập «☰ Tập»** (đổi bản Vietsub / Thuyết minh), điều khiển trên màn khoá, **phụ đề rời** (WebVTT / SRT của server riêng PhimMoi — tự vẽ, AVPlayer iOS 6 không gắn được), server rớt giữa chừng thì thử lại server đó rồi mới sang server khác |
+| Trang phim | thông tin, Xem / Xem tiếp, Theo dõi, «Mới nhất: Tập N» / «Từ tập đầu» (đang xem dở), **«⇄ đổi nguồn»** (phim có ở nhiều trang — `links` của thẻ trang chủ tổng hợp), chọn bản (Vietsub / Thuyết minh), lưới tập, mô tả, **phim liên quan** (`related.load`) |
+| Trình phát | AVPlayer qua cổng phát nội bộ, tự chọn server phát được trên iOS 6, nhớ chỗ xem, tự chuyển tập, **bảng chọn tập «☰ Tập»** (đổi bản Vietsub / Thuyết minh), điều khiển trên màn khoá, **menu «⋯»**: tốc độ phát (iOS 6 chỉ đổi được với tệp video — luồng HLS báo không đổi được), đánh dấu / tự bỏ qua đoạn mở đầu (khoá `intro@<phim>` như bản Windows), hẹn giờ tắt (15–90 phút / hết tập), tải lại; **phụ đề rời** (WebVTT / SRT của server riêng PhimMoi — tự vẽ, AVPlayer iOS 6 không gắn được), server rớt giữa chừng thì thử lại server đó rồi mới sang server khác |
 | Người xem | «Ai đang xem?» (thêm người, mã PIN), đổi người xem — cùng khoá dữ liệu với bản Windows |
 | Cài đặt | người xem, trang chủ tổng hợp, **hồ sơ trẻ em** (tắt cần mã phụ huynh), trang phim, phát video, mạng, **Đồng bộ trong nhà**, xoá lịch sử, miễn trừ |
 | Theo dõi / Lịch sử | nút «☆ Theo dõi» đầu trang chủ, «Xem thêm» của «Có tập mới» / «Xem tiếp»: lưới phim, kiểm tập mới khi mở, nhấn giữ để bỏ theo dõi / xoá |
@@ -121,6 +121,11 @@ Máy đang chạy bản cũ hơn 0.4.0 (chưa có `cbupdate`) cài bản mới m
 - **tokio trên armv7 iOS 6:** việc đẩy vào từ ngoài (`cbtv_call`) có lúc không đánh thức luồng nào — ngăn xếp lấy bằng lệnh gỡ lỗi
   `crash`: mọi luồng ngủ ở `park_condvar` / `Driver::turn` (kqueue `EVFILT_USER` thì chạy đúng, đã kiểm bằng `tools/kqtest`) → nhịp
   50 ms (`ffi-ios-wakeup.patch`).
+- **Tốc độ phát:** AVPlayer iOS 6 chỉ đổi rate khi `canPlayFastForward` / `canPlaySlowForward` (tệp video); luồng HLS báo
+  không (0 / 0) — đặt rate khác 1 thì bị bỏ qua, đang dừng mà đặt `rate = 1.5` thì không phát lại → luôn hỏi trước, không được
+  thì phát 1×.
+- **UIActionSheet ở iPhone ngang:** từ ~4 nút trở lên iOS 6 vẽ thành danh sách cuộn, mục cuối bị che → bảng chọn của trình
+  phát tự vẽ (`sheet:items:`). Phông iOS 6 thiếu ⏮ / ⏭ (hiện ô vuông) — dùng « / ».
 - **Ảnh bìa của trang mới (vd phimmoi.courses):** NSURLConnection iOS 6 lỗi SSL -1200 hoặc treo bắt tay tới hết giờ → `CBImages`
   tải lại qua lõi (rustls) và ghi nhớ trang đó (`CBCoreImageHosts` trong NSUserDefaults) để lần sau tải qua lõi luôn.
 - **`killall <app>` không đóng được app đang nằm nền:** iOS treo tiến trình (SIGTERM chờ tới khi app chạy lại) → cài bản mới
@@ -143,12 +148,10 @@ Máy đang chạy bản cũ hơn 0.4.0 (chưa có `cbupdate`) cài bản mới m
 
 ## Việc tiếp theo
 
-1. Trình phát: tốc độ phát, đánh dấu / tự bỏ qua đoạn mở đầu, hẹn giờ tắt, nút tải lại; trang phim: đổi nguồn khi phim có ở
-   nhiều trang, «Mới nhất: Tập N», «Xem từ tập đầu».
-2. Cài đặt: mức vượt chặn (Tắt / Mức 1 / Mức 2), server dự phòng KKPhim, đo tốc độ trang, xoá ảnh đã lưu, xem riêng (không ghi
+1. Cài đặt: mức vượt chặn (Tắt / Mức 1 / Mức 2), server dự phòng KKPhim, đo tốc độ trang, xoá ảnh đã lưu, xem riêng (không ghi
    lịch sử), tắt tự cập nhật.
-3. Tìm kiếm phimmois.fun (lõi chung) trả ~60 phim mới nhất cho mọi từ khoá — app tạm bỏ nhóm đó khi không phim nào khớp
+2. Tìm kiếm phimmois.fun (lõi chung) trả ~60 phim mới nhất cho mọi từ khoá — app tạm bỏ nhóm đó khi không phim nào khớp
    (`CBGridViewController dropJunk`); sửa hẳn ở lõi thì bỏ được.
-4. Trang bật chống bot của Cloudflare (hoathinh3d.pw): các bản khác đọc hộ bằng WebView ẩn (`web.fetch`); WebView iOS 6 nhiều
+3. Trang bật chống bot của Cloudflare (hoathinh3d.pw): các bản khác đọc hộ bằng WebView ẩn (`web.fetch`); WebView iOS 6 nhiều
    khả năng không qua được lớp chặn — chưa làm.
-5. Đo lại tốc độ tải qua lõi khi Wi-Fi tốt (lần đo đầu Wi-Fi máy thử yếu).
+4. Đo lại tốc độ tải qua lõi khi Wi-Fi tốt (lần đo đầu Wi-Fi máy thử yếu).

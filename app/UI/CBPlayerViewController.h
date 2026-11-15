@@ -22,5 +22,11 @@
 - (void)loadSubtitles:(NSString *)url;
 /// Gỡ lỗi: giả server đang phát bị rớt (lệnh «fail») / giả hết tập (lệnh «end»)
 - (void)debugStreamFailed;
+/// Menu «⋯»: tốc độ, đoạn mở đầu, hẹn giờ tắt, tải lại, mở trang tập (gỡ lỗi: lệnh «menu» / «speed» / «sleep»)
+- (void)showMenu;
+/// Gỡ lỗi (lệnh «sheet <số>»): bấm mục của bảng chọn đang hiện (số âm = Huỷ); NO nếu không có bảng
+- (BOOL)pressMenuItem:(NSInteger)index;
+- (void)setSpeed:(float)speed;
+- (void)setSleepAfter:(NSTimeInterval)seconds endOfEpisode:(BOOL)endOfEpisode;
 - (void)debugPlayedToEnd;
 @end

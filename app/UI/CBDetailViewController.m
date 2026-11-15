@@ -56,7 +56,8 @@
 
 #pragma mark - Trang phim
 
-@interface CBDetailViewController () <UICollectionViewDataSource, UICollectionViewDelegate, UICollectionViewDelegateFlowLayout>
+@interface CBDetailViewController () <UICollectionViewDataSource, UICollectionViewDelegate, UICollectionViewDelegateFlowLayout,
+                                      UIActionSheetDelegate>
 @end
 
 @implementation CBDetailViewController {
@@ -72,6 +73,9 @@
     UIImageView *_poster;
     UILabel *_titleLabel, *_otherLabel, *_infoLabel, *_countLabel, *_messageLabel;
     UIButton *_playButton, *_followButton;
+    // Hàng nút phụ: «Mới nhất: Tập N», «Từ tập đầu» (khi đang xem dở), «⇄ <trang> ▾» (phim có ở nhiều trang — từ trang chủ tổng hợp)
+    UIButton *_latestButton, *_firstButton, *_sourceButton;
+    NSString *_latestEp;
     UISegmentedControl *_groups;
     UIScrollView *_groupsStrip;
     UIActivityIndicatorView *_spinner;
@@ -152,6 +156,8 @@
     }
     NSArray *groups = CBArr(d, @"groups");
     if (_group >= (NSInteger)groups.count) _group = 0;
+    // «Có tập mới» tự động của trang chủ: đã mở phim thì thôi (như bản Windows — lõi ghi tập lớn nhất đã thấy)
+    [CBCore sync:@"home.markSeen" args:@{@"detail": d}];
     // Phim đang theo dõi: vào trang phim thì cập nhật số tập (chưa coi là đã xem tập mới — xem mới tính)
     if ([CBPrefs followOf:CBStr(d, @"url") ?: @""]) {
         [CBPrefs updateFollow:CBStr(d, @"url") count:CBDetailEpisodeCount(d) latest:CBStr(CBDetailLatestEpisode(d), @"title")
@@ -184,6 +190,18 @@
     return l;
 }
 
+- (UIButton *)smallButton:(SEL)action {
+    UIButton *b = [CBTheme button:@"" primary:NO];
+    b.titleLabel.font = [CBTheme font:[CBTheme isPad] ? 15 : 13];
+    b.titleLabel.adjustsFontSizeToFitWidth = YES;
+    b.titleLabel.minimumScaleFactor = 0.7;
+    b.titleLabel.lineBreakMode = NSLineBreakByTruncatingTail;
+    b.hidden = YES;
+    [b addTarget:self action:action forControlEvents:UIControlEventTouchUpInside];
+    [_header addSubview:b];
+    return b;
+}
+
 - (void)buildHeader {
     _header = [[UIView alloc] init];
     _header.backgroundColor = [CBTheme bg];
@@ -205,6 +223,10 @@
     _followButton = [CBTheme button:@"Theo dõi" primary:NO];
     [_followButton addTarget:self action:@selector(followTapped) forControlEvents:UIControlEventTouchUpInside];
     [_header addSubview:_followButton];
+    _latestButton = [self smallButton:@selector(latestTapped)];
+    _firstButton = [self smallButton:@selector(firstTapped)];
+    [_firstButton setTitle:@"« Từ tập đầu" forState:UIControlStateNormal];  // phông iOS 6 không có ⏮ / ⏭
+    _sourceButton = [self smallButton:@selector(sourceTapped)];
     _spinner = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleWhite];
     _spinner.hidesWhenStopped = YES;
     [_header addSubview:_spinner];
@@ -257,6 +279,18 @@
     BOOL following = [CBPrefs followOf:CBStr(_detail, @"url") ?: CBStr(_item, @"url") ?: @""] != nil;
     [_followButton setTitle:following ? @"Đang theo dõi" : @"Theo dõi" forState:UIControlStateNormal];
     _followButton.enabled = _detail != nil;
+    // Đang xem dở phim nhiều tập: thêm «Mới nhất» (tập cuối của bản đang chọn) và «Từ tập đầu» (như bản Windows / iPad)
+    NSString *histUrl = CBStr(_hist, @"epUrl");
+    NSDictionary *last = eps.lastObject;
+    BOOL showLatest = histUrl && eps.count > 1 && CBStr(last, @"url") && ![CBStr(last, @"url") isEqualToString:histUrl];
+    _latestEp = showLatest ? CBStr(last, @"url") : nil;
+    [_latestButton setTitle:[NSString stringWithFormat:@"Mới nhất: %@ »", CBStr(last, @"title") ?: @""] forState:UIControlStateNormal];
+    _latestButton.hidden = !showLatest;
+    _firstButton.hidden = !(histUrl && eps.count > 1 && ![CBStr(eps[0], @"url") isEqualToString:histUrl]);
+    NSArray *links = CBArr(_item, @"links");
+    _sourceButton.hidden = links.count < 2;
+    [_sourceButton setTitle:[NSString stringWithFormat:@"⇄ %@ ▾", [self hostOf:CBStr(_detail, @"url") ?: CBStr(_item, @"url")]]
+                   forState:UIControlStateNormal];
     _descLabel.text = CBStr(_detail, @"description");
     _headerHeight = [self layoutHeader:_cv.bounds.size.width];
     [_cv reloadData];
@@ -282,6 +316,13 @@
     _followButton.frame = CGRectMake(w - 12 - fw, y, fw, 40);
     _playButton.frame = CGRectMake(12, y, w - 36 - fw, 40);
     y += 52;
+    NSMutableArray *extra = [NSMutableArray array];
+    for (UIButton *b in @[_latestButton, _firstButton, _sourceButton]) if (!b.hidden) [extra addObject:b];
+    if (extra.count) {
+        CGFloat gap = 8, bw = floor((w - 24 - gap * (extra.count - 1)) / extra.count);
+        for (NSUInteger i = 0; i < extra.count; i++) [extra[i] setFrame:CGRectMake(12 + i * (bw + gap), y, bw, 34)];
+        y += 44;
+    }
     if (_groups) {
         [CBTheme layoutSegments:_groups inStrip:_groupsStrip frame:CGRectMake(12, y, w - 24, 32)];
         y += 44;
@@ -474,6 +515,52 @@
     }
     NSArray *eps = [self episodes];
     if (eps.count) [self playEpisode:CBStr(eps[0], @"url") resume:NO];
+}
+
+- (NSString *)hostOf:(NSString *)url {
+    NSString *h = CBHostOf(url ?: @"") ?: @"";
+    return [h hasPrefix:@"www."] ? [h substringFromIndex:4] : h;
+}
+
+- (void)latestTapped {
+    if (_latestEp) [self playEpisode:_latestEp resume:YES];
+}
+
+- (void)firstTapped {
+    NSArray *eps = [self episodes];
+    if (eps.count) [self playEpisode:CBStr(eps[0], @"url") resume:NO];
+}
+
+/// Phim có ở nhiều trang (thẻ trang chủ tổng hợp mang «links» của lõi): chọn trang khác → mở trang phim đó thay màn này
+- (void)sourceTapped {
+    NSArray *links = CBArr(_item, @"links");
+    if (links.count < 2) return;
+    NSString *cur = [self hostOf:CBStr(_detail, @"url") ?: CBStr(_item, @"url")];
+    UIActionSheet *sheet = [[UIActionSheet alloc] initWithTitle:@"Xem ở trang" delegate:self cancelButtonTitle:nil
+                                         destructiveButtonTitle:nil otherButtonTitles:nil];
+    for (id l in links) {
+        NSString *host = [self hostOf:CBStr(l, @"url")];
+        NSString *badge = CBStr(l, @"badge");
+        NSString *label = badge.length ? [NSString stringWithFormat:@"%@ · %@", host, badge] : host;
+        [sheet addButtonWithTitle:[host isEqualToString:cur] ? [@"✓ " stringByAppendingString:label] : label];
+    }
+    sheet.cancelButtonIndex = [sheet addButtonWithTitle:@"Huỷ"];
+    [sheet showInView:self.view];
+}
+
+- (void)actionSheet:(UIActionSheet *)sheet clickedButtonAtIndex:(NSInteger)index {
+    NSArray *links = CBArr(_item, @"links");
+    if (index == sheet.cancelButtonIndex || index < 0 || index >= (NSInteger)links.count) return;
+    NSDictionary *l = links[index];
+    if ([[self hostOf:CBStr(l, @"url")] isEqualToString:[self hostOf:CBStr(_detail, @"url") ?: CBStr(_item, @"url")]]) return;
+    NSMutableDictionary *item = [CBItemFromFilm(l) mutableCopy];
+    item[@"links"] = links;
+    CBLog(@"Đổi nguồn phim %@ → %@", CBStr(_item, @"title"), CBStr(l, @"url"));
+    CBDetailViewController *vc = [[CBDetailViewController alloc] initWithItem:item];
+    NSMutableArray *stack = [self.navigationController.viewControllers mutableCopy];
+    if (stack.lastObject == self) [stack removeLastObject];
+    [stack addObject:vc];
+    [self.navigationController setViewControllers:stack animated:NO];
 }
 
 - (void)followTapped {

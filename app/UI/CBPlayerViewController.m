@@ -99,7 +99,7 @@ static NSArray *CBParseSubtitles(NSString *text) {
 }
 @end
 
-@interface CBPlayerViewController () <UIActionSheetDelegate, UIGestureRecognizerDelegate, UICollectionViewDataSource,
+@interface CBPlayerViewController () <UIGestureRecognizerDelegate, UICollectionViewDataSource,
                                       UICollectionViewDelegate, UICollectionViewDelegateFlowLayout>
 @end
 
@@ -125,6 +125,19 @@ static NSArray *CBParseSubtitles(NSString *text) {
     BOOL _ended;        // đang ở cuối tập (hiện «Hết tập.»)
     BOOL _seeking;      // đang tua — chưa cập nhật thanh tua theo thời gian cũ
     NSUInteger _tickCount;
+    // Menu «⋯»
+    UIButton *_moreButton;
+    // Bảng chọn tự vẽ (server, menu «⋯», tốc độ, hẹn giờ): UIActionSheet của iOS 6 ở iPhone ngang thành danh sách cuộn, che mục
+    UIView *_menuPanel;
+    UIScrollView *_menuBox;
+    UILabel *_menuTitle;
+    NSMutableArray *_menuButtons;
+    NSArray *_menuItems;          // @[@[tên, khối], …]
+    float _speed;                 // tốc độ phát (0,75–2×), trong lần xem này
+    long long _sleepAt;           // hẹn giờ tắt (ms, 0 = không hẹn)
+    BOOL _sleepEndOfEp, _sleepPaused;
+    int _introStart, _introEnd;   // đoạn mở đầu của phim (giây; -1 = chưa đánh dấu) — khoá intro@<phim> như bản Windows
+    BOOL _introSkipped;           // tập này đã tự bỏ qua đoạn mở đầu
     // Phụ đề rời (server riêng của PhimMoi): lõi phục vụ tệp WebVTT ở cổng phát nội bộ; AVPlayer iOS 6 không gắn được → tự vẽ
     NSArray *_cues;      // [{s, e, t}] theo thời gian bắt đầu
     NSUInteger _cueIdx;
@@ -160,6 +173,7 @@ static NSArray *CBParseSubtitles(NSString *text) {
         _detail = detail;
         _epUrl = epUrl;
         _resumeOpen = resume;
+        _speed = 1;
         self.modalTransitionStyle = UIModalTransitionStyleCrossDissolve;
     }
     return self;
@@ -221,6 +235,9 @@ static NSArray *CBParseSubtitles(NSString *text) {
     _episodesButton = [self barButton:@"☰ Tập" action:@selector(toggleEpisodes)];
     _episodesButton.hidden = YES;
     [_top addSubview:_episodesButton];
+    _moreButton = [self barButton:@"⋯" action:@selector(showMenu)];
+    _moreButton.titleLabel.font = [CBTheme bold:24];
+    [_top addSubview:_moreButton];
     _titleLabel = [self overlayLabel:[CBTheme bold:15]];
     _titleLabel.textAlignment = NSTextAlignmentCenter;
     [_top addSubview:_titleLabel];
@@ -367,9 +384,15 @@ static NSArray *CBParseSubtitles(NSString *text) {
     _closeButton.frame = CGRectMake(4, 0, 90, topH);
     // Nút server rộng theo tên server (vd «HLS (bỏ quảng cáo)» — trước bị cắt còn «HLS…cáo)»), tối đa ~1/3 màn
     CGFloat sw = MIN(MIN(w * 0.32, 240), MAX(90, ceil([_serverButton.titleLabel.text sizeWithFont:_serverButton.titleLabel.font].width) + 20));
-    _serverButton.frame = CGRectMake(w - sw - 4, 0, sw, topH);
-    _episodesButton.frame = CGRectMake(w - sw - 94, 0, 86, topH);
-    _titleLabel.frame = CGRectMake(98, 0, w - sw - 106 - (_episodesButton.hidden ? 0 : 90), topH);
+    CGFloat x = w - sw - 4;
+    _serverButton.frame = CGRectMake(x, 0, sw, topH);
+    if (!_episodesButton.hidden) {
+        x -= 90;
+        _episodesButton.frame = CGRectMake(x, 0, 86, topH);
+    }
+    x -= 48;
+    _moreButton.frame = CGRectMake(x, 0, 44, topH);
+    _titleLabel.frame = CGRectMake(98, 0, MAX(0, x - 102), topH);
     [self layoutEpisodePanel];
     CGFloat bottomH = 88;
     _bottom.frame = CGRectMake(0, h - bottomH, w, bottomH);
@@ -387,6 +410,7 @@ static NSArray *CBParseSubtitles(NSString *text) {
     CGFloat tw = MIN(w - 40, MAX(160, ceil([_toast.text ?: @"" sizeWithFont:_toast.font].width) + 40));  // «Xem tiếp 1:05:12»
     _toast.frame = CGRectMake((w - tw) / 2, h / 2 - 30, tw, 60);
     [self layoutSubtitle];
+    [self layoutMenuPanel];
 }
 
 - (void)setServerTitle:(NSString *)title {
@@ -417,6 +441,7 @@ static NSArray *CBParseSubtitles(NSString *text) {
 }
 
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)g shouldReceiveTouch:(UITouch *)touch {
+    if (g.view == _menuPanel) return touch.view == _menuPanel;  // bảng chọn: chỉ chạm ra ngoài hộp mới đóng
     return ![touch.view isKindOfClass:[UIControl class]];
 }
 
@@ -629,6 +654,9 @@ static NSArray *CBParseSubtitles(NSString *text) {
     _everPlayed = NO;
     _retriedSame = NO;
     _ended = NO;
+    _sleepPaused = NO;
+    _introSkipped = NO;
+    [self loadIntro];
     [self setServerTitle:@"Server"];
     [self clearSubtitles];
     _index = i;
@@ -836,7 +864,24 @@ static NSArray *CBParseSubtitles(NSString *text) {
     __weak CBPlayerViewController *weakSelf = self;
     _timeObs = [_player addPeriodicTimeObserverForInterval:CMTimeMake(1, 4) queue:dispatch_get_main_queue()
                                                 usingBlock:^(CMTime time) { [weakSelf tick]; }];
-    [_player play];
+    [_player play];  // tốc độ đã chọn áp khi AVPlayer sẵn sàng (lúc này chưa biết luồng có đổi tốc độ được không)
+}
+
+/// Tốc độ AVPlayer chơi được với luồng đang phát: iOS 6 chỉ đổi tốc độ khi canPlayFastForward / canPlaySlowForward (thường là
+/// tệp video; luồng HLS thì không) — đặt rate không hỗ trợ thì AVPlayer bỏ qua, đang dừng mà đặt thì không phát lại được
+- (BOOL)speedSupported:(float)v {
+    if (fabsf(v - 1) < 0.01) return YES;
+    return v > 1 ? _item.canPlayFastForward : _item.canPlaySlowForward;
+}
+
+- (float)playRate {
+    return [self speedSupported:_speed] ? _speed : 1;
+}
+
+- (void)resume {
+    if (!_player) return;
+    _player.rate = [self playRate];
+    if (_player.rate <= 0) [_player play];
 }
 
 - (void)teardownPlayer {
@@ -867,6 +912,7 @@ static NSArray *CBParseSubtitles(NSString *text) {
         if (!self->_player || self->_closed) return;
         if ([keyPath isEqualToString:@"status"] && object == self->_item) {
             if (self->_item.status == AVPlayerItemStatusReadyToPlay) {
+                if (self->_speed != 1 && self->_player.rate > 0) self->_player.rate = [self playRate];
                 if (!self->_seekedResume && self->_resumeAt > 5) {
                     self->_seekedResume = YES;
                     CBLog(@"Xem tiếp từ %ds", self->_resumeAt);
@@ -922,6 +968,13 @@ static NSArray *CBParseSubtitles(NSString *text) {
         if (self->_closed) return;
         [CBPrefs savePosition:self->_epUrl seconds:0 film:self->_filmUrl];
         BOOL more = self->_index + 1 < (NSInteger)[self episodes].count;
+        if (self->_sleepEndOfEp) {  // hẹn «hết tập này»: dừng ở đây, không tự chuyển tập
+            self->_sleepEndOfEp = NO;
+            self->_ended = YES;
+            [UIApplication sharedApplication].idleTimerDisabled = NO;
+            [self showError:@"Đã dừng theo hẹn giờ (hết tập)." button:more ? @"Tập sau »" : nil action:@selector(nextEpisode)];
+            return;
+        }
         if ([CBPrefs autoNext] && more) {
             CBLog(@"Hết tập — tự chuyển tập sau");
             [self openEpisode:self->_index + 1];
@@ -938,10 +991,21 @@ static NSArray *CBParseSubtitles(NSString *text) {
     double now = CMTimeGetSeconds(_player.currentTime);
     double dur = CBDuration(_item);
     [self updateSubtitle:now];
-    if (_ended && _player.rate > 0) {  // phát lại sau «Hết tập.» (tua lùi, nút trên màn khoá…)
+    if ((_ended || _sleepPaused) && _player.rate > 0) {  // phát lại sau «Hết tập.» / hẹn giờ dừng (tua lùi, màn khoá…)
         _ended = NO;
+        if (_sleepPaused) [UIApplication sharedApplication].idleTimerDisabled = YES;
+        _sleepPaused = NO;
         [self hideStatus];
     }
+    // Đoạn mở đầu đã đánh dấu: tới đó thì tự tua qua (mỗi tập một lần — tua lùi xem lại thì thôi)
+    if (_started && !_introSkipped && _introEnd > _introStart && _introStart >= 0 && _player.rate > 0 && isfinite(now) &&
+        now >= _introStart - 0.5 && now < _introEnd - 2) {
+        _introSkipped = YES;
+        CBLog(@"Bỏ qua đoạn mở đầu %d–%ds", _introStart, _introEnd);
+        [self seekTo:_introEnd];
+        [self showToast:@"Bỏ qua đoạn mở đầu"];
+    }
+    if (_sleepAt && CBNowMs() >= _sleepAt) [self sleepNow:@"Đã tạm dừng theo hẹn giờ tắt."];
     if (!_started && now > 0.5 && _player.rate > 0) {
         _started = YES;
         _everPlayed = YES;
@@ -1017,7 +1081,7 @@ static NSArray *CBParseSubtitles(NSString *text) {
     } else {
         double now = CMTimeGetSeconds(_player.currentTime), dur = CBDuration(_item);
         if (_ended && isfinite(dur) && isfinite(now) && now >= dur - 1) [self seekTo:0];  // «Phát» ở cuối tập: xem lại từ đầu
-        [_player play];
+        [self resume];
     }
     [self setControlsVisible:YES];
 }
@@ -1095,19 +1159,225 @@ static NSArray *CBParseSubtitles(NSString *text) {
         [self showToast:@"Đang tìm server…"];
         return;
     }
-    UIActionSheet *sheet = [[UIActionSheet alloc] initWithTitle:@"Chọn server" delegate:self cancelButtonTitle:nil
-                                         destructiveButtonTitle:nil otherButtonTitles:nil];
+    __weak CBPlayerViewController *weakSelf = self;
+    NSMutableArray *items = [NSMutableArray array];
     for (NSUInteger i = 0; i < _servers.count; i++) {
         NSString *label = CBStr(_servers[i], @"label") ?: @"?";
-        [sheet addButtonWithTitle:(NSInteger)i == _serverIdx ? [@"✓ " stringByAppendingString:label] : label];
+        [items addObject:@[(NSInteger)i == _serverIdx ? [@"✓ " stringByAppendingString:label] : label,
+                           ^{ [weakSelf selectServer:(NSInteger)i]; }]];
     }
-    sheet.cancelButtonIndex = [sheet addButtonWithTitle:@"Huỷ"];
-    [sheet showInView:self.view];
+    [self sheet:@"Chọn server" items:items];
 }
 
-- (void)actionSheet:(UIActionSheet *)sheet clickedButtonAtIndex:(NSInteger)index {
-    if (index == sheet.cancelButtonIndex || index < 0) return;
-    [self selectServer:index];
+#pragma mark - Menu «⋯»
+
+/// Bảng chọn tự vẽ từ danh sách @[@[tên, khối], …] — giữa màn, nền tối; chạm ra ngoài / «Huỷ» để đóng
+- (void)sheet:(NSString *)title items:(NSArray *)items {
+    [self hideMenuPanel];
+    NSMutableArray *copied = [NSMutableArray array];
+    for (NSArray *it in items) [copied addObject:@[it[0], [it[1] copy]]];
+    _menuItems = copied;
+    _menuPanel = [[UIView alloc] initWithFrame:self.view.bounds];
+    _menuPanel.backgroundColor = [UIColor colorWithWhite:0 alpha:0.55];
+    _menuPanel.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    UITapGestureRecognizer *outside = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(hideMenuPanel)];
+    outside.delegate = self;
+    [_menuPanel addGestureRecognizer:outside];
+    _menuBox = [[UIScrollView alloc] init];
+    _menuBox.backgroundColor = [CBTheme surface];
+    _menuBox.layer.cornerRadius = 12;
+    _menuBox.alwaysBounceVertical = NO;
+    [_menuPanel addSubview:_menuBox];
+    _menuTitle = [self overlayLabel:[CBTheme bold:15]];
+    _menuTitle.textColor = [CBTheme dim];
+    _menuTitle.textAlignment = NSTextAlignmentCenter;
+    _menuTitle.text = title;
+    [_menuBox addSubview:_menuTitle];
+    _menuButtons = [NSMutableArray array];
+    for (NSUInteger i = 0; i <= _menuItems.count; i++) {
+        BOOL cancel = i == _menuItems.count;
+        UIButton *b = [CBTheme button:cancel ? @"Huỷ" : _menuItems[i][0] primary:NO];
+        b.tag = cancel ? -1 : (NSInteger)i;
+        b.titleLabel.font = cancel ? [CBTheme bold:16] : [CBTheme font:16];
+        b.titleLabel.adjustsFontSizeToFitWidth = YES;
+        b.titleLabel.minimumScaleFactor = 0.7;
+        if (cancel) [b setTitleColor:[CBTheme dim] forState:UIControlStateNormal];
+        [b addTarget:self action:@selector(menuButtonTapped:) forControlEvents:UIControlEventTouchUpInside];
+        [_menuBox addSubview:b];
+        [_menuButtons addObject:b];
+    }
+    [self.view addSubview:_menuPanel];
+    [self layoutMenuPanel];
+}
+
+- (void)layoutMenuPanel {
+    if (!_menuPanel) return;
+    CGFloat w = self.view.bounds.size.width, h = self.view.bounds.size.height;
+    CGFloat bw = MIN(400, w - 40), pad = 12, rowH = 44, gap = 6;
+    CGFloat y = pad;
+    _menuTitle.frame = CGRectMake(pad, y, bw - 2 * pad, _menuTitle.text.length ? 24 : 0);
+    y += _menuTitle.text.length ? 30 : 0;
+    for (UIButton *b in _menuButtons) {
+        if (b.tag < 0) y += 4;  // «Huỷ» tách khỏi các mục
+        b.frame = CGRectMake(pad, y, bw - 2 * pad, rowH);
+        y += rowH + gap;
+    }
+    CGFloat contentH = y - gap + pad;
+    CGFloat bh = MIN(contentH, h - 24);
+    _menuBox.frame = CGRectMake((w - bw) / 2, (h - bh) / 2, bw, bh);
+    _menuBox.contentSize = CGSizeMake(bw, contentH);
+}
+
+- (void)menuButtonTapped:(UIButton *)b {
+    [self pressMenuItem:b.tag];
+}
+
+- (BOOL)pressMenuItem:(NSInteger)index {
+    if (!_menuPanel) return NO;
+    NSArray *items = _menuItems;
+    [self hideMenuPanel];
+    if (index >= 0 && index < (NSInteger)items.count) ((void (^)(void))items[index][1])();
+    return YES;
+}
+
+- (void)hideMenuPanel {
+    [_menuPanel removeFromSuperview];
+    _menuPanel = nil;
+    _menuBox = nil;
+    _menuTitle = nil;
+    _menuButtons = nil;
+    _menuItems = nil;
+}
+
+- (NSString *)speedText:(float)v {
+    return [[NSString stringWithFormat:@"%g×", v] stringByReplacingOccurrencesOfString:@"." withString:@","];
+}
+
+- (double)now {
+    double now = _player ? CMTimeGetSeconds(_player.currentTime) : NAN;
+    return isfinite(now) ? now : 0;
+}
+
+- (void)showMenu {
+    __weak CBPlayerViewController *weakSelf = self;
+    NSMutableArray *items = [NSMutableArray array];
+    NSString *speed = [NSString stringWithFormat:@"Tốc độ: %@", [self speedText:[self playRate]]];
+    if (_item && !_item.canPlayFastForward && !_item.canPlaySlowForward) speed = @"Tốc độ: 1× (server này không đổi được)";
+    [items addObject:@[speed, ^{ [weakSelf showSpeeds]; }]];
+    // Đoạn mở đầu: đánh dấu đầu → đánh dấu hết → các tập sau tự tua qua
+    int now = (int)[self now];
+    if (_introStart < 0) {
+        [items addObject:@[[NSString stringWithFormat:@"Đánh dấu đầu đoạn mở đầu (%@)", [CBTheme time:now]],
+                           ^{ [weakSelf markIntroStart:now]; }]];
+    } else if (_introEnd <= _introStart) {
+        [items addObject:@[[NSString stringWithFormat:@"Đánh dấu hết đoạn mở đầu (%@)", [CBTheme time:now]],
+                           ^{ [weakSelf markIntroEnd:now]; }]];
+    } else {
+        [items addObject:@[[NSString stringWithFormat:@"Bỏ đánh dấu đoạn mở đầu (%@–%@)", [CBTheme time:_introStart],
+                                                   [CBTheme time:_introEnd]], ^{ [weakSelf clearIntro]; }]];
+    }
+    NSString *sleep = @"Hẹn giờ tắt…";
+    if (_sleepEndOfEp) sleep = @"Hẹn giờ tắt: hết tập này";
+    else if (_sleepAt) sleep = [NSString stringWithFormat:@"Hẹn giờ tắt: còn %lld phút", MAX(1, (_sleepAt - CBNowMs() + 59999) / 60000)];
+    [items addObject:@[sleep, ^{ [weakSelf showSleep]; }]];
+    [items addObject:@[@"Tải lại tập này", ^{ [weakSelf reloadEpisode]; }]];
+    [self sheet:CBStr(_detail, @"title") items:items];
+}
+
+- (void)showSpeeds {
+    __weak CBPlayerViewController *weakSelf = self;
+    NSMutableArray *items = [NSMutableArray array];
+    for (NSNumber *v in @[@0.75, @1, @1.25, @1.5, @2]) {
+        NSString *t = [self speedText:v.floatValue];
+        if (fabsf(v.floatValue - _speed) < 0.01) t = [@"✓ " stringByAppendingString:t];
+        [items addObject:@[t, ^{ [weakSelf setSpeed:v.floatValue]; }]];
+    }
+    [self sheet:@"Tốc độ phát" items:items];
+}
+
+- (void)setSpeed:(float)speed {
+    _speed = MIN(2, MAX(0.5f, speed));
+    BOOL ok = [self speedSupported:_speed];
+    if (_player.rate > 0) _player.rate = [self playRate];
+    CBLog(@"Tốc độ phát %.2f%@ (nhanh %d, chậm %d)", _speed, ok ? @"" : @" — luồng này không đổi được", _item.canPlayFastForward,
+          _item.canPlaySlowForward);
+    if (ok) [self showToast:[@"Tốc độ " stringByAppendingString:[self speedText:_speed]]];
+    else [CBTheme toast:@"Server này không đổi được tốc độ trên iOS 6 (chỉ tệp video đổi được, luồng HLS thì không) — vẫn phát 1×."];
+}
+
+- (NSString *)introKey {
+    return [@"intro@" stringByAppendingString:_filmUrl ?: @""];
+}
+
+/// «đầu,hết» (giây; hết = -1: mới đánh dấu đầu) — như Prefs.Intro của bản Windows
+- (void)loadIntro {
+    _introStart = _introEnd = -1;
+    id v = [CBPrefs get:[self introKey]];
+    NSArray *p = CBIsStr(v) ? [v componentsSeparatedByString:@","] : nil;
+    if (!p.count || ![p[0] length]) return;
+    _introStart = [p[0] intValue];
+    _introEnd = p.count > 1 ? [p[1] intValue] : -1;
+}
+
+- (void)markIntroStart:(int)s {
+    _introStart = s;
+    _introEnd = -1;
+    [CBPrefs set:[self introKey] value:[NSString stringWithFormat:@"%d,-1", s]];
+    [CBTheme toast:[NSString stringWithFormat:@"Đã đánh dấu đầu đoạn mở đầu (%@). Tới chỗ hết đoạn mở đầu thì đánh dấu hết.",
+                                              [CBTheme time:s]]];
+}
+
+- (void)markIntroEnd:(int)e {
+    if (e <= _introStart + 3) {
+        [CBTheme toast:@"Mốc hết phải sau mốc đầu — tua tới chỗ hết đoạn mở đầu rồi đánh dấu lại."];
+        return;
+    }
+    _introEnd = e;
+    _introSkipped = YES;  // tập đang xem đã qua đoạn đó
+    [CBPrefs set:[self introKey] value:[NSString stringWithFormat:@"%d,%d", _introStart, e]];
+    [CBTheme toast:[NSString stringWithFormat:@"Đã lưu đoạn mở đầu %@–%@ — các tập sau tự bỏ qua.", [CBTheme time:_introStart],
+                                              [CBTheme time:e]]];
+}
+
+- (void)clearIntro {
+    _introStart = _introEnd = -1;
+    [CBPrefs set:[self introKey] value:nil];
+    [CBTheme toast:@"Đã bỏ đánh dấu đoạn mở đầu."];
+}
+
+- (void)showSleep {
+    __weak CBPlayerViewController *weakSelf = self;
+    NSMutableArray *items = [NSMutableArray array];
+    for (NSNumber *m in @[@15, @30, @60, @90]) {
+        [items addObject:@[[NSString stringWithFormat:@"%@ phút", m], ^{ [weakSelf setSleepAfter:m.intValue * 60 endOfEpisode:NO]; }]];
+    }
+    [items addObject:@[@"Hết tập này", ^{ [weakSelf setSleepAfter:0 endOfEpisode:YES]; }]];
+    if (_sleepAt || _sleepEndOfEp) [items addObject:@[@"Tắt hẹn giờ", ^{ [weakSelf setSleepAfter:0 endOfEpisode:NO]; }]];
+    [self sheet:@"Hẹn giờ tắt" items:items];
+}
+
+- (void)setSleepAfter:(NSTimeInterval)seconds endOfEpisode:(BOOL)endOfEpisode {
+    _sleepEndOfEp = endOfEpisode;
+    _sleepAt = seconds > 0 ? CBNowMs() + (long long)(seconds * 1000) : 0;
+    CBLog(@"Hẹn giờ tắt: %@", endOfEpisode ? @"hết tập" : seconds > 0 ? [NSString stringWithFormat:@"%.0fs", seconds] : @"tắt");
+    [self showToast:endOfEpisode ? @"Dừng khi hết tập" : seconds > 0 ? [NSString stringWithFormat:@"Dừng sau %.0f phút", ceil(seconds / 60)]
+                                                         : @"Đã tắt hẹn giờ"];
+}
+
+/// Hết giờ hẹn: tạm dừng, cho máy tự khoá màn hình (không giữ sáng nữa), «Xem tiếp» để phát lại
+- (void)sleepNow:(NSString *)text {
+    _sleepAt = 0;
+    [_player pause];
+    [self savePosition];
+    _sleepPaused = YES;
+    [UIApplication sharedApplication].idleTimerDisabled = NO;
+    CBLog(@"Hẹn giờ tắt: tạm dừng");
+    [self showError:text button:@"Xem tiếp" action:@selector(togglePlay)];
+}
+
+- (void)reloadEpisode {
+    [self savePosition];
+    [self openEpisode:_index];
 }
 
 - (void)selectServer:(NSInteger)index {
@@ -1215,7 +1485,7 @@ static NSArray *CBParseSubtitles(NSString *text) {
     if (event.type != UIEventTypeRemoteControl) return;
     switch (event.subtype) {
         case UIEventSubtypeRemoteControlTogglePlayPause: [self togglePlay]; break;
-        case UIEventSubtypeRemoteControlPlay: [_player play]; break;
+        case UIEventSubtypeRemoteControlPlay: [self resume]; break;
         case UIEventSubtypeRemoteControlPause: [_player pause]; break;
         case UIEventSubtypeRemoteControlNextTrack: [self nextEpisode]; break;
         case UIEventSubtypeRemoteControlPreviousTrack: [self previousEpisode]; break;
@@ -1226,8 +1496,8 @@ static NSArray *CBParseSubtitles(NSString *text) {
 - (NSString *)statusLine {
     double now = _player ? CMTimeGetSeconds(_player.currentTime) : 0;
     AVPlayerItemAccessLogEvent *ev = _item.accessLog.events.lastObject;
-    return [NSString stringWithFormat:@"%@ | %@ / %@ | rate %.1f | server %@ | đệm %@ | bitrate %.0f kbps | khựng %ld | RAM %.0f MB",
-            _titleLabel.text, [CBTheme time:now], [CBTheme time:CBDuration(_item)], _player.rate,
+    return [NSString stringWithFormat:@"%@ | %@ / %@ | rate %.2f (chọn %.2f) | server %@ | đệm %@ | bitrate %.0f kbps | khựng %ld | RAM %.0f MB",
+            _titleLabel.text, [CBTheme time:now], [CBTheme time:CBDuration(_item)], _player.rate, _speed,
             CBStr(_servers.count > _serverIdx ? _servers[_serverIdx] : nil, @"label"),
             _item.playbackLikelyToKeepUp ? @"đủ" : @"thiếu", ev.observedBitrate / 1000, (long)ev.numberOfStalls, CBResidentMB()];
 }
