@@ -13,4 +13,7 @@
 + (void)clearMemory;
 /// Số ảnh đang tải / chờ / xong / hỏng (gỡ lỗi)
 + (NSString *)debugStatus;
+/// Dung lượng ảnh bìa lưu trên máy (byte) / xoá hết (cả bộ đệm trong RAM)
++ (unsigned long long)diskBytes;
++ (void)clearDisk;
 @end

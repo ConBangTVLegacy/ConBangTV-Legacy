@@ -201,6 +201,25 @@ static UIImage *CBDecode(NSData *data, CGFloat maxPx) {
     [gMemory removeAllObjects];
 }
 
++ (unsigned long long)diskBytes {
+    [self setup];
+    unsigned long long total = 0;
+    NSFileManager *fm = [NSFileManager defaultManager];
+    for (NSString *f in [fm contentsOfDirectoryAtPath:gDiskDir error:NULL] ?: @[]) {
+        total += [[fm attributesOfItemAtPath:[gDiskDir stringByAppendingPathComponent:f] error:NULL] fileSize];
+    }
+    return total;
+}
+
++ (void)clearDisk {
+    [self setup];
+    [gMemory removeAllObjects];
+    NSFileManager *fm = [NSFileManager defaultManager];
+    for (NSString *f in [fm contentsOfDirectoryAtPath:gDiskDir error:NULL] ?: @[]) {
+        [fm removeItemAtPath:[gDiskDir stringByAppendingPathComponent:f] error:NULL];
+    }
+}
+
 + (NSString *)memKey:(NSString *)url px:(CGFloat)px {
     return [NSString stringWithFormat:@"%.0f|%@", px, url];
 }

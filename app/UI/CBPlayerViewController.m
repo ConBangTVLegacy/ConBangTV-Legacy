@@ -676,7 +676,7 @@ static NSArray *CBParseSubtitles(NSString *text) {
     _timeLabel.text = @"00:00";
     _durLabel.text = @"--:--";
     [CBPrefs addHistory:_detail episode:ep];
-    [CBCore sync:@"home.markSeen" args:@{@"detail": _detail}];
+    if (![CBPrefs privateMode]) [CBCore sync:@"home.markSeen" args:@{@"detail": _detail}];
     NSDictionary *latest = CBDetailLatestEpisode(_detail);
     if (latest) {
         [CBPrefs updateFollow:CBStr(_detail, @"url") count:CBDetailEpisodeCount(_detail) latest:CBStr(latest, @"title") seen:YES];

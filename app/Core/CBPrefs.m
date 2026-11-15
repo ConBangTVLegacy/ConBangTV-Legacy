@@ -315,7 +315,7 @@ static NSString *Sha256Hex(NSString *s) {
 
 + (void)addHistory:(NSDictionary *)detail episode:(NSDictionary *)ep {
     NSString *filmUrl = CBStr(detail, @"url");
-    if (!filmUrl) return;
+    if (!filmUrl || [self privateMode]) return;  // xem riêng: không ghi lịch sử
     NSMutableDictionary *item = [@{@"filmUrl": filmUrl, @"title": CBStr(detail, @"title") ?: @"",
                                    @"epTitle": CBStr(ep, @"title") ?: @"", @"epUrl": CBStr(ep, @"url") ?: @"",
                                    @"time": @(CBNowMs())} mutableCopy];
@@ -383,7 +383,12 @@ static NSString *Sha256Hex(NSString *s) {
     [self set:[self k:@"positions_v2"] value:list];
 }
 
+/// Chỗ đang xem lúc «Xem riêng» (chỉ trong bộ nhớ, như bản iPad)
+static NSMutableDictionary *gPrivatePositions;
+
 + (NSDictionary *)lastPosition:(NSString *)epUrl {
+    NSNumber *priv = gPrivatePositions[epUrl ?: @""];
+    if (priv) return @{@"ep": epUrl, @"sec": priv};
     for (NSDictionary *p in [[self positionsList] reverseObjectEnumerator]) {
         if ([CBStr(p, @"ep") isEqualToString:epUrl]) return p;
     }
@@ -409,6 +414,12 @@ static NSString *Sha256Hex(NSString *s) {
 
 + (void)savePosition:(NSString *)epUrl seconds:(int)sec film:(NSString *)filmUrl {
     if (!epUrl.length) return;
+    if ([self privateMode]) {
+        if (!gPrivatePositions) gPrivatePositions = [NSMutableDictionary dictionary];
+        gPrivatePositions[epUrl] = @(MAX(sec, 0));
+        return;
+    }
+    [gPrivatePositions removeObjectForKey:epUrl];
     NSMutableArray *list = [NSMutableArray array];
     for (NSDictionary *p in [self positionsList]) {
         if (![CBStr(p, @"ep") isEqualToString:epUrl]) [list addObject:p];
@@ -576,6 +587,65 @@ static NSString *Sha256Hex(NSString *s) {
 + (void)setSecureDns:(BOOL)on {
     [self set:@"doh" value:on ? @"AUTO" : @"OFF"];
     [CBCore networkSettingsChanged];
+}
+
++ (NSInteger)unblockLevel {
+    if (![self unblock]) return 0;
+    id v = [self get:@"unblock_level"];
+    return [v respondsToSelector:@selector(integerValue)] && [v integerValue] == 2 ? 2 : 1;
+}
+
++ (void)setUnblockLevel:(NSInteger)level {
+    [self set:@"unblock" value:@(level > 0)];
+    if (level > 0) [self set:@"unblock_level" value:@(level == 2 ? 2 : 1)];
+    [CBCore networkSettingsChanged];
+}
+
++ (BOOL)kkBackup {
+    return [self boolKey:@"kk_backup" def:YES];
+}
+
++ (void)setKkBackup:(BOOL)on {
+    [self set:@"kk_backup" value:@(on)];
+}
+
++ (BOOL)autoUpdate {
+    return [self boolKey:@"auto_update" def:YES];
+}
+
++ (void)setAutoUpdate:(BOOL)on {
+    [self set:@"auto_update" value:@(on)];
+}
+
++ (BOOL)privateMode {
+    return [self boolKey:[self k:@"private_mode"] def:NO];
+}
+
++ (void)setPrivateMode:(BOOL)on {
+    [self set:[self k:@"private_mode"] value:@(on)];
+}
+
++ (NSArray *)serverKeys {
+    NSMutableArray *keys = [NSMutableArray array];
+    for (NSString *site in [self sites]) {
+        NSString *host = CBHostOf(site);
+        if (!host.length) continue;
+        [keys addObject:[self k:[@"server_type@" stringByAppendingString:host]]];
+        [keys addObject:[@"legacy_server@" stringByAppendingString:host]];
+    }
+    return keys;
+}
+
++ (NSUInteger)chosenServerCount {
+    NSMutableSet *hosts = [NSMutableSet set];
+    for (NSString *k in [self serverKeys]) {
+        if ([self get:k]) [hosts addObject:[k substringFromIndex:[k rangeOfString:@"@"].location + 1]];
+    }
+    return hosts.count;
+}
+
++ (void)resetChosenServers {
+    for (NSString *k in [self serverKeys]) [self remove:k];
 }
 
 + (BOOL)unblock {

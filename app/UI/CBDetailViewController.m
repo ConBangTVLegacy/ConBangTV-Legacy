@@ -157,7 +157,7 @@
     NSArray *groups = CBArr(d, @"groups");
     if (_group >= (NSInteger)groups.count) _group = 0;
     // «Có tập mới» tự động của trang chủ: đã mở phim thì thôi (như bản Windows — lõi ghi tập lớn nhất đã thấy)
-    [CBCore sync:@"home.markSeen" args:@{@"detail": d}];
+    if (![CBPrefs privateMode]) [CBCore sync:@"home.markSeen" args:@{@"detail": d}];
     // Phim đang theo dõi: vào trang phim thì cập nhật số tập (chưa coi là đã xem tập mới — xem mới tính)
     if ([CBPrefs followOf:CBStr(d, @"url") ?: @""]) {
         [CBPrefs updateFollow:CBStr(d, @"url") count:CBDetailEpisodeCount(d) latest:CBStr(CBDetailLatestEpisode(d), @"title")

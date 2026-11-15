@@ -15,22 +15,27 @@
 
 typedef NS_ENUM(NSInteger, CBSection) { CBSecProfile, CBSecSites, CBSecPlayer, CBSecNet, CBSecData, CBSecAbout, CBSecCount };
 typedef NS_ENUM(NSInteger, CBSettingsAlert) {
-    CBAlertAdd = 1, CBAlertRename, CBAlertPin, CBAlertPinConfirm, CBAlertPinRemove, CBAlertDelete, CBAlertClear
+    CBAlertAdd = 1, CBAlertRename, CBAlertPin, CBAlertPinConfirm, CBAlertPinRemove, CBAlertDelete, CBAlertClear, CBAlertClearImages
 };
 
-@interface CBSettingsViewController () <UIAlertViewDelegate>
+@interface CBSettingsViewController () <UIAlertViewDelegate, UIActionSheetDelegate>
 @end
 
 @implementation CBSettingsViewController {
     NSString *_pinDraft;  // mã PIN lần nhập đầu, chờ nhập lại
     NSArray *_sites;
     NSMutableDictionary *_siteNames;
+    NSMutableDictionary *_checks;   // «Đo tốc độ các trang»: url → «320 ms · 24 phim» / «đang đo…» / lỗi
+    NSMutableDictionary *_checkMs;  // url → ms (đo xong, có phim) — đánh dấu ★ trang nhanh nhất
+    unsigned long long _imageBytes; // ảnh bìa lưu trên máy (tính ở nền khi mở màn)
 }
 
 - (instancetype)init {
     if ((self = [super initWithStyle:UITableViewStyleGrouped])) {
         self.title = @"Cài đặt";
         _siteNames = [NSMutableDictionary dictionary];
+        _checks = [NSMutableDictionary dictionary];
+        _checkMs = [NSMutableDictionary dictionary];
     }
     return self;
 }
@@ -46,6 +51,13 @@ typedef NS_ENUM(NSInteger, CBSettingsAlert) {
     [super viewWillAppear:animated];
     _sites = [CBPrefs sites];
     [self.tableView reloadData];
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW, 0), ^{
+        unsigned long long bytes = [CBImages diskBytes];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            self->_imageBytes = bytes;
+            [self.tableView reloadData];
+        });
+    });
 }
 
 - (NSString *)siteName:(NSString *)url {
@@ -67,11 +79,11 @@ typedef NS_ENUM(NSInteger, CBSettingsAlert) {
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
     switch (section) {
         case CBSecProfile: return [CBPrefs profiles].count > 1 ? 7 : 6;
-        case CBSecSites: return 2 + _sites.count;  // tổng hợp, hồ sơ trẻ em, từng trang
-        case CBSecPlayer: return 3;
+        case CBSecSites: return 3 + _sites.count;  // tổng hợp, hồ sơ trẻ em, từng trang, «Đo tốc độ các trang»
+        case CBSecPlayer: return 6;  // tự chuyển tập, bước tua, lấp đầy, xem riêng, server dự phòng KKPhim, đặt lại server
         case CBSecNet: return 3;
-        case CBSecData: return 2;
-        case CBSecAbout: return 3;
+        case CBSecData: return 3;    // đồng bộ, xoá lịch sử, xoá ảnh
+        case CBSecAbout: return 4;   // phiên bản, miễn trừ, liên hệ, tự kiểm tra bản mới
     }
     return 0;
 }
@@ -86,8 +98,13 @@ typedef NS_ENUM(NSInteger, CBSettingsAlert) {
                                       @"kinh dị / hình sự / chiến tranh / 18+) — tắt cần mã PIN phụ huynh nếu đã đặt. "
                                       @"Trên iOS 6 chỉ phát được server có luồng HLS / tệp video (KKPhim, VSMOV, server KK Phim "
                                       @"của phimmois…); trình phát nhúng của trang (NguonC, streamfree…) không chạy được.";
-    if (section == CBSecNet) return @"DNS mã hoá và vượt chặn giúp vào được trang bị nhà mạng chặn.";
-    if (section == CBSecAbout) return @"App tự kiểm tra bản mới (GitHub) khi mở; chạm «Phiên bản» để kiểm tra ngay.";
+    if (section == CBSecPlayer) return @"Xem riêng: không ghi lịch sử, chỗ đang xem chỉ nhớ tới khi đóng app (của người xem này). "
+                                       @"Server dự phòng KKPhim: với yanhh3d, hoathinh3d, hhkungfu… app tìm cùng phim, cùng tập trên "
+                                       @"KKPhim và thêm server «KKPhim…» vào danh sách server — trang hỏng vẫn xem được.";
+    if (section == CBSecNet) return @"DNS mã hoá: hỏi địa chỉ trang qua DNS mã hoá thay DNS nhà mạng. Vượt chặn: trang không vào được "
+                                    @"(nhà mạng chặn theo tên trang) thì bật Mức 1 — app chia nhỏ gói bắt tay HTTPS; Mức 1 mà trang vẫn "
+                                    @"không trả lời thì app tự thử Mức 2 cho riêng trang đó. Không cần VPN.";
+    if (section == CBSecAbout) return @"Bật «Tự kiểm tra bản mới» thì app hỏi GitHub khi mở (6 giờ một lần); chạm «Phiên bản» để kiểm tra ngay.";
     return nil;
 }
 
@@ -172,10 +189,16 @@ typedef NS_ENUM(NSInteger, CBSettingsAlert) {
                 return c;
             }
             if (ip.row == 1) return [self switchCell:tv text:@"Hồ sơ trẻ em" on:[CBPrefs kids] tag:7];
+            if (ip.row == 2 + (NSInteger)_sites.count) {
+                UITableViewCell *c = [self cell:tv text:@"Đo tốc độ các trang" detail:nil];
+                c.textLabel.textColor = [CBTheme brand];
+                return c;
+            }
             NSString *url = _sites[ip.row - 2];
-            // Tên trang đã kèm tên miền khi cần (vd «CLB Phim Xưa (sc.k-20.xyz)») — không lặp ở cột phải
+            // Tên trang đã kèm tên miền khi cần (vd «CLB Phim Xưa (sc.k-20.xyz)») — không lặp ở cột phải; đã đo thì hiện kết quả
             NSString *name = [self siteName:url], *host = CBHostOf(url);
-            UITableViewCell *c = [self cell:tv text:name detail:(host && [name rangeOfString:host].location == NSNotFound) ? host : nil];
+            NSString *detail = _checks[url] ?: ((host && [name rangeOfString:host].location == NSNotFound) ? host : nil);
+            UITableViewCell *c = [self cell:tv text:name detail:detail];
             c.accessoryType = [url isEqualToString:[CBPrefs baseUrl]] ? UITableViewCellAccessoryCheckmark : UITableViewCellAccessoryNone;
             return c;
         }
@@ -184,10 +207,21 @@ typedef NS_ENUM(NSInteger, CBSettingsAlert) {
             if (ip.row == 1) {
                 return [self cell:tv text:@"Bước tua (chạm đúp)" detail:[NSString stringWithFormat:@"%ld giây", (long)[CBPrefs seekStep]]];
             }
-            return [self switchCell:tv text:@"Lấp đầy màn hình" on:[CBPrefs videoFill] tag:4];
+            if (ip.row == 2) return [self switchCell:tv text:@"Lấp đầy màn hình" on:[CBPrefs videoFill] tag:4];
+            if (ip.row == 3) return [self switchCell:tv text:@"Xem riêng (không lưu lịch sử)" on:[CBPrefs privateMode] tag:8];
+            if (ip.row == 4) return [self switchCell:tv text:@"Server dự phòng KKPhim" on:[CBPrefs kkBackup] tag:9];
+            {
+                NSUInteger n = [CBPrefs chosenServerCount];
+                return [self cell:tv text:@"Đặt lại server đã chọn"
+                           detail:n ? [NSString stringWithFormat:@"%lu trang", (unsigned long)n] : @"chưa có"];
+            }
         case CBSecNet:
             if (ip.row == 0) return [self switchCell:tv text:@"DNS mã hoá" on:[CBPrefs secureDns] tag:5];
-            if (ip.row == 1) return [self switchCell:tv text:@"Vượt chặn nhà mạng" on:[CBPrefs unblock] tag:6];
+            if (ip.row == 1) {
+                UITableViewCell *c = [self cell:tv text:@"Vượt chặn nhà mạng" detail:@[@"Tắt", @"Mức 1", @"Mức 2"][[CBPrefs unblockLevel]]];
+                c.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+                return c;
+            }
             {
                 UITableViewCell *c = [self cell:tv text:@"Proxy" detail:[CBProxyViewController summary]];
                 c.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
@@ -200,6 +234,12 @@ typedef NS_ENUM(NSInteger, CBSettingsAlert) {
                 UITableViewCell *c = [self cell:tv text:@"Đồng bộ trong nhà"
                                           detail:n ? [NSString stringWithFormat:@"%lu máy", (unsigned long)n] : @"Chưa ghép"];
                 c.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+                return c;
+            }
+            if (ip.row == 2) {
+                UITableViewCell *c = [self cell:tv text:@"Xoá ảnh đã lưu…"
+                                          detail:[NSString stringWithFormat:@"%.1f MB", _imageBytes / 1048576.0]];
+                c.textLabel.textColor = CBRGB(0xE5533D);
                 return c;
             }
             UITableViewCell *c = [self cell:tv text:@"Xoá lịch sử xem…" detail:[NSString stringWithFormat:@"%lu phim",
@@ -219,8 +259,9 @@ typedef NS_ENUM(NSInteger, CBSettingsAlert) {
                 c.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
                 return c;
             }
+            if (ip.row == 3) return [self switchCell:tv text:@"Tự kiểm tra bản mới" on:[CBPrefs autoUpdate] tag:10];
             UITableViewCell *c = [self cell:tv text:@"Liên hệ" detail:@"t.me/tivikit"];
-            c.selectionStyle = UITableViewCellSelectionStyleNone;
+            c.accessoryType = UITableViewCellAccessoryDisclosureIndicator;  // chạm: mở trang Telegram
             return c;
         }
     }
@@ -234,6 +275,9 @@ typedef NS_ENUM(NSInteger, CBSettingsAlert) {
         case 4: [CBPrefs setVideoFill:sw.on]; break;
         case 5: [CBPrefs setSecureDns:sw.on]; break;
         case 6: [CBPrefs setUnblock:sw.on]; break;
+        case 8: [CBPrefs setPrivateMode:sw.on]; break;
+        case 9: [CBPrefs setKkBackup:sw.on]; break;
+        case 10: [CBPrefs setAutoUpdate:sw.on]; break;
         case 7:
             if (sw.on) {
                 [CBPrefs setKids:YES];
@@ -253,6 +297,40 @@ typedef NS_ENUM(NSInteger, CBSettingsAlert) {
             break;
     }
     CBLog(@"Cài đặt %ld → %d", (long)sw.tag, sw.on);
+}
+
+- (void)actionSheet:(UIActionSheet *)sheet clickedButtonAtIndex:(NSInteger)index {
+    if (index == sheet.cancelButtonIndex || index < 0 || index > 2) return;
+    [CBPrefs setUnblockLevel:index];
+    CBLog(@"Vượt chặn: mức %ld", (long)index);
+    [self.tableView reloadData];
+}
+
+/// «Đo tốc độ các trang» (site.check của lõi, như nút «Đo» bản Windows): thời gian trả lời + số phim đọc được ở trang chủ
+- (void)measureSites {
+    [_checkMs removeAllObjects];
+    __block NSUInteger left = _sites.count;
+    for (NSString *url in _sites) {
+        _checks[url] = @"đang đo…";
+        [CBCore call:@"site.check" args:@{@"baseUrl": url} done:^(id ok, NSString *err) {
+            long ms = (long)CBNum(ok, @"ms", 0), films = (long)CBNum(ok, @"films", 0);
+            if (err) {
+                self->_checks[url] = [@"lỗi: " stringByAppendingString:err.length > 30 ? [[err substringToIndex:30] stringByAppendingString:@"…"] : err];
+            } else if (films > 0) {
+                self->_checks[url] = [NSString stringWithFormat:@"%ld ms · %ld phim", ms, films];
+                self->_checkMs[url] = @(ms);
+            } else {
+                self->_checks[url] = [NSString stringWithFormat:@"%ld ms · không thấy phim", ms];
+            }
+            CBLog(@"Đo %@: %@", url, self->_checks[url]);
+            if (--left == 0 && self->_checkMs.count > 1) {  // xong hết: ★ trang nhanh nhất
+                NSString *best = [[self->_checkMs keysSortedByValueUsingSelector:@selector(compare:)] firstObject];
+                if (best) self->_checks[best] = [@"★ " stringByAppendingString:self->_checks[best]];
+            }
+            [self.tableView reloadData];
+        }];
+    }
+    [self.tableView reloadData];
 }
 
 - (UIAlertView *)ask:(NSString *)title message:(NSString *)msg tag:(NSInteger)tag style:(UIAlertViewStyle)style ok:(NSString *)ok {
@@ -315,9 +393,25 @@ typedef NS_ENUM(NSInteger, CBSettingsAlert) {
                        tag:CBAlertDelete style:UIAlertViewStyleDefault ok:@"Xoá"] show];
             }];
         }
+    } else if (ip.section == CBSecSites && ip.row == 2 + (NSInteger)_sites.count) {
+        [self measureSites];
     } else if (ip.section == CBSecSites && ip.row > 1) {
         [CBPrefs setBaseUrl:_sites[ip.row - 2]];
         [tv reloadData];
+    } else if (ip.section == CBSecPlayer && ip.row == 5) {
+        NSUInteger n = [CBPrefs chosenServerCount];
+        [CBPrefs resetChosenServers];
+        [CBTheme toast:n ? [NSString stringWithFormat:@"Đã quên server đã chọn của %lu trang — lần xem sau app tự chọn lại.", (unsigned long)n]
+                         : @"Chưa có server nào được nhớ."];
+        [tv reloadData];
+    } else if (ip.section == CBSecNet && ip.row == 1) {
+        UIActionSheet *s = [[UIActionSheet alloc] initWithTitle:@"Vượt chặn nhà mạng" delegate:self cancelButtonTitle:nil
+                                         destructiveButtonTitle:nil otherButtonTitles:nil];
+        NSInteger cur = [CBPrefs unblockLevel];
+        NSArray *names = @[@"Tắt", @"Mức 1 — chia nhỏ gói bắt tay", @"Mức 2 — chia nhỏ hơn nữa"];
+        for (NSInteger i = 0; i < 3; i++) [s addButtonWithTitle:i == cur ? [@"✓ " stringByAppendingString:names[i]] : names[i]];
+        s.cancelButtonIndex = [s addButtonWithTitle:@"Huỷ"];
+        [s showInView:self.view];
     } else if (ip.section == CBSecPlayer && ip.row == 1) {
         NSArray *steps = @[@5, @10, @15, @30];
         NSUInteger i = [steps indexOfObject:@([CBPrefs seekStep])];
@@ -327,9 +421,14 @@ typedef NS_ENUM(NSInteger, CBSettingsAlert) {
         [self.navigationController pushViewController:[[CBProxyViewController alloc] init] animated:YES];
     } else if (ip.section == CBSecData && ip.row == 0) {
         [self.navigationController pushViewController:[[CBSyncViewController alloc] init] animated:YES];
-    } else if (ip.section == CBSecData) {
+    } else if (ip.section == CBSecData && ip.row == 1) {
         [[self ask:@"Xoá lịch sử xem?" message:@"Xoá danh sách «Xem tiếp» và chỗ đang xem của mọi tập (người xem hiện tại)."
                tag:CBAlertClear style:UIAlertViewStyleDefault ok:@"Xoá"] show];
+    } else if (ip.section == CBSecData && ip.row == 2) {
+        [[self ask:@"Xoá ảnh đã lưu?" message:@"Xoá ảnh bìa lưu trên máy (giải phóng bộ nhớ). Ảnh sẽ tải lại khi cần."
+               tag:CBAlertClearImages style:UIAlertViewStyleDefault ok:@"Xoá"] show];
+    } else if (ip.section == CBSecAbout && ip.row == 2) {
+        [[UIApplication sharedApplication] openURL:[NSURL URLWithString:@"https://t.me/tivikit"]];
     } else if (ip.section == CBSecAbout && ip.row == 0) {
         [CBUpdate checkManual];
     } else if (ip.section == CBSecAbout && ip.row == 1) {
@@ -398,6 +497,11 @@ typedef NS_ENUM(NSInteger, CBSettingsAlert) {
             }
             break;
         case CBAlertClear: [CBPrefs clearHistory]; break;
+        case CBAlertClearImages:
+            [CBImages clearDisk];
+            _imageBytes = 0;
+            [CBTheme toast:@"Đã xoá ảnh đã lưu."];
+            break;
     }
     [self.tableView reloadData];
 }

@@ -65,6 +65,7 @@ static BOOL gPrompting; // đang hiện hộp «Có bản mới» (không chồn
 }
 
 + (void)check:(BOOL)manual {
+    if (!manual && ![CBPrefs autoUpdate]) return;  // người xem tắt «Tự kiểm tra bản mới» — chỉ kiểm khi chạm «Phiên bản»
     if (gBusy || gChecking || gPrompting) {
         if (manual) [CBTheme toast:gBusy ? @"Đang cập nhật…" : @"Đang kiểm tra bản mới…"];
         return;

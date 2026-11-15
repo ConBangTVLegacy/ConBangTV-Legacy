@@ -58,6 +58,21 @@
 + (void)setBaseUrl:(NSString *)url;
 + (NSArray *)sites;
 + (void)setSites:(NSArray *)sites;
+/// Vượt chặn nhà mạng: 0 tắt, 1 mức 1 (chia nhỏ gói bắt tay), 2 mức 2 — khoá unblock + unblock_level như lõi / bản Windows
++ (NSInteger)unblockLevel;
++ (void)setUnblockLevel:(NSInteger)level;
+/// Server dự phòng KKPhim cho các trang tự có trình phát (khoá kk_backup, chưa có = bật)
++ (BOOL)kkBackup;
++ (void)setKkBackup:(BOOL)on;
+/// Tự kiểm tra bản mới khi mở app (khoá auto_update, chưa có = bật)
++ (BOOL)autoUpdate;
++ (void)setAutoUpdate:(BOOL)on;
+/// Xem riêng (từng người xem, khoá private_mode): không ghi lịch sử / «đã thấy tập»; chỗ đang xem chỉ giữ trong lần mở app này
++ (BOOL)privateMode;
++ (void)setPrivateMode:(BOOL)on;
+/// Server đã chọn / đã phát được theo từng trang (server_type@ / legacy_server@): số trang đang nhớ, và xoá hết
++ (NSUInteger)chosenServerCount;
++ (void)resetChosenServers;
 + (BOOL)homeMix;
 /// Hồ sơ trẻ em (khoá kids — đặt từ bản Windows / Android, đồng bộ hồ sơ)
 + (BOOL)kids;

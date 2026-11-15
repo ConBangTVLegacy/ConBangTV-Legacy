@@ -44,7 +44,7 @@ Cổng phát nội bộ 127.0.0.1 (media_proxy: bỏ quảng cáo, cắt PNG ng�
 | Trang phim | thông tin, Xem / Xem tiếp, Theo dõi, «Mới nhất: Tập N» / «Từ tập đầu» (đang xem dở), **«⇄ đổi nguồn»** (phim có ở nhiều trang — `links` của thẻ trang chủ tổng hợp), chọn bản (Vietsub / Thuyết minh), lưới tập, mô tả, **phim liên quan** (`related.load`) |
 | Trình phát | AVPlayer qua cổng phát nội bộ, tự chọn server phát được trên iOS 6, nhớ chỗ xem, tự chuyển tập, **bảng chọn tập «☰ Tập»** (đổi bản Vietsub / Thuyết minh), điều khiển trên màn khoá, **menu «⋯»**: tốc độ phát (iOS 6 chỉ đổi được với tệp video — luồng HLS báo không đổi được), đánh dấu / tự bỏ qua đoạn mở đầu (khoá `intro@<phim>` như bản Windows), hẹn giờ tắt (15–90 phút / hết tập), tải lại; **phụ đề rời** (WebVTT / SRT của server riêng PhimMoi — tự vẽ, AVPlayer iOS 6 không gắn được), server rớt giữa chừng thì thử lại server đó rồi mới sang server khác |
 | Người xem | «Ai đang xem?» (thêm người, mã PIN), đổi người xem — cùng khoá dữ liệu với bản Windows |
-| Cài đặt | người xem, trang chủ tổng hợp, **hồ sơ trẻ em** (tắt cần mã phụ huynh), trang phim, phát video, mạng, **Đồng bộ trong nhà**, xoá lịch sử, miễn trừ |
+| Cài đặt | người xem (mã PIN nhập hai lần, bỏ khoá cần mã cũ), trang chủ tổng hợp, **hồ sơ trẻ em** (tắt cần mã phụ huynh), trang phim + **đo tốc độ các trang** (`site.check`, ★ nhanh nhất), phát video (**xem riêng** — `private_mode`, không ghi lịch sử / «đã thấy tập», chỗ xem chỉ trong RAM; **server dự phòng KKPhim** — `kk_backup`; đặt lại server đã chọn), mạng (DNS mã hoá, **vượt chặn Tắt / Mức 1 / Mức 2** — `unblock` + `unblock_level`, proxy), **Đồng bộ trong nhà**, xoá lịch sử, **xoá ảnh đã lưu**, **tự kiểm tra bản mới** (`auto_update`), miễn trừ, liên hệ |
 | Theo dõi / Lịch sử | nút «☆ Theo dõi» đầu trang chủ, «Xem thêm» của «Có tập mới» / «Xem tiếp»: lưới phim, kiểm tập mới khi mở, nhấn giữ để bỏ theo dõi / xoá |
 | Proxy | Cài đặt → Mạng → Proxy: SOCKS5 (có đăng nhập) hoặc Shadowsocks (dán link `ss://`), DNS qua proxy, chỉ trang phim, thử kết nối; lõi lo hết (trang, video qua cổng phát nội bộ, ảnh tải qua lõi khi proxy cho cả app); proxy lỗi thì báo lỗi, không đi thẳng |
 | Giới hạn giờ xem | từng người xem: số phút mỗi ngày, giờ đi ngủ (tới 6 giờ sáng); hết giờ phim dừng, xem thêm cần mã PIN phụ huynh — cùng khoá với bản Windows / TV / iPad |
@@ -148,10 +148,8 @@ Máy đang chạy bản cũ hơn 0.4.0 (chưa có `cbupdate`) cài bản mới m
 
 ## Việc tiếp theo
 
-1. Cài đặt: mức vượt chặn (Tắt / Mức 1 / Mức 2), server dự phòng KKPhim, đo tốc độ trang, xoá ảnh đã lưu, xem riêng (không ghi
-   lịch sử), tắt tự cập nhật.
-2. Tìm kiếm phimmois.fun (lõi chung) trả ~60 phim mới nhất cho mọi từ khoá — app tạm bỏ nhóm đó khi không phim nào khớp
+1. Tìm kiếm phimmois.fun (lõi chung) trả ~60 phim mới nhất cho mọi từ khoá — app tạm bỏ nhóm đó khi không phim nào khớp
    (`CBGridViewController dropJunk`); sửa hẳn ở lõi thì bỏ được.
-3. Trang bật chống bot của Cloudflare (hoathinh3d.pw): các bản khác đọc hộ bằng WebView ẩn (`web.fetch`); WebView iOS 6 nhiều
+2. Trang bật chống bot của Cloudflare (hoathinh3d.pw): các bản khác đọc hộ bằng WebView ẩn (`web.fetch`); WebView iOS 6 nhiều
    khả năng không qua được lớp chặn — chưa làm.
-4. Đo lại tốc độ tải qua lõi khi Wi-Fi tốt (lần đo đầu Wi-Fi máy thử yếu).
+3. Đo lại tốc độ tải qua lõi khi Wi-Fi tốt (lần đo đầu Wi-Fi máy thử yếu).
