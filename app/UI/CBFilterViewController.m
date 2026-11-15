@@ -31,12 +31,17 @@
     return [self isApi:b] || [self isNext:b];
 }
 
+/// Tên bộ lọc thứ hai của trang đang chọn: «Quốc gia»; dexter.pw (phim Âu Mỹ) lọc theo thập niên
++ (NSString *)secondName {
+    return [CBHostOf([CBPrefs baseUrl] ?: @"") isEqualToString:@"dexter.pw"] ? @"Thập niên" : @"Quốc gia";
+}
+
 - (instancetype)initGenres:(BOOL)genres {
     if ((self = [super initWithNibName:nil bundle:nil])) {
         _genres = genres;
         // Bộ lọc là của trang phim đang chọn (cả khi trang chủ tổng hợp) — ghi tên trang cho khỏi nhầm
         NSString *host = [[NSURL URLWithString:[CBPrefs baseUrl] ?: @""].host stringByReplacingOccurrencesOfString:@"www." withString:@""];
-        self.title = [NSString stringWithFormat:@"%@%@", genres ? @"Thể loại" : @"Quốc gia",
+        self.title = [NSString stringWithFormat:@"%@%@", genres ? @"Thể loại" : [CBFilterViewController secondName],
                                                 host.length ? [@" · " stringByAppendingString:host] : @""];
     }
     return self;

@@ -14,8 +14,11 @@ static const NSInteger kMaxHistory = 60;
 static const NSInteger kMaxPositions = 400;
 
 static NSArray *PresetSites(void) {
+    // Như PRESET_SITES của lõi (dexter.pw — phim Âu Mỹ 4K — thêm 15/11/2026). Máy đã lưu danh sách trang thì lõi tự thêm trang
+    // mới một lần (add_new_presets, khoá preset_added@<trang>)
     return @[kDefaultBase, @"https://hoathinh3d.pw", @"https://hoathinh3d.ee", @"https://hhkungfu.ee", @"https://phimmois.fun",
-             @"https://mephim.ddns.net", kKkSite, @"https://phim.nguonc.com", @"https://vsmov.com", @"https://sc.k-20.xyz"];
+             @"https://mephim.ddns.net", kKkSite, @"https://phim.nguonc.com", @"https://vsmov.com", @"https://sc.k-20.xyz",
+             @"https://dexter.pw"];
 }
 
 /// Khoá riêng từng người xem (còn lại dùng chung) — giống ProfileKeys của bản Windows
@@ -24,7 +27,8 @@ static NSSet *ProfileKeys(void) {
     static dispatch_once_t once;
     dispatch_once(&once, ^{
         s = [NSSet setWithArray:@[@"history", @"positions_v2", @"follows", @"last_follow_check", @"private_mode", @"hist_del",
-                                  @"follow_del", @"base_url", @"seek_step", @"auto_next", @"video_fill", @"limit_min", @"bedtime",
+                                  @"follow_del", @"base_url", @"seek_step", @"auto_next", @"video_fill", @"sub_lang",
+                                  @"video_quality", @"limit_min", @"bedtime",
                                   @"watch_day", @"watch_sec", @"watch_extra", @"unblock_until", @"home_mix", @"home_topics",
                                   @"seen_eps", @"kids", @"watch_langs", @"home_rows", @"home_custom", @"home_src_off"]];
     });
@@ -579,6 +583,38 @@ static NSMutableDictionary *gPrivatePositions;
     [self set:[self k:@"video_fill"] value:@(on)];
 }
 
++ (NSInteger)videoQuality {
+    id v = [self get:[self k:@"video_quality"]];
+    return [v isKindOfClass:[NSNumber class]] ? MAX(0, [v integerValue]) : 0;
+}
+
++ (void)setVideoQuality:(NSInteger)height {
+    [self set:[self k:@"video_quality"] value:@(MAX(0, height))];
+}
+
++ (NSString *)subLang {
+    id v = [self get:[self k:@"sub_lang"]];
+    return CBIsStr(v) && [v length] ? v : @"vi";
+}
+
++ (void)setSubLang:(NSString *)lang {
+    [self set:[self k:@"sub_lang"] value:lang];
+}
+
++ (double)subDelayFor:(NSString *)epUrl {
+    return CBNum([self get:@"sub_delay"], epUrl ?: @"", 0);
+}
+
++ (void)setSubDelay:(double)seconds for:(NSString *)epUrl {
+    if (!epUrl.length) return;
+    id old = [self get:@"sub_delay"];
+    NSMutableDictionary *m = CBIsDict(old) ? [old mutableCopy] : [NSMutableDictionary dictionary];
+    [m removeObjectForKey:epUrl];
+    while (m.count >= 100) [m removeObjectForKey:[[m allKeys] firstObject]];
+    if (seconds != 0) m[epUrl] = @(seconds);
+    [self set:@"sub_delay" value:m];
+}
+
 + (BOOL)secureDns {
     id v = [self get:@"doh"];
     return !(CBIsStr(v) && [v isEqualToString:@"OFF"]);
@@ -680,13 +716,35 @@ static NSMutableDictionary *gPrivatePositions;
 
 #pragma mark - Phim
 
+NSString *const CBSpecialsGroup = @"Tập đặc biệt";
+
+BOOL CBDetailSeasons(NSDictionary *detail) {
+    return CBBool(detail, @"seasons", NO);
+}
+
 NSInteger CBDetailEpisodeCount(NSDictionary *detail) {
     NSInteger n = 0;
-    for (id g in CBArr(detail, @"groups") ?: @[]) n = MAX(n, (NSInteger)CBArr(g, @"episodes").count);
+    BOOL seasons = CBDetailSeasons(detail);
+    for (id g in CBArr(detail, @"groups") ?: @[]) {
+        NSInteger c = (NSInteger)CBArr(g, @"episodes").count;
+        n = seasons ? n + c : MAX(n, c);
+    }
     return n;
 }
 
 NSDictionary *CBDetailLatestEpisode(NSDictionary *detail) {
+    if (CBDetailSeasons(detail)) {
+        NSArray *groups = CBArr(detail, @"groups");
+        id pick = groups.lastObject;
+        for (id g in [groups reverseObjectEnumerator]) {
+            if (![CBStr(g, @"name") isEqualToString:CBSpecialsGroup] && CBArr(g, @"episodes").count) {
+                pick = g;
+                break;
+            }
+        }
+        id last = CBArr(pick, @"episodes").lastObject;
+        return CBIsDict(last) ? last : nil;
+    }
     NSArray *best = nil;
     for (id g in CBArr(detail, @"groups") ?: @[]) {
         NSArray *eps = CBArr(g, @"episodes");
@@ -704,6 +762,18 @@ NSInteger CBDetailGroupIndexOf(NSDictionary *detail, NSString *epUrl) {
         }
     }
     return -1;
+}
+
+NSString *CBDetailEpisodeLabel(NSDictionary *detail, NSString *epUrl, NSString *fallback) {
+    if (!CBDetailSeasons(detail)) return fallback;
+    NSArray *groups = CBArr(detail, @"groups");
+    NSInteger g = epUrl ? CBDetailGroupIndexOf(detail, epUrl) : -1;
+    if (g < 0) return fallback;
+    NSString *title = fallback;
+    for (id e in CBArr(groups[g], @"episodes")) {
+        if ([CBStr(e, @"url") isEqualToString:epUrl]) title = CBStr(e, @"title") ?: fallback;
+    }
+    return [NSString stringWithFormat:@"%@, %@", CBStr(groups[g], @"name") ?: @"", title ?: @""];
 }
 
 NSString *CBHostOf(NSString *url) {

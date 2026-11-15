@@ -4,6 +4,8 @@
 /// mục thì mở lưới phim của mục đó. Giống FilterPage của bản Windows.
 @interface CBFilterViewController : UIViewController
 - (instancetype)initGenres:(BOOL)genres;
+/// Tên bộ lọc thứ hai: «Quốc gia» (dexter.pw: «Thập niên»)
++ (NSString *)secondName;
 /// Trang đang chọn có bộ lọc không (để hiện nút «Thể loại» / «Quốc gia»)
 + (BOOL)available;
 /// Mở mục thứ i (gỡ lỗi: lệnh «pick <số>»)

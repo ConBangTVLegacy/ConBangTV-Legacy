@@ -84,6 +84,16 @@
 + (void)setSeekStep:(NSInteger)sec;
 + (BOOL)videoFill;
 + (void)setVideoFill:(BOOL)on;
+/// Chất lượng muốn xem cho luồng nhiều bản (chiều cao: 1080, 720…; 0 = tự động theo mạng), riêng từng người xem — khoá
+/// «video_quality» như lõi / bản TV
++ (NSInteger)videoQuality;
++ (void)setVideoQuality:(NSInteger)height;
+/// Phụ đề rời ưa dùng (dexter.pw), riêng từng người xem — cùng khoá «sub_lang» với lõi: "vi" (mặc định), "en", "off"
++ (NSString *)subLang;
++ (void)setSubLang:(NSString *)lang;
+/// Độ lệch phụ đề đã chỉnh cho tập (giây, + = chữ hiện muộn hơn) — khoá «sub_delay» như lõi, giữ 100 tập
++ (double)subDelayFor:(NSString *)epUrl;
++ (void)setSubDelay:(double)seconds for:(NSString *)epUrl;
 + (BOOL)secureDns;
 + (void)setSecureDns:(BOOL)on;
 + (BOOL)unblock;
@@ -94,10 +104,17 @@
 + (void)setDisclaimerVersion:(NSInteger)v;
 @end
 
-// ---- Phim (FilmDetail của lõi: {url, title, otherTitle, poster, description, info, groups: [{name, episodes: [{title, url}]}]}) ----
+// ---- Phim (FilmDetail của lõi: {url, title, otherTitle, poster, description, info, groups: [{name, episodes: [{title, url}]}],
+//      seasons}) — seasons = mỗi nhóm là một mùa (phim bộ dexter.pw; «Tập đặc biệt» đứng cuối) chứ không phải một bản ----
+/// Tên nhóm tập đặc biệt (mùa 0) của phim chia mùa — như FilmDetail::SPECIALS của lõi
+extern NSString *const CBSpecialsGroup;
+BOOL CBDetailSeasons(NSDictionary *detail);
+/// Bản: số tập của bản nhiều tập nhất. Mùa: tổng số tập
 NSInteger CBDetailEpisodeCount(NSDictionary *detail);
-/// Tập mới nhất của bản nhiều tập nhất
+/// Bản: tập mới nhất của bản nhiều tập nhất. Mùa: tập cuối của mùa cuối (bỏ tập đặc biệt)
 NSDictionary *CBDetailLatestEpisode(NSDictionary *detail);
+/// Tên tập để hiện: phim chia mùa ghi kèm mùa («Mùa 2, Tập 1 · …»); không tìm thấy tập thì trả fallback
+NSString *CBDetailEpisodeLabel(NSDictionary *detail, NSString *epUrl, NSString *fallback);
 /// Chỉ số bản (nhóm tập) chứa tập epUrl; -1 = không có
 NSInteger CBDetailGroupIndexOf(NSDictionary *detail, NSString *epUrl);
 /// Tên miền (bỏ «www.»)

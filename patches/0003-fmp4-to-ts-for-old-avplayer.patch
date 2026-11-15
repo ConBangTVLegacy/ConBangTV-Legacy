@@ -1,0 +1,1361 @@
+diff --git a/linux/core/src/fmp4_ts.rs b/linux/core/src/fmp4_ts.rs
+new file mode 100644
+index 0000000..4310a3c
+--- /dev/null
++++ b/linux/core/src/fmp4_ts.rs
+@@ -0,0 +1,951 @@
++//! Đóng gói lại đoạn HLS fMP4 (EXT-X-MAP + moof/mdat — dexter.pw) thành MPEG-TS cho AVPlayer của iOS cũ (iOS 6 chỉ phát HLS
++//! dạng TS; fMP4 có từ iOS 10). Chỉ đổi vỏ, không giải mã: H.264 (avc1 / avc3) → PES dạng Annex B (thêm AUD, SPS / PPS trước
++//! khung khoá); AAC (mp4a) → khung ADTS. Mốc thời gian lấy từ tfdt (+ trun), trừ edit list, cộng 10 s như mediafilesegmenter
++//! của Apple — đoạn nào cũng tự tính được, tua tới đoạn giữa phim vẫn liền mạch với đoạn trước / sau.
++
++use std::collections::HashMap;
++
++type Res<T> = Result<T, String>;
++
++const PID_PMT: u16 = 0x1000;
++const PID_VIDEO: u16 = 0x100;
++const PID_AUDIO: u16 = 0x101;
++/// Mốc thời gian cộng thêm (90 kHz): 10 s.
++const OFFSET: i128 = 900_000;
++/// Số khung AAC gom vào một gói PES.
++const AUDIO_PER_PES: usize = 5;
++
++#[derive(Clone, Debug, PartialEq)]
++enum Codec {
++    Avc { nal_len: usize, sps: Vec<Vec<u8>>, pps: Vec<Vec<u8>> },
++    Aac { profile: u8, freq_idx: u8, channels: u8 },
++}
++
++#[derive(Clone, Debug)]
++struct Track {
++    id: u32,
++    timescale: u32,
++    /// media_time của edit list (đơn vị timescale): khung hiện đầu tiên
++    shift: i64,
++    codec: Codec,
++    def_dur: u32,
++    def_size: u32,
++}
++
++/// Đoạn khởi tạo (EXT-X-MAP) đã đọc: rãnh hình H.264 đầu tiên + rãnh tiếng AAC đầu tiên.
++#[derive(Debug)]
++pub struct Init {
++    tracks: Vec<Track>,
++    /// Khoảng lùi DTS của từng rãnh (đơn vị timescale) khi luồng có độ lệch hiển thị âm (trun bản 1): PTS = DTS + cts có thể
++    /// nhỏ hơn DTS, MPEG-TS thì không được → lùi DTS cả rãnh một khoảng cố định (như dts_shift của FFmpeg) để thứ tự giải
++    /// mã giữ nguyên. Chỉ tăng, nhớ theo luồng — các đoạn sau dùng cùng khoảng lùi.
++    dts_shift: std::sync::Mutex<HashMap<usize, i128>>,
++}
++
++impl Init {
++    fn new(tracks: Vec<Track>) -> Init {
++        Init { tracks, dts_shift: Default::default() }
++    }
++}
++
++fn be16(d: &[u8], i: usize) -> Option<u32> {
++    d.get(i..i + 2).map(|b| u16::from_be_bytes([b[0], b[1]]) as u32)
++}
++fn be24(d: &[u8], i: usize) -> Option<u32> {
++    d.get(i..i + 3).map(|b| u32::from_be_bytes([0, b[0], b[1], b[2]]))
++}
++fn be32(d: &[u8], i: usize) -> Option<u32> {
++    d.get(i..i + 4).map(|b| u32::from_be_bytes([b[0], b[1], b[2], b[3]]))
++}
++fn be64(d: &[u8], i: usize) -> Option<u64> {
++    d.get(i..i + 8).map(|b| u64::from_be_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]))
++}
++
++/// Các hộp ISO BMFF nằm liền nhau trong `d`: (vị trí đầu hộp, loại, thân hộp). Hộp cụt ở cuối thì dừng.
++fn boxes(d: &[u8]) -> Vec<(usize, [u8; 4], &[u8])> {
++    let mut out = Vec::new();
++    let mut i = 0usize;
++    while i + 8 <= d.len() {
++        let mut size = be32(d, i).unwrap_or(0) as u64;
++        let typ = [d[i + 4], d[i + 5], d[i + 6], d[i + 7]];
++        let mut hdr = 8usize;
++        if size == 1 {
++            match be64(d, i + 8) {
++                Some(s) => size = s,
++                None => break,
++            }
++            hdr = 16;
++        } else if size == 0 {
++            size = (d.len() - i) as u64;
++        }
++        if size < hdr as u64 || i as u64 + size > d.len() as u64 {
++            break;
++        }
++        let end = i + size as usize;
++        out.push((i, typ, &d[i + hdr..end]));
++        i = end;
++    }
++    out
++}
++
++fn child<'a>(d: &'a [u8], typ: &[u8; 4]) -> Option<&'a [u8]> {
++    boxes(d).into_iter().find(|b| &b.1 == typ).map(|b| b.2)
++}
++
++fn path<'a>(d: &'a [u8], types: &[&[u8; 4]]) -> Option<&'a [u8]> {
++    types.iter().try_fold(d, |cur, t| child(cur, t))
++}
++
++/// Dữ liệu ngụy trang (ảnh đứng trước…): bỏ tới hộp ISO BMFF quen thuộc đầu tiên.
++fn unwrap_boxes<'a>(d: &'a [u8], first: &[&[u8; 4]]) -> &'a [u8] {
++    if d.len() >= 8 && first.iter().any(|t| d[4..8] == t[..]) {
++        return d;
++    }
++    let n = d.len().saturating_sub(8).min(1 << 20);
++    for i in 0..n {
++        if first.iter().any(|t| d[i + 4..i + 8] == t[..]) {
++            let size = be32(d, i).unwrap_or(0) as usize;
++            if size >= 8 {
++                return &d[i..];
++            }
++        }
++    }
++    d
++}
++
++/// Đọc đoạn khởi tạo (ftyp + moov).
++pub fn parse_init(data: &[u8]) -> Res<Init> {
++    let data = unwrap_boxes(data, &[b"ftyp", b"moov"]);
++    let moov = child(data, b"moov").ok_or("đoạn khởi tạo thiếu moov")?;
++    let mut trex: HashMap<u32, (u32, u32)> = HashMap::new();
++    if let Some(mvex) = child(moov, b"mvex") {
++        for (_, t, b) in boxes(mvex) {
++            if &t == b"trex" {
++                if let (Some(id), Some(dur), Some(size)) = (be32(b, 4), be32(b, 12), be32(b, 16)) {
++                    trex.insert(id, (dur, size));
++                }
++            }
++        }
++    }
++    let mut tracks = Vec::new();
++    let (mut has_video, mut has_audio) = (false, false);
++    let mut unsupported: Option<String> = None;
++    for (_, t, trak) in boxes(moov) {
++        if &t != b"trak" {
++            continue;
++        }
++        let Some(tkhd) = child(trak, b"tkhd") else { continue };
++        let Some(id) = be32(tkhd, if tkhd.first() == Some(&1) { 20 } else { 12 }) else { continue };
++        let Some(mdia) = child(trak, b"mdia") else { continue };
++        let Some(mdhd) = child(mdia, b"mdhd") else { continue };
++        let timescale = be32(mdhd, if mdhd.first() == Some(&1) { 20 } else { 12 }).unwrap_or(0);
++        if timescale == 0 {
++            continue;
++        }
++        let handler = child(mdia, b"hdlr").and_then(|h| h.get(8..12)).unwrap_or(b"????");
++        let Some(stsd) = path(mdia, &[b"minf", b"stbl", b"stsd"]) else { continue };
++        let Some((_, entry_type, entry)) = stsd.get(8..).and_then(|e| boxes(e).into_iter().next()) else { continue };
++        let codec = match (handler, &entry_type) {
++            (b"vide", b"avc1") | (b"vide", b"avc3") if !has_video => parse_avc(entry),
++            (b"soun", b"mp4a") if !has_audio => parse_mp4a(entry),
++            (b"vide", b"encv") | (b"soun", b"enca") => {
++                unsupported = Some("luồng có mã hoá DRM".into());
++                None
++            }
++            (b"vide", b"hvc1") | (b"vide", b"hev1") => {
++                unsupported = Some("hình H.265 — máy không giải mã được".into());
++                None
++            }
++            _ => None,
++        };
++        let Some(codec) = codec else { continue };
++        match codec {
++            Codec::Avc { .. } => has_video = true,
++            Codec::Aac { .. } => has_audio = true,
++        }
++        let shift = path(trak, &[b"edts", b"elst"]).map(edit_shift).unwrap_or(0);
++        let (def_dur, def_size) = trex.get(&id).copied().unwrap_or((0, 0));
++        tracks.push(Track { id, timescale, shift, codec, def_dur, def_size });
++    }
++    if tracks.is_empty() {
++        return Err(unsupported.unwrap_or_else(|| "đoạn khởi tạo không có hình H.264 / tiếng AAC".into()));
++    }
++    Ok(Init::new(tracks))
++}
++
++/// media_time của mục đầu (bỏ mục rỗng -1) trong elst.
++fn edit_shift(elst: &[u8]) -> i64 {
++    let v1 = elst.first() == Some(&1);
++    let n = be32(elst, 4).unwrap_or(0) as usize;
++    let (step, mt) = if v1 { (20, 8) } else { (12, 4) };
++    for k in 0..n.min(8) {
++        let at = 8 + k * step + mt;
++        let t = if v1 { be64(elst, at).map(|x| x as i64) } else { be32(elst, at).map(|x| x as i32 as i64) };
++        match t {
++            Some(t) if t >= 0 => return t,
++            Some(_) => continue,
++            None => break,
++        }
++    }
++    0
++}
++
++fn parse_avc(entry: &[u8]) -> Option<Codec> {
++    let c = child(entry.get(78..)?, b"avcC")?;
++    let nal_len = (*c.get(4)? & 3) as usize + 1;
++    let mut i = 5usize;
++    let sets = |count_mask: u8, i: &mut usize| -> Option<Vec<Vec<u8>>> {
++        let n = (*c.get(*i)? & count_mask) as usize;
++        *i += 1;
++        let mut v = Vec::new();
++        for _ in 0..n {
++            let len = be16(c, *i)? as usize;
++            v.push(c.get(*i + 2..*i + 2 + len)?.to_vec());
++            *i += 2 + len;
++        }
++        Some(v)
++    };
++    let sps = sets(0x1f, &mut i)?;
++    let pps = sets(0xff, &mut i).unwrap_or_default();
++    Some(Codec::Avc { nal_len, sps, pps })
++}
++
++fn parse_mp4a(entry: &[u8]) -> Option<Codec> {
++    // AudioSampleEntry: 28 byte; bản QuickTime 1 / 2 dài hơn
++    let extra = match be16(entry, 8)? {
++        1 => 16,
++        2 => 36,
++        _ => 0,
++    };
++    let esds = child(entry.get(28 + extra..)?, b"esds")?;
++    aac_config(esds.get(4..)?)
++}
++
++fn read_desc(d: &[u8], i: &mut usize) -> Option<(u8, usize)> {
++    let tag = *d.get(*i)?;
++    *i += 1;
++    let mut len = 0usize;
++    for _ in 0..4 {
++        let b = *d.get(*i)?;
++        *i += 1;
++        len = (len << 7) | (b & 0x7f) as usize;
++        if b & 0x80 == 0 {
++            break;
++        }
++    }
++    Some((tag, len))
++}
++
++/// ES_Descriptor → DecoderConfigDescriptor → AudioSpecificConfig.
++fn aac_config(d: &[u8]) -> Option<Codec> {
++    let mut i = 0usize;
++    let (tag, _) = read_desc(d, &mut i)?;
++    if tag != 0x03 {
++        return None;
++    }
++    let flags = *d.get(i + 2)?;
++    i += 3;
++    if flags & 0x80 != 0 {
++        i += 2;
++    }
++    if flags & 0x40 != 0 {
++        i += 1 + *d.get(i)? as usize;
++    }
++    if flags & 0x20 != 0 {
++        i += 2;
++    }
++    let (tag, _) = read_desc(d, &mut i)?;
++    if tag != 0x04 {
++        return None;
++    }
++    i += 13;
++    let (tag, len) = read_desc(d, &mut i)?;
++    if tag != 0x05 {
++        return None;
++    }
++    asc(d.get(i..i + len)?)
++}
++
++struct Bits<'a> {
++    d: &'a [u8],
++    pos: usize,
++}
++
++impl Bits<'_> {
++    fn read(&mut self, n: usize) -> Option<u32> {
++        let mut v = 0u32;
++        for _ in 0..n {
++            let b = *self.d.get(self.pos / 8)?;
++            v = (v << 1) | ((b >> (7 - self.pos % 8)) & 1) as u32;
++            self.pos += 1;
++        }
++        Some(v)
++    }
++}
++
++const FREQS: [u32; 13] = [96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350];
++
++/// AudioSpecificConfig → thông số đầu khung ADTS. HE-AAC (SBR / PS) ghi thành AAC-LC tần số lõi — máy tự nhận SBR.
++fn asc(d: &[u8]) -> Option<Codec> {
++    let mut b = Bits { d, pos: 0 };
++    let mut aot = b.read(5)?;
++    if aot == 31 {
++        aot = 32 + b.read(6)?;
++    }
++    let mut freq_idx = b.read(4)?;
++    if freq_idx == 15 {
++        let f = b.read(24)?;
++        freq_idx = FREQS.iter().enumerate().min_by_key(|(_, x)| (**x as i64 - f as i64).abs()).map(|(k, _)| k as u32)?;
++    }
++    let channels = b.read(4)?;
++    if aot == 5 || aot == 29 {
++        if b.read(4)? == 15 {
++            b.read(24)?;
++        }
++        aot = b.read(5)?;
++    }
++    let profile = if (1..=4).contains(&aot) { aot - 1 } else { 1 };
++    Some(Codec::Aac { profile: profile as u8, freq_idx: freq_idx as u8, channels: channels as u8 })
++}
++
++/// Một mẫu (khung hình / khung tiếng) trong đoạn. `dts` / `cts` / `dur`: đơn vị timescale của rãnh (đọc ở samples);
++/// `dts` / `pts` 90 kHz tính lại trong remux.
++struct Sample<'a> {
++    track: usize,
++    dts: i128,
++    cts: i128,
++    dur: i128,
++    pts: i128,
++    data: &'a [u8],
++}
++
++fn to_90k(t: i128, timescale: u32) -> i128 {
++    (t * 90_000).div_euclid(timescale as i128)
++}
++
++/// Đọc các cặp moof / mdat của đoạn → mẫu theo thứ tự giải mã của từng rãnh (mốc thời gian theo timescale của rãnh).
++fn samples<'a>(init: &Init, seg: &'a [u8]) -> Res<Vec<Sample<'a>>> {
++    let mut out = Vec::new();
++    let mut next_dts: HashMap<u32, i128> = HashMap::new();
++    for (moof_start, typ, moof) in boxes(seg) {
++        if &typ != b"moof" {
++            continue;
++        }
++        for (_, t, traf) in boxes(moof) {
++            if &t != b"traf" {
++                continue;
++            }
++            let Some(tfhd) = child(traf, b"tfhd") else { continue };
++            let flags = be24(tfhd, 1).unwrap_or(0);
++            let Some(id) = be32(tfhd, 4) else { continue };
++            let Some(ti) = init.tracks.iter().position(|x| x.id == id) else { continue };
++            let tr = &init.tracks[ti];
++            let mut p = 8usize;
++            let mut base = moof_start as i128;
++            if flags & 0x01 != 0 {
++                base = be64(tfhd, p).ok_or("tfhd cụt")? as i128;
++                p += 8;
++            }
++            if flags & 0x02 != 0 {
++                p += 4;
++            }
++            let mut def_dur = tr.def_dur;
++            if flags & 0x08 != 0 {
++                def_dur = be32(tfhd, p).ok_or("tfhd cụt")?;
++                p += 4;
++            }
++            let mut def_size = tr.def_size;
++            if flags & 0x10 != 0 {
++                def_size = be32(tfhd, p).ok_or("tfhd cụt")?;
++            }
++            let mut dts: i128 = match child(traf, b"tfdt") {
++                Some(tfdt) if tfdt.first() == Some(&1) => be64(tfdt, 4).ok_or("tfdt cụt")? as i128,
++                Some(tfdt) => be32(tfdt, 4).ok_or("tfdt cụt")? as i128,
++                None => next_dts.get(&id).copied().unwrap_or(0),
++            };
++            let mut pos = base;
++            for (_, t, trun) in boxes(traf) {
++                if &t != b"trun" {
++                    continue;
++                }
++                let v1 = trun.first() == Some(&1);
++                let fl = be24(trun, 1).unwrap_or(0);
++                let n = be32(trun, 4).ok_or("trun cụt")? as usize;
++                let mut q = 8usize;
++                if fl & 0x01 != 0 {
++                    pos = base + be32(trun, q).ok_or("trun cụt")? as i32 as i128;
++                    q += 4;
++                }
++                if fl & 0x04 != 0 {
++                    q += 4;
++                }
++                for _ in 0..n {
++                    let mut rd = |on: bool, def: u32| -> Res<u32> {
++                        if !on {
++                            return Ok(def);
++                        }
++                        let v = be32(trun, q).ok_or("trun cụt")?;
++                        q += 4;
++                        Ok(v)
++                    };
++                    let dur = rd(fl & 0x100 != 0, def_dur)?;
++                    let size = rd(fl & 0x200 != 0, def_size)? as usize;
++                    rd(fl & 0x400 != 0, 0)?;
++                    let cts_raw = rd(fl & 0x800 != 0, 0)?;
++                    let cts = if v1 { cts_raw as i32 as i128 } else { cts_raw as i128 };
++                    if pos < 0 || pos as usize + size > seg.len() {
++                        return Err("dữ liệu mẫu nằm ngoài đoạn (đoạn tải thiếu?)".into());
++                    }
++                    let data = &seg[pos as usize..pos as usize + size];
++                    out.push(Sample { track: ti, dts, cts, dur: dur as i128, pts: 0, data });
++                    pos += size as i128;
++                    dts += dur as i128;
++                }
++            }
++            next_dts.insert(id, dts);
++        }
++    }
++    if out.is_empty() {
++        return Err("đoạn không có moof / mẫu nào".into());
++    }
++    Ok(out)
++}
++
++/// Mẫu H.264 (NAL có độ dài đứng trước) → Annex B: AUD, SPS / PPS trước khung khoá (nếu mẫu chưa có), các NAL.
++fn annex_b(sample: &[u8], nal_len: usize, sps: &[Vec<u8>], pps: &[Vec<u8>], out: &mut Vec<u8>) -> bool {
++    let mut nals: Vec<&[u8]> = Vec::new();
++    let mut i = 0usize;
++    while i + nal_len <= sample.len() {
++        let mut len = 0usize;
++        for k in 0..nal_len {
++            len = (len << 8) | sample[i + k] as usize;
++        }
++        i += nal_len;
++        if len == 0 || i + len > sample.len() {
++            break;
++        }
++        nals.push(&sample[i..i + len]);
++        i += len;
++    }
++    let kind = |n: &[u8]| n[0] & 0x1f;
++    let idr = nals.iter().any(|n| kind(n) == 5);
++    if nals.first().map(|n| kind(n)) != Some(9) {
++        out.extend_from_slice(&[0, 0, 0, 1, 0x09, 0xF0]);
++    }
++    if idr && !nals.iter().any(|n| kind(n) == 7) {
++        for s in sps.iter().chain(pps) {
++            out.extend_from_slice(&[0, 0, 0, 1]);
++            out.extend_from_slice(s);
++        }
++    }
++    for n in nals {
++        out.extend_from_slice(&[0, 0, 0, 1]);
++        out.extend_from_slice(n);
++    }
++    idr
++}
++
++fn adts_header(profile: u8, freq_idx: u8, channels: u8, payload: usize) -> [u8; 7] {
++    let len = payload + 7;
++    [
++        0xFF,
++        0xF1,
++        (profile << 6) | (freq_idx << 2) | ((channels >> 2) & 1),
++        ((channels & 3) << 6) | ((len >> 11) as u8 & 3),
++        (len >> 3) as u8,
++        (((len & 7) << 5) as u8) | 0x1F,
++        0xFC,
++    ]
++}
++
++fn crc32_mpeg(d: &[u8]) -> u32 {
++    let mut c = 0xFFFF_FFFFu32;
++    for &b in d {
++        c ^= (b as u32) << 24;
++        for _ in 0..8 {
++            c = if c & 0x8000_0000 != 0 { (c << 1) ^ 0x04C1_1DB7 } else { c << 1 };
++        }
++    }
++    c
++}
++
++fn psi_packet(out: &mut Vec<u8>, pid: u16, section: &[u8]) {
++    let mut pkt = [0xFFu8; 188];
++    pkt[0] = 0x47;
++    pkt[1] = 0x40 | ((pid >> 8) as u8 & 0x1f);
++    pkt[2] = pid as u8;
++    pkt[3] = 0x10;
++    pkt[4] = 0; // pointer_field
++    let crc = crc32_mpeg(section);
++    pkt[5..5 + section.len()].copy_from_slice(section);
++    pkt[5 + section.len()..9 + section.len()].copy_from_slice(&crc.to_be_bytes());
++    out.extend_from_slice(&pkt);
++}
++
++fn pat(out: &mut Vec<u8>) {
++    let s = [0x00, 0xB0, 13, 0x00, 0x01, 0xC1, 0x00, 0x00, 0x00, 0x01, 0xE0 | (PID_PMT >> 8) as u8, PID_PMT as u8];
++    psi_packet(out, 0, &s);
++}
++
++fn pmt(out: &mut Vec<u8>, video: bool, audio: bool) {
++    let pcr = if video { PID_VIDEO } else { PID_AUDIO };
++    let mut streams: Vec<(u8, u16)> = Vec::new();
++    if video {
++        streams.push((0x1B, PID_VIDEO));
++    }
++    if audio {
++        streams.push((0x0F, PID_AUDIO));
++    }
++    let len = 9 + 5 * streams.len() + 4;
++    let mut s = vec![0x02, 0xB0 | (len >> 8) as u8, len as u8, 0x00, 0x01, 0xC1, 0x00, 0x00];
++    s.extend_from_slice(&[0xE0 | (pcr >> 8) as u8, pcr as u8, 0xF0, 0x00]);
++    for (st, pid) in streams {
++        s.extend_from_slice(&[st, 0xE0 | (pid >> 8) as u8, pid as u8, 0xF0, 0x00]);
++    }
++    psi_packet(out, PID_PMT, &s);
++}
++
++fn put_ts(h: &mut Vec<u8>, prefix: u8, t: i128) {
++    let t = (t.rem_euclid(1 << 33)) as u64;
++    h.push((prefix << 4) | (((t >> 30) & 7) << 1) as u8 | 1);
++    h.push((t >> 22) as u8);
++    h.push((((t >> 15) & 0x7f) << 1) as u8 | 1);
++    h.push((t >> 7) as u8);
++    h.push(((t & 0x7f) << 1) as u8 | 1);
++}
++
++fn pes_header(stream_id: u8, pts: i128, dts: Option<i128>, payload: usize) -> Vec<u8> {
++    let hlen = if dts.is_some() { 10 } else { 5 };
++    let total = 3 + hlen + payload;
++    // Gói hình: độ dài 0 (không giới hạn) như FFmpeg; gói tiếng ghi đúng độ dài
++    let len = if stream_id == 0xE0 || total > 0xFFFF { 0 } else { total };
++    let mut h = vec![0, 0, 1, stream_id, (len >> 8) as u8, len as u8, 0x84, if dts.is_some() { 0xC0 } else { 0x80 }, hlen as u8];
++    match dts {
++        Some(d) => {
++            put_ts(&mut h, 3, pts);
++            put_ts(&mut h, 1, d);
++        }
++        None => put_ts(&mut h, 2, pts),
++    }
++    h
++}
++
++/// Chia một gói PES thành các gói TS 188 byte; gói đầu mang PCR / cờ truy cập ngẫu nhiên nếu có.
++fn ts_packets(out: &mut Vec<u8>, cc: &mut u8, pid: u16, pes: &[u8], pcr: Option<i128>, random_access: bool) {
++    let mut pos = 0usize;
++    let mut first = true;
++    while pos < pes.len() {
++        let mut af: Vec<u8> = Vec::new();
++        if first && (pcr.is_some() || random_access) {
++            let mut flags = 0u8;
++            if random_access {
++                flags |= 0x40;
++            }
++            if pcr.is_some() {
++                flags |= 0x10;
++            }
++            af.push(flags);
++            if let Some(p) = pcr {
++                let b = (p.rem_euclid(1 << 33)) as u64;
++                af.extend_from_slice(&[(b >> 25) as u8, (b >> 17) as u8, (b >> 9) as u8, (b >> 1) as u8, (((b & 1) << 7) as u8) | 0x7E, 0]);
++            }
++        }
++        let remaining = pes.len() - pos;
++        let room = if af.is_empty() { 184 } else { 183 - af.len() };
++        let take = remaining.min(room);
++        if take < room {
++            // Gói cuối: lấp phần trống bằng trường thích ứng
++            let af_total = 184 - take; // gồm cả byte độ dài
++            if af.is_empty() && af_total >= 2 {
++                af.push(0);
++            }
++            while af.len() + 1 < af_total {
++                af.push(0xFF);
++            }
++        }
++        let has_af = !af.is_empty() || take < 184;
++        out.push(0x47);
++        out.push((if first { 0x40 } else { 0 }) | ((pid >> 8) as u8 & 0x1f));
++        out.push(pid as u8);
++        out.push((if has_af { 0x30 } else { 0x10 }) | (*cc & 0x0f));
++        *cc = cc.wrapping_add(1);
++        if has_af {
++            out.push(af.len() as u8);
++            out.extend_from_slice(&af);
++        }
++        out.extend_from_slice(&pes[pos..pos + take]);
++        pos += take;
++        first = false;
++    }
++}
++
++/// Đổi một đoạn fMP4 (moof + mdat, có thể kèm styp / sidx) thành MPEG-TS.
++pub fn remux(init: &Init, seg: &[u8]) -> Res<Vec<u8>> {
++    let seg = unwrap_boxes(seg, &[b"styp", b"sidx", b"moof", b"prft", b"emsg"]);
++    let mut all = samples(init, seg)?;
++    // Mốc 90 kHz: PTS = DTS + cts − media_time của edit list; DTS lùi thêm dts_shift của rãnh. Khoảng lùi = độ lệch âm lớn
++    // nhất gặp được, tối thiểu 2 khung (B-pyramid thường gặp) — để các đoạn sau thường không phải lùi thêm.
++    {
++        let mut shifts = init.dts_shift.lock().unwrap();
++        for ti in 0..init.tracks.len() {
++            let mine = all.iter().filter(|s| s.track == ti);
++            let neg = mine.clone().map(|s| -s.cts).max().unwrap_or(0);
++            if neg > 0 {
++                let two = mine.map(|s| s.dur).next().unwrap_or(0) * 2;
++                let cur = shifts.entry(ti).or_insert(0);
++                *cur = (*cur).max(neg.max(two));
++            }
++        }
++        let mut last: HashMap<usize, i128> = HashMap::new();
++        for s in all.iter_mut() {
++            let tr = &init.tracks[s.track];
++            let sh = shifts.get(&s.track).copied().unwrap_or(0);
++            let p90 = to_90k(s.dts + s.cts - tr.shift as i128, tr.timescale) + OFFSET;
++            let mut d90 = (to_90k(s.dts - tr.shift as i128 - sh, tr.timescale) + OFFSET).min(p90);
++            // DTS không được lùi so với khung trước của cùng rãnh (giữ thứ tự giải mã khi xếp xen kẽ)
++            if let Some(&prev) = last.get(&s.track) {
++                d90 = d90.max(prev);
++            }
++            last.insert(s.track, d90);
++            s.dts = d90;
++            s.pts = p90;
++        }
++    }
++    let is_video = |s: &Sample| matches!(init.tracks[s.track].codec, Codec::Avc { .. });
++    let video = all.iter().any(is_video);
++    let audio = all.iter().any(|s| !is_video(s));
++    // Gói PES: mỗi khung hình một gói; khung tiếng gom từng AUDIO_PER_PES khung liền nhau của cùng rãnh. Xếp theo DTS (giữ
++    // thứ tự gốc khi bằng nhau) để hình và tiếng xen kẽ.
++    let mut units: Vec<(i128, Vec<usize>)> = Vec::new();
++    let mut open: HashMap<usize, usize> = HashMap::new();
++    for (k, s) in all.iter().enumerate() {
++        if is_video(s) {
++            units.push((s.dts, vec![k]));
++            continue;
++        }
++        match open.get(&s.track) {
++            Some(&u) if units[u].1.len() < AUDIO_PER_PES => units[u].1.push(k),
++            _ => {
++                open.insert(s.track, units.len());
++                units.push((s.dts, vec![k]));
++            }
++        }
++    }
++    units.sort_by_key(|u| u.0);
++    let mut out = Vec::with_capacity(seg.len() + seg.len() / 20 + 4096);
++    pat(&mut out);
++    pmt(&mut out, video, audio);
++    let (mut cc_v, mut cc_a) = (0u8, 0u8);
++    let mut buf = Vec::new();
++    for (_, idx) in &units {
++        let s = &all[idx[0]];
++        buf.clear();
++        match &init.tracks[s.track].codec {
++            Codec::Avc { nal_len, sps, pps } => {
++                let key = annex_b(s.data, *nal_len, sps, pps, &mut buf);
++                let dts = (s.dts != s.pts).then_some(s.dts);
++                let mut pes = pes_header(0xE0, s.pts, dts, buf.len());
++                pes.extend_from_slice(&buf);
++                ts_packets(&mut out, &mut cc_v, PID_VIDEO, &pes, Some(s.dts - 9000), key);
++            }
++            Codec::Aac { profile, freq_idx, channels } => {
++                for &k in idx {
++                    let d = all[k].data;
++                    buf.extend_from_slice(&adts_header(*profile, *freq_idx, *channels, d.len()));
++                    buf.extend_from_slice(d);
++                }
++                let mut pes = pes_header(0xC0, s.pts, None, buf.len());
++                pes.extend_from_slice(&buf);
++                let pcr = (!video).then_some(s.pts - 9000);
++                ts_packets(&mut out, &mut cc_a, PID_AUDIO, &pes, pcr, !video);
++            }
++        }
++    }
++    Ok(out)
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    fn bx(typ: &[u8; 4], body: &[u8]) -> Vec<u8> {
++        let mut v = ((body.len() + 8) as u32).to_be_bytes().to_vec();
++        v.extend_from_slice(typ);
++        v.extend_from_slice(body);
++        v
++    }
++
++    fn full(v: u8, flags: u32, rest: &[u8]) -> Vec<u8> {
++        let mut b = vec![v, (flags >> 16) as u8, (flags >> 8) as u8, flags as u8];
++        b.extend_from_slice(rest);
++        b
++    }
++
++    fn trak(id: u32, timescale: u32, handler: &[u8; 4], entry: Vec<u8>, elst: Option<i32>) -> Vec<u8> {
++        let mut tkhd = vec![0u8; 12];
++        tkhd.extend_from_slice(&id.to_be_bytes());
++        tkhd.extend_from_slice(&[0u8; 64]);
++        let mut mdhd = vec![0u8; 12];
++        mdhd.extend_from_slice(&timescale.to_be_bytes());
++        mdhd.extend_from_slice(&[0u8; 8]);
++        let mut hdlr = vec![0u8; 8];
++        hdlr.extend_from_slice(handler);
++        hdlr.extend_from_slice(&[0u8; 13]);
++        let mut stsd = full(0, 0, &1u32.to_be_bytes());
++        stsd.extend_from_slice(&entry);
++        let stbl = bx(b"stbl", &bx(b"stsd", &stsd));
++        let minf = bx(b"minf", &stbl);
++        let mut mdia = bx(b"mdhd", &mdhd);
++        mdia.extend(bx(b"hdlr", &hdlr));
++        mdia.extend(minf);
++        let mut t = bx(b"tkhd", &tkhd);
++        if let Some(mt) = elst {
++            let mut e = full(0, 0, &1u32.to_be_bytes());
++            e.extend_from_slice(&0u32.to_be_bytes());
++            e.extend_from_slice(&mt.to_be_bytes());
++            e.extend_from_slice(&0x0001_0000u32.to_be_bytes());
++            t.extend(bx(b"edts", &bx(b"elst", &e)));
++        }
++        t.extend(bx(b"mdia", &mdia));
++        bx(b"trak", &t)
++    }
++
++    fn init_bytes() -> Vec<u8> {
++        // avc1: 78 byte cố định + avcC (SPS 67 64 00 28, PPS 68 EE 3C 80)
++        let mut avcc = vec![1, 0x64, 0, 0x28, 0xFF, 0xE1, 0, 4, 0x67, 0x64, 0x00, 0x28, 1, 0, 4, 0x68, 0xEE, 0x3C, 0x80];
++        let mut avc1 = vec![0u8; 78];
++        avc1.append(&mut bx(b"avcC", &std::mem::take(&mut avcc)));
++        // mp4a: 28 byte cố định + esds (AAC-LC 48 kHz stereo: 11 90)
++        let es = [0x03, 25, 0, 1, 0, 0x04, 17, 0x40, 0x15, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x05, 2, 0x11, 0x90, 0x06, 1, 2];
++        let mut mp4a = vec![0u8; 28];
++        mp4a.extend(bx(b"esds", &full(0, 0, &es)));
++        let mut moov = bx(b"mvhd", &[0u8; 100]);
++        moov.extend(trak(1, 90_000, b"vide", bx(b"avc1", &avc1), Some(3003)));
++        moov.extend(trak(2, 48_000, b"soun", bx(b"mp4a", &mp4a), None));
++        let mut trex = Vec::new();
++        for id in [1u32, 2] {
++            let mut b = full(0, 0, &id.to_be_bytes());
++            b.extend_from_slice(&1u32.to_be_bytes());
++            b.extend_from_slice(&(if id == 1 { 3003u32 } else { 1024 }).to_be_bytes());
++            b.extend_from_slice(&[0u8; 8]);
++            trex.extend(bx(b"trex", &b));
++        }
++        moov.extend(bx(b"mvex", &trex));
++        let mut out = bx(b"ftyp", b"isom\0\0\0\x01isomavc1");
++        out.extend(bx(b"moov", &moov));
++        out
++    }
++
++    /// Đoạn: 3 khung hình (IDR, P, B — trun bản 1, có cts) + 4 khung tiếng, hai traf trong một moof, data_offset theo moof.
++    fn segment(base_v: u64, base_a: u64) -> Vec<u8> {
++        segment_cts(base_v, base_a, [3003, 6006, 0])
++    }
++
++    fn segment_cts(base_v: u64, base_a: u64, ctss: [i32; 3]) -> Vec<u8> {
++        let frames: Vec<Vec<u8>> = vec![
++            [0, 0, 0, 5, 0x65, 0x88, 0x84, 0x00, 0x10].to_vec(),
++            [0, 0, 0, 3, 0x41, 0x9A, 0x02].to_vec(),
++            [0, 0, 0, 3, 0x01, 0x9E, 0x04].to_vec(),
++        ];
++        let aac: Vec<Vec<u8>> = (0..4).map(|k| vec![0x21, 0x10, k as u8, 0x55]).collect();
++        let build = |v_off: u32, a_off: u32| -> Vec<u8> {
++            let mut tv = bx(b"tfhd", &full(0, 0x020000, &1u32.to_be_bytes()));
++            tv.extend(bx(b"tfdt", &full(1, 0, &base_v.to_be_bytes())));
++            let mut run = (frames.len() as u32).to_be_bytes().to_vec();
++            run.extend_from_slice(&v_off.to_be_bytes());
++            for (k, f) in frames.iter().enumerate() {
++                run.extend_from_slice(&(f.len() as u32).to_be_bytes());
++                let cts: i32 = ctss[k];
++                run.extend_from_slice(&cts.to_be_bytes());
++            }
++            tv.extend(bx(b"trun", &full(1, 0x000001 | 0x200 | 0x800, &run)));
++            let mut ta = bx(b"tfhd", &full(0, 0x020000, &2u32.to_be_bytes()));
++            ta.extend(bx(b"tfdt", &full(0, 0, &(base_a as u32).to_be_bytes())));
++            let mut run = (aac.len() as u32).to_be_bytes().to_vec();
++            run.extend_from_slice(&a_off.to_be_bytes());
++            for f in &aac {
++                run.extend_from_slice(&(f.len() as u32).to_be_bytes());
++            }
++            ta.extend(bx(b"trun", &full(0, 0x000001 | 0x200, &run)));
++            let mut m = bx(b"mfhd", &full(0, 0, &1u32.to_be_bytes()));
++            m.extend(bx(b"traf", &tv));
++            m.extend(bx(b"traf", &ta));
++            bx(b"moof", &m)
++        };
++        let probe = build(0, 0);
++        let v_off = probe.len() as u32 + 8;
++        let a_off = v_off + frames.iter().map(|f| f.len() as u32).sum::<u32>();
++        let mut seg = bx(b"styp", b"msdh\0\0\0\0msdhmsix");
++        let moof = build(v_off, a_off);
++        seg.extend(moof);
++        let mut mdat = frames.concat();
++        mdat.extend(aac.concat());
++        seg.extend(bx(b"mdat", &mdat));
++        seg
++    }
++
++    /// Gói TS → (pid, pusi, payload).
++    fn packets(ts: &[u8]) -> Vec<(u16, bool, Vec<u8>, Option<u64>)> {
++        assert_eq!(ts.len() % 188, 0);
++        ts.chunks(188)
++            .map(|p| {
++                assert_eq!(p[0], 0x47);
++                let pid = ((p[1] as u16 & 0x1f) << 8) | p[2] as u16;
++                let afc = (p[3] >> 4) & 3;
++                let mut i = 4;
++                let mut pcr = None;
++                if afc & 2 != 0 {
++                    let l = p[4] as usize;
++                    if l > 0 && p[5] & 0x10 != 0 {
++                        let b = &p[6..12];
++                        pcr = Some(((b[0] as u64) << 25) | ((b[1] as u64) << 17) | ((b[2] as u64) << 9) | ((b[3] as u64) << 1) | (b[4] as u64 >> 7));
++                    }
++                    i = 5 + l;
++                }
++                (pid, p[1] & 0x40 != 0, p[i..].to_vec(), pcr)
++            })
++            .collect()
++    }
++
++    fn pes_ts(b: &[u8]) -> u64 {
++        (((b[0] as u64 >> 1) & 7) << 30) | ((b[1] as u64) << 22) | ((b[2] as u64 >> 1) << 15) | ((b[3] as u64) << 7) | (b[4] as u64 >> 1)
++    }
++
++    #[test]
++    fn reads_init_tracks() {
++        let init = parse_init(&init_bytes()).unwrap();
++        assert_eq!(init.tracks.len(), 2);
++        assert_eq!(
++            init.tracks[0].codec,
++            Codec::Avc { nal_len: 4, sps: vec![vec![0x67, 0x64, 0x00, 0x28]], pps: vec![vec![0x68, 0xEE, 0x3C, 0x80]] }
++        );
++        assert_eq!(init.tracks[0].shift, 3003);
++        assert_eq!(init.tracks[1].codec, Codec::Aac { profile: 1, freq_idx: 3, channels: 2 });
++        assert_eq!((init.tracks[1].timescale, init.tracks[1].def_dur), (48_000, 1024));
++    }
++
++    #[test]
++    fn remuxes_video_and_audio() {
++        let init = parse_init(&init_bytes()).unwrap();
++        let ts = remux(&init, &segment(90_090, 48_000)).unwrap();
++        let pk = packets(&ts);
++        assert_eq!(pk[0].0, 0);
++        assert_eq!(pk[1].0, PID_PMT);
++        // PAT / PMT có CRC đúng
++        for p in &pk[..2] {
++            let sec = &p.2[1..];
++            let len = (((sec[1] as usize) & 0x0f) << 8 | sec[2] as usize) + 3;
++            assert_eq!(crc32_mpeg(&sec[..len]), 0, "CRC của bảng {}", p.0);
++        }
++        // Gói PES hình đầu: PTS = (90090 + 3003 - 3003) + 900000, DTS = 90090 - 3003 + 900000; có AUD, SPS, PPS rồi IDR
++        let v: Vec<_> = pk.iter().filter(|p| p.0 == PID_VIDEO && p.1).collect();
++        assert_eq!(v.len(), 3);
++        let first = &v[0].2;
++        assert_eq!(&first[..4], &[0, 0, 1, 0xE0]);
++        assert_eq!(first[7], 0xC0);
++        assert_eq!(pes_ts(&first[9..]), 990_090);
++        assert_eq!(pes_ts(&first[14..]), 987_087);
++        assert_eq!(v[0].3, Some(987_087 - 9000));
++        let es = &first[19..];
++        assert_eq!(&es[..6], &[0, 0, 0, 1, 0x09, 0xF0]);
++        assert_eq!(&es[6..14], &[0, 0, 0, 1, 0x67, 0x64, 0x00, 0x28]);
++        assert_eq!(&es[14..22], &[0, 0, 0, 1, 0x68, 0xEE, 0x3C, 0x80]);
++        assert_eq!(&es[22..27], &[0, 0, 0, 1, 0x65]);
++        // Khung P không có SPS
++        assert_eq!(&v[1].2[19..30], &[0, 0, 0, 1, 0x09, 0xF0, 0, 0, 0, 1, 0x41]);
++        // Khung B: cts 0 → PTS = DTS → chỉ ghi PTS
++        assert_eq!(v[2].2[7], 0x80);
++        // Tiếng: 4 khung gom một PES, đầu khung ADTS (LC, 48 kHz, 2 kênh, dài 11)
++        let a: Vec<_> = pk.iter().filter(|p| p.0 == PID_AUDIO && p.1).collect();
++        assert_eq!(a.len(), 1);
++        let pes = &a[0].2;
++        assert_eq!(&pes[..4], &[0, 0, 1, 0xC0]);
++        let plen = ((pes[4] as usize) << 8) | pes[5] as usize;
++        assert_eq!(plen, 3 + 5 + 4 * 11);
++        assert_eq!(pes_ts(&pes[9..]), 90_000 + 900_000);
++        assert_eq!(&pes[14..21], &adts_header(1, 3, 2, 4));
++        assert_eq!(&pes[14..18], &[0xFF, 0xF1, 0x4C, 0x80]);
++        // Bộ đếm liên tục tăng theo từng PID
++        let ccs: Vec<u8> = ts.chunks(188).filter(|p| ((p[1] as u16 & 0x1f) << 8 | p[2] as u16) == PID_VIDEO).map(|p| p[3] & 0x0f).collect();
++        assert_eq!(ccs, (0..ccs.len() as u8).collect::<Vec<_>>());
++    }
++
++    #[test]
++    fn negative_cts_shifts_dts_for_whole_track() {
++        // trun bản 1: khung B có cts âm (−1 khung) → lùi DTS cả rãnh 2 khung (6006), PTS ≥ DTS, thứ tự giải mã giữ nguyên
++        let init = parse_init(&init_bytes()).unwrap();
++        let v_times = |ts: &[u8]| -> Vec<(u64, u64)> {
++            packets(ts)
++                .into_iter()
++                .filter(|p| p.0 == PID_VIDEO && p.1)
++                .map(|p| {
++                    let pts = pes_ts(&p.2[9..]);
++                    (pts, if p.2[7] == 0xC0 { pes_ts(&p.2[14..]) } else { pts })
++                })
++                .collect()
++        };
++        let t = v_times(&remux(&init, &segment_cts(0, 0, [0, 6006, -3003])).unwrap());
++        assert_eq!(t, [(896_997, 890_991), (906_006, 893_994), (900_000, 896_997)]);
++        assert!(t.iter().all(|(p, d)| p >= d));
++        // Đoạn sau không có cts âm vẫn dùng khoảng lùi đã nhớ (DTS liền mạch giữa các đoạn)
++        let t = v_times(&remux(&init, &segment_cts(9009, 0, [3003, 6006, 0])).unwrap());
++        assert_eq!(t[0], (900_000 + 9009, 900_000 + 9009 - 3003 - 6006));
++    }
++
++    #[test]
++    fn long_pes_spans_packets() {
++        let mut out = Vec::new();
++        let mut cc = 0u8;
++        let pes: Vec<u8> = (0..1000u32).map(|x| x as u8).collect();
++        ts_packets(&mut out, &mut cc, PID_VIDEO, &pes, Some(123_456), true);
++        let pk = packets(&out);
++        assert_eq!(pk.iter().map(|p| p.2.len()).sum::<usize>(), 1000);
++        assert_eq!(pk.iter().flat_map(|p| p.2.clone()).collect::<Vec<_>>(), pes);
++        assert_eq!(pk[0].3, Some(123_456));
++        assert!(pk[0].1 && !pk[1].1);
++        // Mọi độ dài phần còn lại (kể cả gói cuối thiếu 1 / 2 byte) vẫn đúng 188 byte mỗi gói
++        for n in [1usize, 182, 183, 184, 185, 366, 367, 368] {
++            let mut o = Vec::new();
++            ts_packets(&mut o, &mut cc, PID_AUDIO, &vec![7u8; n], None, false);
++            assert_eq!(packets(&o).iter().map(|p| p.2.len()).sum::<usize>(), n, "n = {n}");
++        }
++    }
++
++    #[test]
++    fn audio_only_and_wrapped_segment() {
++        let init = parse_init(&init_bytes()).unwrap();
++        let only_audio = Init::new(vec![init.tracks[1].clone()]);
++        let mut seg = b"\x89PNG\r\n\x1a\n-anh-nho-".to_vec();
++        seg.extend(segment(0, 0));
++        let ts = remux(&only_audio, &seg).unwrap();
++        let pk = packets(&ts);
++        assert!(pk.iter().all(|p| p.0 != PID_VIDEO));
++        let a = pk.iter().find(|p| p.0 == PID_AUDIO).unwrap();
++        assert_eq!(a.3, Some(900_000 - 9000), "PCR nằm ở rãnh tiếng khi không có hình");
++        // PMT chỉ có một dòng (AAC), PCR_PID = tiếng
++        let sec = &pk[1].2[1..];
++        assert_eq!(((sec[8] as u16 & 0x1f) << 8) | sec[9] as u16, PID_AUDIO);
++        assert_eq!(sec[12], 0x0F);
++    }
++
++    #[test]
++    fn rejects_hevc_and_broken() {
++        let mut moov = bx(b"mvhd", &[0u8; 100]);
++        moov.extend(trak(1, 90_000, b"vide", bx(b"hvc1", &[0u8; 78]), None));
++        let init = bx(b"moov", &moov);
++        assert!(parse_init(&init).unwrap_err().contains("H.265"));
++        let good = parse_init(&init_bytes()).unwrap();
++        let mut seg = segment(0, 0);
++        seg.truncate(seg.len() - 10);
++        assert!(remux(&good, &seg).is_err());
++        assert!(remux(&good, b"not mp4").is_err());
++    }
++
++    #[test]
++    fn asc_variants() {
++        // HE-AAC tín hiệu tường minh: aot 5, 24 kHz lõi, 2 kênh, mở rộng 48 kHz, lõi AAC-LC
++        assert_eq!(asc(&[0x2B, 0x11, 0x88, 0x00]), Some(Codec::Aac { profile: 1, freq_idx: 6, channels: 2 }));
++        // 44.1 kHz mono LC
++        assert_eq!(asc(&[0x12, 0x08]), Some(Codec::Aac { profile: 1, freq_idx: 4, channels: 1 }));
++    }
++}
+diff --git a/linux/core/src/lib.rs b/linux/core/src/lib.rs
+index 12f6509..e02bd4d 100644
+--- a/linux/core/src/lib.rs
++++ b/linux/core/src/lib.rs
+@@ -32,6 +32,7 @@ pub mod update_check;
+ pub mod invite;
+ pub mod disclaimer;
+ pub mod media_proxy;
++pub mod fmp4_ts;
+ pub mod web_fetch;
+ 
+ pub use models::*;
+diff --git a/linux/core/src/media_proxy.rs b/linux/core/src/media_proxy.rs
+index 74b93f9..4f0c5a9 100644
+--- a/linux/core/src/media_proxy.rs
++++ b/linux/core/src/media_proxy.rs
+@@ -7,11 +7,14 @@
+ //! - `f/…mp4`  tệp video thường (MP4 của CLB Phim Xưa): chuyển tiếp cả Range (tua).
+ //! - `t/…vtt`  phụ đề rời ngụy trang ảnh PNG (server HD): bỏ phần trước «WEBVTT».
+ //! - `i/<n>.m3u8` danh sách phát có sẵn nội dung (trình phát nhúng tự giải mã ra `data:…;base64` — streamfree).
++//! - `m/<đoạn>-<khởi tạo>.ts` (bản iOS cũ — `remux_fmp4`): đoạn fMP4 + đoạn khởi tạo EXT-X-MAP đổi thành MPEG-TS
++//!   (fmp4_ts.rs) — AVPlayer iOS < 10 chỉ phát HLS dạng TS (dexter.pw).
+ //!
+ //! Mã phiên ngẫu nhiên; chỉ vài phiên mới nhất dùng được — trang web khác trên máy không mượn được cổng này để tải hộ.
+ 
+ use base64::Engine;
+-use std::sync::{Mutex, OnceLock};
++use std::sync::atomic::{AtomicBool, Ordering};
++use std::sync::{Arc, Mutex, OnceLock};
+ use std::time::Duration;
+ use tokio::io::{AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader};
+ use tokio::net::{TcpListener, TcpStream};
+@@ -19,6 +22,21 @@ use tokio::net::{TcpListener, TcpStream};
+ /// Số phiên giữ lại (phiên đang phát + vài phiên trước còn đang đóng dở)
+ const KEEP_SESSIONS: usize = 3;
+ 
++/// Bản iOS cũ (iOS 6): đoạn fMP4 đổi thành MPEG-TS, danh sách phát chính dọn cho AVPlayer cũ (bỏ bản > MAX_HEIGHT, thuộc tính
++/// lạ). Mặc định bật khi dựng cho iOS (lõi Rust chỉ chạy trên iOS ở bản iOS 6); bản thử trên máy khác bật bằng set_remux_fmp4.
++static REMUX_FMP4: AtomicBool = AtomicBool::new(cfg!(target_os = "ios"));
++
++/// Chiều cao lớn nhất của bản giữ lại (iPhone 5 / iPad mini 1 giải mã H.264 tới 1080p; 4K thì không).
++const MAX_HEIGHT: u32 = 1080;
++
++pub fn set_remux_fmp4(on: bool) {
++    REMUX_FMP4.store(on, Ordering::SeqCst);
++}
++
++fn remux_fmp4() -> bool {
++    REMUX_FMP4.load(Ordering::SeqCst)
++}
++
+ struct Session {
+     token: String,
+     /// Referer gửi lên máy chủ video (dạng gốc trang — như trình duyệt gửi cho yêu cầu khác tên miền)
+@@ -337,10 +355,26 @@ fn rewrite_uri_attr(line: &str, base: Option<&url::Url>, prefix: &str, kind: cha
+     format!("{}{}{}", &line[..start], local(prefix, kind, &abs, links), &line[start + len..])
+ }
+ 
++/// Giá trị URI="…" của một dòng thẻ.
++fn uri_attr(line: &str) -> Option<&str> {
++    let start = line.find("URI=\"")? + 5;
++    let len = line[start..].find('"')?;
++    Some(&line[start..start + len])
++}
++
+ /// Viết lại danh sách phát: bỏ quảng cáo, mọi địa chỉ con (danh sách con, đoạn, khoá, đoạn khởi tạo) thành địa chỉ trên cổng.
+ pub fn rewrite_playlist(text: &str, base: Option<&url::Url>, prefix: &str, links: &mut Links) -> String {
++    rewrite_playlist_with(text, base, prefix, links, remux_fmp4(), 0)
++}
++
++/// `remux`: bản iOS cũ — đoạn fMP4 (EXT-X-MAP, không mã hoá) thành m/<đoạn>-<khởi tạo>.ts, danh sách chính qua tidy_master.
++/// `want_h`: chất lượng người xem chọn (chiều cao; 0 = tự động) — xem tidy_master.
++fn rewrite_playlist_with(text: &str, base: Option<&url::Url>, prefix: &str, links: &mut Links, remux: bool, want_h: u32) -> String {
+     let text = strip_ads(&text.replace("\r\n", "\n"));
+     let master = text.contains("#EXT-X-STREAM-INF");
++    let encrypted = text.lines().any(|l| l.starts_with("#EXT-X-KEY") && !l.contains("METHOD=NONE"));
++    let fmp4 = remux && !master && !encrypted && text.contains("#EXT-X-MAP");
++    let mut map: Option<usize> = None;
+     let mut out = String::with_capacity(text.len() * 2);
+     for l in text.split('\n') {
+         let t = l.trim();
+@@ -351,6 +385,19 @@ pub fn rewrite_playlist(text: &str, base: Option<&url::Url>, prefix: &str, links
+             if t.starts_with("#EXT-X-I-FRAME-STREAM-INF") {
+                 continue; // danh sách khung chính (tua nhanh có hình) — trình phát không cần
+             }
++            if fmp4 {
++                if t.starts_with("#EXT-X-MAP") {
++                    map = uri_attr(t).map(|u| links.id(&resolve(base, u)));
++                    continue;
++                }
++                if t.starts_with("#EXT-X-VERSION") {
++                    out.push_str("#EXT-X-VERSION:3\n");
++                    continue;
++                }
++                if t.starts_with("#EXT-X-INDEPENDENT-SEGMENTS") {
++                    continue;
++                }
++            }
+             let line = if t.starts_with("#EXT-X-KEY") || t.starts_with("#EXT-X-SESSION-KEY") {
+                 rewrite_uri_attr(t, base, prefix, 'k', links)
+             } else if t.starts_with("#EXT-X-MAP") {
+@@ -361,11 +408,124 @@ pub fn rewrite_playlist(text: &str, base: Option<&url::Url>, prefix: &str, links
+                 t.to_string()
+             };
+             out.push_str(&line);
++        } else if let (true, Some(m)) = (fmp4, map) {
++            let id = links.id(&resolve(base, t));
++            out.push_str(&format!("{prefix}/m/{id}-{m}.ts"));
+         } else {
+             out.push_str(&local(prefix, if master { 'p' } else { 's' }, &resolve(base, t), links));
+         }
+         out.push('\n');
+     }
++    if master && remux {
++        tidy_master(&out, want_h)
++    } else {
++        out
++    }
++}
++
++/// Thuộc tính của thẻ HLS (giá trị giữ nguyên ngoặc kép): `BANDWIDTH=1,CODECS="a,b"` → [("BANDWIDTH","1"), ("CODECS","\"a,b\"")].
++fn attrs(s: &str) -> Vec<(String, String)> {
++    let mut out = Vec::new();
++    let (mut key, mut val) = (String::new(), String::new());
++    let (mut in_key, mut quoted) = (true, false);
++    for c in s.chars() {
++        if in_key {
++            if c == '=' {
++                in_key = false;
++            } else if c != ',' {
++                key.push(c);
++            }
++            continue;
++        }
++        if c == '"' {
++            quoted = !quoted;
++        } else if c == ',' && !quoted {
++            out.push((key.trim().to_string(), std::mem::take(&mut val)));
++            key.clear();
++            in_key = true;
++            continue;
++        }
++        val.push(c);
++    }
++    if !key.trim().is_empty() {
++        out.push((key.trim().to_string(), val));
++    }
++    out
++}
++
++fn keep_attrs(a: &[(String, String)], keep: &[&str]) -> String {
++    a.iter().filter(|(k, _)| keep.contains(&k.as_str())).map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join(",")
++}
++
++/// Danh sách phát chính cho AVPlayer iOS cũ: bỏ bản cao hơn MAX_HEIGHT (4K — máy không giải mã nổi; bỏ hết thì giữ nguyên),
++/// bản gần 720p lên đầu (AVPlayer bắt đầu bằng bản đầu tiên rồi tự đổi theo mạng), chỉ giữ thuộc tính iOS 6 biết, bỏ phụ đề /
++/// CC trong luồng; còn rãnh tiếng riêng (EXT-X-MEDIA TYPE=AUDIO) thì ghi EXT-X-VERSION:4. `want_h` > 0 (người xem chọn chất
++/// lượng — app thêm `?h=<chiều cao>` vào địa chỉ danh sách chính): chỉ giữ bản cao nhất không quá want_h (không có thì bản thấp
++/// nhất) — AVPlayer iOS 6 không có cách chọn bản nào khác.
++fn tidy_master(text: &str, want_h: u32) -> String {
++    let lines: Vec<&str> = text.lines().collect();
++    let mut head: Vec<String> = Vec::new();
++    let mut variants: Vec<(u32, String, String)> = Vec::new();
++    let mut audio_group = false;
++    let mut i = 0;
++    while i < lines.len() {
++        let t = lines[i];
++        i += 1;
++        if let Some(rest) = t.strip_prefix("#EXT-X-STREAM-INF:") {
++            let a = attrs(rest);
++            let Some(uri) = lines[i..].iter().find(|l| !l.starts_with('#')) else { break };
++            i += lines[i..].iter().position(|l| !l.starts_with('#')).unwrap_or(0) + 1;
++            let h = a
++                .iter()
++                .find(|(k, _)| k == "RESOLUTION")
++                .and_then(|(_, v)| v.split('x').nth(1))
++                .and_then(|h| h.trim().parse().ok())
++                .unwrap_or(0);
++            let inf = keep_attrs(&a, &["PROGRAM-ID", "BANDWIDTH", "CODECS", "RESOLUTION", "AUDIO"]);
++            variants.push((h, format!("#EXT-X-STREAM-INF:{inf}"), uri.to_string()));
++        } else if let Some(rest) = t.strip_prefix("#EXT-X-MEDIA:") {
++            let a = attrs(rest);
++            if a.iter().any(|(k, v)| k == "TYPE" && v == "AUDIO") {
++                audio_group = true;
++                head.push(format!(
++                    "#EXT-X-MEDIA:{}",
++                    keep_attrs(&a, &["TYPE", "GROUP-ID", "NAME", "LANGUAGE", "DEFAULT", "AUTOSELECT", "URI"])
++                ));
++            }
++        } else if !(t.starts_with("#EXT-X-VERSION") || t.starts_with("#EXT-X-INDEPENDENT-SEGMENTS") || t == "#EXTM3U") {
++            head.push(t.to_string());
++        }
++    }
++    if variants.iter().any(|v| v.0 <= MAX_HEIGHT) {
++        variants.retain(|v| v.0 <= MAX_HEIGHT);
++    }
++    if want_h > 0 && variants.len() > 1 {
++        let pick = (0..variants.len())
++            .filter(|&k| variants[k].0 > 0 && variants[k].0 <= want_h)
++            .max_by_key(|&k| variants[k].0)
++            .or_else(|| (0..variants.len()).filter(|&k| variants[k].0 > 0).min_by_key(|&k| variants[k].0));
++        if let Some(k) = pick {
++            variants = vec![variants.swap_remove(k)];
++        }
++    }
++    if let Some(k) = (0..variants.len()).filter(|&k| (360..=720).contains(&variants[k].0)).max_by_key(|&k| variants[k].0) {
++        let v = variants.remove(k);
++        variants.insert(0, v);
++    }
++    let mut out = String::from("#EXTM3U\n");
++    if audio_group {
++        out.push_str("#EXT-X-VERSION:4\n");
++    }
++    for h in head {
++        out.push_str(&h);
++        out.push('\n');
++    }
++    for (_, inf, uri) in variants {
++        out.push_str(&inf);
++        out.push('\n');
++        out.push_str(&uri);
++        out.push('\n');
++    }
+     out
+ }
+ 
+@@ -541,6 +701,13 @@ async fn handle<W: AsyncWrite + Unpin>(req: &Request, w: &mut W) -> bool {
+     };
+     let prefix = format!("http://127.0.0.1:{}/{token}", start());
+     let referer = referer.as_deref();
++    // ?h=<chiều cao>: chất lượng người xem chọn (danh sách chính — tidy_master)
++    let want_h: u32 = req
++        .path
++        .split_once('?')
++        .and_then(|(_, q)| q.split('&').find_map(|kv| kv.strip_prefix("h=")))
++        .and_then(|v| v.parse().ok())
++        .unwrap_or(0);
+     if kind == "i" {
+         let idx: usize = name.split('.').next().and_then(|n| n.parse().ok()).unwrap_or(usize::MAX);
+         return match inline.get(idx) {
+@@ -551,6 +718,9 @@ async fn handle<W: AsyncWrite + Unpin>(req: &Request, w: &mut W) -> bool {
+             _ => reply(w, 404, "text/plain", b"", head_only).await,
+         };
+     }
++    if kind == "m" {
++        return remux_segment(token, name, referer, w, head_only).await;
++    }
+     let Some(url) = id_of(name).and_then(|id| with_links(token, |l| l.get(id).cloned()).flatten()) else {
+         return reply(w, 404, "text/plain", b"", head_only).await;
+     };
+@@ -569,7 +739,8 @@ async fn handle<W: AsyncWrite + Unpin>(req: &Request, w: &mut W) -> bool {
+                     // Trình phát báo lỗi → app phát lại bằng trình phát của trang
+                     return Err("không phải HLS thường (mã hoá / khoá riêng của trang — không phát native)".into());
+                 }
+-                with_links(token, |l| rewrite_playlist(&text, Some(&base), &prefix, l)).ok_or_else(|| "phiên đã đóng".to_string())
++                with_links(token, |l| rewrite_playlist_with(&text, Some(&base), &prefix, l, remux_fmp4(), want_h))
++                    .ok_or_else(|| "phiên đã đóng".to_string())
+             }
+             .await;
+             match r {
+@@ -612,6 +783,56 @@ fn short(u: &str) -> String {
+     u.chars().take(120).collect()
+ }
+ 
++/// Đoạn khởi tạo fMP4 đã đọc (vài luồng gần nhất) — mỗi đoạn video dùng lại.
++static INITS: Mutex<Vec<(String, Arc<crate::fmp4_ts::Init>)>> = Mutex::new(Vec::new());
++
++async fn init_of(url: &str, referer: Option<&str>) -> Result<Arc<crate::fmp4_ts::Init>, String> {
++    if let Some(i) = INITS.lock().unwrap().iter().find(|x| x.0 == url).map(|x| x.1.clone()) {
++        return Ok(i);
++    }
++    let mut resp = fetch(url, referer, None, false).await?;
++    if !resp.status().is_success() {
++        return Err(format!("đoạn khởi tạo HTTP {}", resp.status().as_u16()));
++    }
++    let init = Arc::new(crate::fmp4_ts::parse_init(&read_all(&mut resp).await?)?);
++    let mut c = INITS.lock().unwrap();
++    c.push((url.to_string(), init.clone()));
++    if c.len() > 8 {
++        c.remove(0);
++    }
++    Ok(init)
++}
++
++/// m/<đoạn>-<khởi tạo>.ts: tải đoạn fMP4 (cùng lúc với đoạn khởi tạo nếu chưa có) rồi đổi thành MPEG-TS.
++async fn remux_segment<W: AsyncWrite + Unpin>(token: &str, name: &str, referer: Option<&str>, w: &mut W, head_only: bool) -> bool {
++    let stem = name.split('.').next().unwrap_or("");
++    let ids: Option<(usize, usize)> = stem.split_once('-').and_then(|(a, b)| Some((a.parse().ok()?, b.parse().ok()?)));
++    let urls = ids.and_then(|(s, m)| with_links(token, |l| Some((l.get(s)?.clone(), l.get(m)?.clone()))).flatten());
++    let Some((seg_url, init_url)) = urls else {
++        return reply(w, 404, "text/plain", b"", head_only).await;
++    };
++    let r = async {
++        let seg = async {
++            let mut resp = fetch(&seg_url, referer, None, false).await?;
++            if !resp.status().is_success() {
++                return Err(format!("HTTP {}", resp.status().as_u16()));
++            }
++            read_all(&mut resp).await
++        };
++        let (init, seg) = tokio::join!(init_of(&init_url, referer), seg);
++        let (init, seg) = (init?, seg?);
++        crate::fmp4_ts::remux(&init, &seg)
++    }
++    .await;
++    match r {
++        Ok(ts) => reply(w, 200, "video/mp2t", &ts, head_only).await,
++        Err(e) => {
++            crate::log::d("media", &format!("đổi fMP4 → TS lỗi ({e}): {}", short(&seg_url)));
++            reply(w, 502, "text/plain", b"", head_only).await
++        }
++    }
++}
++
+ /// Đoạn video: biết trước độ dài và không phải PNG thì chuyển tiếp từng phần ngay (trình phát bắt đầu giải mã sớm);
+ /// đoạn ngụy trang PNG / không rõ độ dài thì tải trọn rồi trả.
+ async fn segment<W: AsyncWrite + Unpin>(url: &str, referer: Option<&str>, w: &mut W, head_only: bool) -> bool {
+@@ -881,6 +1102,86 @@ mod tests {
+         assert!(out.contains("#EXT-X-ENDLIST"));
+     }
+ 
++    #[test]
++    fn remux_fmp4_media_playlist() {
++        let mut t = Links::default();
++        let base = url::Url::parse("https://v.x/api/s/21/movie/1/1080.m3u8").unwrap();
++        let media = "#EXTM3U\n#EXT-X-VERSION:6\n#EXT-X-INDEPENDENT-SEGMENTS\n#EXT-X-TARGETDURATION:6\n#EXT-X-MAP:URI=\"init.mp4\"\n\
++                     #EXTINF:6.006,\nseg1.jpg\n#EXTINF:6.006,\nhttps://cdn.y/seg2.png\n#EXT-X-ENDLIST\n";
++        let out = rewrite_playlist_with(media, Some(&base), P, &mut t, true, 0);
++        assert!(!out.contains("#EXT-X-MAP") && !out.contains("INDEPENDENT"));
++        assert!(out.contains("#EXT-X-VERSION:3\n") && out.contains("#EXT-X-TARGETDURATION:6") && out.contains("#EXT-X-ENDLIST"));
++        let segs: Vec<&str> = out.lines().filter(|l| !l.starts_with('#')).collect();
++        assert_eq!(segs.len(), 2);
++        let ids = |s: &str| -> (usize, usize) {
++            let stem = s.rsplit('/').next().unwrap().trim_end_matches(".ts");
++            let (a, b) = stem.split_once('-').unwrap();
++            (a.parse().unwrap(), b.parse().unwrap())
++        };
++        assert!(segs[0].starts_with("http://127.0.0.1:1/tok/m/") && segs[0].ends_with(".ts"));
++        let (s1, m) = ids(segs[0]);
++        assert_eq!(t.get(s1).unwrap(), "https://v.x/api/s/21/movie/1/seg1.jpg");
++        assert_eq!(t.get(m).unwrap(), "https://v.x/api/s/21/movie/1/init.mp4");
++        assert_eq!(t.get(ids(segs[1]).0).unwrap(), "https://cdn.y/seg2.png");
++        assert_eq!(ids(segs[1]).1, m);
++        // Tắt (bản khác) / đoạn TS thường / luồng mã hoá: như cũ
++        assert!(rewrite_playlist_with(media, Some(&base), P, &mut t, false, 0).contains("#EXT-X-MAP"));
++        let ts = "#EXTM3U\n#EXT-X-VERSION:3\n#EXTINF:6,\na.ts\n";
++        assert!(rewrite_playlist_with(ts, Some(&base), P, &mut t, true, 0).contains("/tok/s/"));
++        let enc = "#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=\"k\"\n#EXT-X-MAP:URI=\"i.mp4\"\n#EXTINF:6,\na.m4s\n";
++        assert!(rewrite_playlist_with(enc, Some(&base), P, &mut t, true, 0).contains("#EXT-X-MAP"));
++    }
++
++    #[test]
++    fn tidy_master_for_old_avplayer() {
++        let mut t = Links::default();
++        let base = url::Url::parse("https://dexter.pw/api/s/21/movie/354912").unwrap();
++        let m = "#EXTM3U\n#EXT-X-STREAM-INF:PROGRAM-ID=1,BANDWIDTH=16141538,RESOLUTION=3840x2160,FRAME-RATE=23.974,CODECS=\"avc1.640033,mp4a.40.2\",VIDEO-RANGE=SDR\n4k.m3u8\n\
++                 #EXT-X-STREAM-INF:PROGRAM-ID=1,BANDWIDTH=6124663,RESOLUTION=1920x1080,CODECS=\"avc1.640028,mp4a.40.2\"\n1080.m3u8\n\
++                 #EXT-X-STREAM-INF:PROGRAM-ID=1,BANDWIDTH=3093862,RESOLUTION=1280x720,CODECS=\"avc1.4d401f,mp4a.40.2\"\n720.m3u8\n\
++                 #EXT-X-STREAM-INF:PROGRAM-ID=1,BANDWIDTH=1312044,RESOLUTION=852x480,CODECS=\"avc1.4d401e,mp4a.40.2\"\n480.m3u8\n";
++        let out = rewrite_playlist_with(m, Some(&base), P, &mut t, true, 0);
++        let infs: Vec<&str> = out.lines().filter(|l| l.starts_with("#EXT-X-STREAM-INF")).collect();
++        assert_eq!(infs.len(), 3, "bỏ bản 4K");
++        assert_eq!(infs[0], "#EXT-X-STREAM-INF:PROGRAM-ID=1,BANDWIDTH=3093862,RESOLUTION=1280x720,CODECS=\"avc1.4d401f,mp4a.40.2\"");
++        let uris: Vec<String> = out.lines().filter(|l| !l.starts_with('#')).map(|l| back(&t, l)).collect();
++        assert_eq!(uris, ["720", "1080", "480"].map(|h| format!("https://dexter.pw/api/s/21/movie/{h}.m3u8")));
++        assert!(!out.contains("FRAME-RATE") && !out.contains("VIDEO-RANGE") && !out.contains("EXT-X-VERSION"));
++
++        // Rãnh tiếng riêng (server 20): giữ EXT-X-MEDIA AUDIO + AUDIO=, bỏ phụ đề / CC, ghi bản 4
++        let m = "#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-INDEPENDENT-SEGMENTS\n\
++                 #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"audio\",NAME=\"Stereo\",LANGUAGE=\"eng\",DEFAULT=YES,AUTOSELECT=YES,CHANNELS=\"2\",URI=\"a/index.m3u8\"\n\
++                 #EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID=\"subs\",NAME=\"English\",URI=\"s/en.m3u8\"\n\
++                 #EXT-X-STREAM-INF:BANDWIDTH=9982656,AVERAGE-BANDWIDTH=7979418,CODECS=\"avc1.640028,mp4a.40.2\",RESOLUTION=1920x1080,CLOSED-CAPTIONS=NONE,AUDIO=\"audio\",SUBTITLES=\"subs\"\nv1080/index.m3u8\n\
++                 #EXT-X-STREAM-INF:BANDWIDTH=434636,CODECS=\"avc1.64000c,mp4a.40.2\",RESOLUTION=256x144,AUDIO=\"audio\"\nv144/index.m3u8\n";
++        let out = rewrite_playlist_with(m, Some(&base), P, &mut t, true, 0);
++        let lines: Vec<&str> = out.lines().collect();
++        assert_eq!(&lines[..2], ["#EXTM3U", "#EXT-X-VERSION:4"]);
++        assert!(lines[2].starts_with("#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"audio\",NAME=\"Stereo\",LANGUAGE=\"eng\",DEFAULT=YES,AUTOSELECT=YES,URI=\"http://127.0.0.1:1/tok/p/"));
++        assert!(!out.contains("SUBTITLES") && !out.contains("CLOSED-CAPTIONS") && !out.contains("INDEPENDENT") && !out.contains("AVERAGE"));
++        // Không có bản 360p–720p: giữ thứ tự gốc
++        assert_eq!(lines[3], "#EXT-X-STREAM-INF:BANDWIDTH=9982656,CODECS=\"avc1.640028,mp4a.40.2\",RESOLUTION=1920x1080,AUDIO=\"audio\"");
++        assert_eq!(lines[5], "#EXT-X-STREAM-INF:BANDWIDTH=434636,CODECS=\"avc1.64000c,mp4a.40.2\",RESOLUTION=256x144,AUDIO=\"audio\"");
++        assert_eq!(lines.len(), 7);
++        // Người xem chọn chất lượng: chỉ còn một bản (+ rãnh tiếng riêng); không có bản nào ≤ mức chọn thì bản thấp nhất
++        let pick = |m: &str, h: u32, t: &mut Links| -> Vec<String> {
++            rewrite_playlist_with(m, Some(&base), P, t, true, h)
++                .lines()
++                .filter(|l| l.starts_with("#EXT-X-STREAM-INF") || l.starts_with("#EXT-X-MEDIA"))
++                .map(|l| l.to_string())
++                .collect()
++        };
++        let one = pick(m, 480, &mut t);
++        assert_eq!(one.len(), 2, "rãnh tiếng + một bản: {one:?}");
++        assert!(one[1].contains("RESOLUTION=256x144"), "không có 480p → bản ≤ 480 cao nhất là 144p: {one:?}");
++        assert!(pick(m, 2160, &mut t)[1].contains("1920x1080"));
++        assert!(pick(m, 100, &mut t)[1].contains("256x144"), "dưới mọi bản → bản thấp nhất");
++        // Mọi bản đều > 1080p: giữ nguyên (còn hơn không có gì)
++        let only4k = "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1,RESOLUTION=3840x2160\n4k.m3u8\n";
++        assert_eq!(rewrite_playlist_with(only4k, Some(&base), P, &mut t, true, 0).lines().filter(|l| !l.starts_with('#')).count(), 1);
++        assert_eq!(attrs("A=1,B=\"x,y\",C=NONE"), [("A", "1"), ("B", "\"x,y\""), ("C", "NONE")].map(|(a, b)| (a.to_string(), b.to_string())));
++    }
++
+     #[test]
+     fn inline_data_playlist() {
+         let mut t = Links::default();

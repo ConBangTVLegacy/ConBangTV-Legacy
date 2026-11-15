@@ -4,7 +4,7 @@
 
 
 Bản Côn Bằng TV cho máy iOS 6 đã jailbreak (máy thử: **iPhone 5 iOS 6.1.4**, **iPad mini 1** — chưa thử). App gốc và lõi chung ở repo
-[repo chính](https://github.com/Circling5714/ChimToTV); bản iPad hiện tại (Swift / SwiftUI / WKWebView, iOS 15+) không
+[repo chính](https://github.com/conbangtv/ChimToTV); bản iPad hiện tại (Swift / SwiftUI / WKWebView, iOS 15+) không
 chạy được trên iOS 6 nên bản này viết riêng.
 
 ## Kiến trúc (đã chứng minh chạy trên iPhone 5 — 14/11/2026)
@@ -32,7 +32,7 @@ Cổng phát nội bộ 127.0.0.1 (media_proxy: bỏ quảng cáo, cắt PNG ng�
 | `tools/cbscreen/` | Chụp toàn màn hình máy (cả màn hình chính / màn khoá) ra PNG, nhấn nút Home giả — từ SSH (`cbscreen <tệp.png> [rộng cao]`, `cbscreen home`) |
 | `design/` | Nguồn logo / biểu tượng (SVG trong `icon.html`: vòng ensō vàng + ấn 鵬 nổi khối 3D trên đĩa kính tròn trong suốt); `node design/render.mjs ios a` xuất `Icon*.png` + `Default*.png` vào `app/Resources`, `web a <thư mục>` xuất logo cho trang giới thiệu / nguồn Cydia |
 | `tools/symcheck/`, `tools/symlist.py` | Tra trên máy iOS 6 mọi ký hiệu tệp chạy cần — bắt lỗi «dyld: Symbol not found» trước khi chạy |
-| `patches/` | Bản vá tạm cho lõi chung (3 bản vá đầu đã vào repo chính 14/11/2026; còn `0001-sync-ios-platform` — xem README trong đó) |
+| `patches/` | Bản vá tạm cho lõi chung (3 bản vá đầu đã vào repo chính 14/11/2026; còn `0001` đồng bộ, `0002` mở lại cổng nội bộ, `0003` đổi fMP4 → MPEG-TS — xem README trong đó) |
 | `app/` | **App thật — Côn Bằng TV Legacy** (`vn.conbangtv.legacy`; tên dưới biểu tượng: «Côn Bằng TV») — các màn ở mục «App» dưới đây |
 
 ## App (`app/`)
@@ -41,8 +41,8 @@ Cổng phát nội bộ 127.0.0.1 (media_proxy: bỏ quảng cáo, cắt PNG ng�
 | --- | --- |
 | Trang chủ | «Có tập mới» (phim theo dõi + phim đang xem dở có tập mới ở bất kỳ nguồn nào — `fresh` của lõi, lọc theo `seen_eps`), «Xem tiếp», các hàng của trang chủ tổng hợp (`home.load` / `home.late`); dải nút đầu trang: ★ Điểm IMDb cao (`imdb.page`), Thể loại… / Quốc gia… (`api.filters` / `next.filters`), danh mục của trang; quay lại app sau ≥ 20 phút thì tải lại; trang phim đổi tên miền (`movedTo`) thì đổi theo |
 | Tìm kiếm | tìm trên mọi trang (`site.searchAll`) |
-| Trang phim | thông tin, Xem / Xem tiếp, Theo dõi, «Mới nhất: Tập N» / «Từ tập đầu» (đang xem dở), **«⇄ đổi nguồn»** (phim có ở nhiều trang — `links` của thẻ trang chủ tổng hợp), chọn bản (Vietsub / Thuyết minh), lưới tập, mô tả, **phim liên quan** (`related.load`) |
-| Trình phát | AVPlayer qua cổng phát nội bộ, tự chọn server phát được trên iOS 6, nhớ chỗ xem, tự chuyển tập, **bảng chọn tập «☰ Tập»** (đổi bản Vietsub / Thuyết minh), điều khiển trên màn khoá, **menu «⋯»**: tốc độ phát (iOS 6 chỉ đổi được với tệp video — luồng HLS báo không đổi được), đánh dấu / tự bỏ qua đoạn mở đầu (khoá `intro@<phim>` như bản Windows), hẹn giờ tắt (15–90 phút / hết tập), tải lại; **phụ đề rời** (WebVTT / SRT của server riêng PhimMoi — tự vẽ, AVPlayer iOS 6 không gắn được), server rớt giữa chừng thì thử lại server đó rồi mới sang server khác |
+| Trang phim | thông tin, Xem / Xem tiếp, Theo dõi, «Mới nhất: Tập N» / «Từ tập đầu» (đang xem dở), **«⇄ đổi nguồn»** (phim có ở nhiều trang — `links` của thẻ trang chủ tổng hợp), chọn bản (Vietsub / Thuyết minh), lưới tập, mô tả, **phim liên quan** (`related.load`); **phim chia mùa** (phim bộ dexter.pw — `seasons`): dải chọn mùa, «Xem tiếp / Mới nhất: Mùa n, Tập m», «Từ tập đầu» = Mùa 1 |
+| Trình phát | AVPlayer qua cổng phát nội bộ, tự chọn server phát được trên iOS 6, nhớ chỗ xem, tự chuyển tập, **bảng chọn tập «☰ Tập»** (đổi bản Vietsub / Thuyết minh), điều khiển trên màn khoá, **menu «⋯»**: tốc độ phát (iOS 6 chỉ đổi được với tệp video — luồng HLS báo không đổi được), đánh dấu / tự bỏ qua đoạn mở đầu (khoá `intro@<phim>` như bản Windows), hẹn giờ tắt (15–90 phút / hết tập), tải lại; **phụ đề rời** (WebVTT / SRT của server riêng PhimMoi — tự vẽ, AVPlayer iOS 6 không gắn được), **phụ đề chọn được** của dexter.pw (menu «⋯» → Phụ đề: tiếng Việt / Anh từ OpenSubtitles / Subsource, tải qua lõi, tệp lỗi thì tự thử tệp sau, phim bộ «đang tìm» thì hỏi lại ~3 phút, chữ sớm / muộn 0,5 s nhớ theo tập, ngôn ngữ nhớ theo người xem — khoá `sub_lang` / `sub_delay` như lõi), **chất lượng** (menu «⋯» → Chất lượng: Tự động / 1080p / 720p… khi luồng có nhiều bản — nhớ theo người xem, khoá `video_quality`; lõi chỉ giữ đúng một bản khi địa chỉ danh sách chính có `?h=<chiều cao>`), server rớt giữa chừng thì thử lại server đó rồi mới sang server khác; phim chia mùa: hết mùa tự sang mùa sau; bản đang xem (vd Thuyết Minh) không có server phát được thì tự mở cùng tập ở bản khác (Vietsub); tập chỉ có trình phát có khoá (streamfree / NguonC) thì báo rõ |
 | Người xem | «Ai đang xem?» (thêm người, mã PIN), đổi người xem — cùng khoá dữ liệu với bản Windows |
 | Cài đặt | người xem (mã PIN nhập hai lần, bỏ khoá cần mã cũ), trang chủ tổng hợp, **hồ sơ trẻ em** (tắt cần mã phụ huynh), trang phim + **đo tốc độ các trang** (`site.check`, ★ nhanh nhất), phát video (**xem riêng** — `private_mode`, không ghi lịch sử / «đã thấy tập», chỗ xem chỉ trong RAM; **server dự phòng KKPhim** — `kk_backup`; đặt lại server đã chọn), mạng (DNS mã hoá, **vượt chặn Tắt / Mức 1 / Mức 2** — `unblock` + `unblock_level`, proxy), **Đồng bộ trong nhà**, xoá lịch sử, **xoá ảnh đã lưu**, **tự kiểm tra bản mới** (`auto_update`), miễn trừ, liên hệ |
 | Theo dõi / Lịch sử | nút «☆ Theo dõi» đầu trang chủ, «Xem thêm» của «Có tập mới» / «Xem tiếp»: lưới phim, kiểm tập mới khi mở, nhấn giữ để bỏ theo dõi / xoá |
@@ -102,6 +102,9 @@ Máy đang chạy bản cũ hơn 0.4.0 (chưa có `cbupdate`) cài bản mới m
 
 ## Bẫy của iOS 6 đã gặp (và cách xử lý)
 
+- **HLS fMP4** (dexter.pw: `#EXT-X-MAP` + đoạn `moof` / `mdat`): AVPlayer iOS 6 chỉ phát HLS dạng MPEG-TS (fMP4 có từ iOS 10) →
+  cổng phát nội bộ đổi vỏ từng đoạn thành MPEG-TS (`patches/0003`, không giải mã lại), bỏ bản 4K (A5 / A6 chỉ giải mã H.264 tới
+  1080p), bản ~720p lên đầu danh sách chính.
 - **Xcode 14+ bỏ armv7** → Theos trên Linux + SDK 9.3 (bản cuối còn armv7).
 - **SDK 9.3 của Theos thiếu / sai chỗ ký hiệu:** thiếu `liblaunch.tbd`, thiếu `memset` / `memcpy`… cho armv7; ký hiệu `NSURL*` ghi ở
   CFNetwork (iOS 7+) trong khi iOS 6 để ở Foundation → «dyld: Symbol not found» thật trên máy. Vá trong `setup-theos.sh`.

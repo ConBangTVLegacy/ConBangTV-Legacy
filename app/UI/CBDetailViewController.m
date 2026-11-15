@@ -267,9 +267,13 @@
                                             : @"Phim này chưa có tập nào.")
                                : nil;
     _messageLabel.text = _error;
-    // Nút Xem: xem tiếp tập trong lịch sử, hoặc tập đầu của bản đang chọn
-    NSString *histEp = CBStr(_hist, @"epTitle");
+    // Nút Xem: xem tiếp tập trong lịch sử, hoặc tập đầu của bản (mùa) đang chọn. Phim chia mùa ghi kèm mùa.
+    BOOL seasons = CBDetailSeasons(_detail);
+    NSString *histEp = CBStr(_hist, @"epTitle") ? CBDetailEpisodeLabel(_detail, CBStr(_hist, @"epUrl"), CBStr(_hist, @"epTitle")) : nil;
     NSString *play = histEp ? [NSString stringWithFormat:@"▶︎ Xem tiếp: %@", histEp] : (eps.count > 1 ? @"▶︎ Xem từ tập đầu" : @"▶︎ Xem");
+    if (!histEp && seasons && _group < (NSInteger)groups.count) {
+        play = [NSString stringWithFormat:@"▶︎ Xem %@", CBStr(groups[_group], @"name") ?: @"từ tập đầu"];
+    }
     [_playButton setTitle:play forState:UIControlStateNormal];
     _playButton.enabled = _detail && (eps.count || histEp);
     if (!_detail && _error) {  // tải lỗi: nút Xem thành «Thử lại» (trước phải lùi ra rồi vào lại)
@@ -280,13 +284,17 @@
     [_followButton setTitle:following ? @"Đang theo dõi" : @"Theo dõi" forState:UIControlStateNormal];
     _followButton.enabled = _detail != nil;
     // Đang xem dở phim nhiều tập: thêm «Mới nhất» (tập cuối của bản đang chọn) và «Từ tập đầu» (như bản Windows / iPad)
+    // Phim chia mùa: «Mới nhất» = tập cuối của mùa cuối, «Từ tập đầu» = Mùa 1, Tập 1 (không theo mùa đang chọn)
     NSString *histUrl = CBStr(_hist, @"epUrl");
-    NSDictionary *last = eps.lastObject;
-    BOOL showLatest = histUrl && eps.count > 1 && CBStr(last, @"url") && ![CBStr(last, @"url") isEqualToString:histUrl];
+    NSDictionary *last = seasons ? CBDetailLatestEpisode(_detail) : eps.lastObject;
+    NSInteger total = seasons ? CBDetailEpisodeCount(_detail) : (NSInteger)eps.count;
+    BOOL showLatest = histUrl && total > 1 && CBStr(last, @"url") && ![CBStr(last, @"url") isEqualToString:histUrl];
     _latestEp = showLatest ? CBStr(last, @"url") : nil;
-    [_latestButton setTitle:[NSString stringWithFormat:@"Mới nhất: %@ »", CBStr(last, @"title") ?: @""] forState:UIControlStateNormal];
+    NSString *lastLabel = seasons ? CBDetailEpisodeLabel(_detail, CBStr(last, @"url"), CBStr(last, @"title")) : CBStr(last, @"title");
+    [_latestButton setTitle:[NSString stringWithFormat:@"Mới nhất: %@ »", lastLabel ?: @""] forState:UIControlStateNormal];
     _latestButton.hidden = !showLatest;
-    _firstButton.hidden = !(histUrl && eps.count > 1 && ![CBStr(eps[0], @"url") isEqualToString:histUrl]);
+    NSString *firstUrl = CBStr([self firstEpisode], @"url");
+    _firstButton.hidden = !(histUrl && total > 1 && firstUrl && ![firstUrl isEqualToString:histUrl]);
     NSArray *links = CBArr(_item, @"links");
     _sourceButton.hidden = links.count < 2;
     [_sourceButton setTitle:[NSString stringWithFormat:@"⇄ %@ ▾", [self hostOf:CBStr(_detail, @"url") ?: CBStr(_item, @"url")]]
@@ -526,9 +534,21 @@
     if (_latestEp) [self playEpisode:_latestEp resume:YES];
 }
 
-- (void)firstTapped {
+/// Tập đầu: của bản đang chọn; phim chia mùa thì tập 1 của mùa đầu tiên
+- (NSDictionary *)firstEpisode {
     NSArray *eps = [self episodes];
-    if (eps.count) [self playEpisode:CBStr(eps[0], @"url") resume:NO];
+    if (CBDetailSeasons(_detail)) {
+        for (id g in CBArr(_detail, @"groups") ?: @[]) {
+            id e = CBArr(g, @"episodes").firstObject;
+            if (CBIsDict(e)) return e;
+        }
+    }
+    return eps.count && CBIsDict(eps[0]) ? eps[0] : nil;
+}
+
+- (void)firstTapped {
+    NSString *url = CBStr([self firstEpisode], @"url");
+    if (url) [self playEpisode:url resume:NO];
 }
 
 /// Phim có ở nhiều trang (thẻ trang chủ tổng hợp mang «links» của lõi): chọn trang khác → mở trang phim đó thay màn này

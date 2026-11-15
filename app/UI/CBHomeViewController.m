@@ -397,7 +397,7 @@
                                                          @{@"title": @"★ Điểm IMDb cao", @"url": @"imdb:top"}, nil];
     if ([CBFilterViewController available]) {
         [m addObject:@{@"title": @"Thể loại…", @"kind": @"genres"}];
-        [m addObject:@{@"title": @"Quốc gia…", @"kind": @"countries"}];
+        [m addObject:@{@"title": [[CBFilterViewController secondName] stringByAppendingString:@"…"], @"kind": @"countries"}];
     }
     if (CBIsArr(cats)) {
         for (id c in cats) if (CBStr(c, @"title") && CBStr(c, @"url")) [m addObject:c];

@@ -10,10 +10,11 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 WORK="${WORK:-$(cd "$ROOT/.." && pwd)}"
 UP="$WORK/upstream"
 if [[ ! -d "$UP/.git" ]]; then
-    git clone --quiet --depth 1 https://github.com/Circling5714/ChimToTV.git "$UP"
+    git clone --quiet --depth 1 https://github.com/conbangtv/ChimToTV.git "$UP"
 fi
 cd "$UP"
 git checkout -q -- .
+git clean -fdq  # tệp mới do bản vá lần trước tạo (vd fmp4_ts.rs) — không thì git apply báo «already exists»
 if [[ "${1:-}" == "--pull" ]]; then
     git pull -q --ff-only
 fi

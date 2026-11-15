@@ -123,6 +123,13 @@ static NSArray *CBParseSubtitles(NSString *text) {
     BOOL _everPlayed;   // tập này đã phát được (rớt về sau là mất kết nối, không phải «iOS 6 không phát được»)
     BOOL _retriedSame;  // đã thử lại server đang phát sau khi rớt giữa chừng
     BOOL _ended;        // đang ở cuối tập (hiện «Hết tập.»)
+    BOOL _versionFallback;      // tập đang mở là bản khác (vd Việt Sub) vì bản đang xem không có server phát được trên iOS 6
+    NSString *_fallbackFrom;    // tên bản ban đầu (vd «Thuyết Minh»)
+    NSMutableSet *_embedHosts;  // tên miền các server chỉ có trình phát nhúng (báo lỗi rõ hơn khi là trình phát có khoá)
+    // Chất lượng: luồng nhiều bản (dexter.pw: 1080p / 720p / 480p…) — lõi giữ đúng một bản khi địa chỉ có ?h=<chiều cao>
+    NSString *_localUrl;        // danh sách phát chính trên cổng phát nội bộ (chưa kèm ?h=)
+    NSArray *_levels;           // [{h, bw}] các bản, cao → thấp (đọc từ danh sách chính); < 2 bản thì không có mục «Chất lượng»
+    NSInteger _levelsToken;
     BOOL _seeking;      // đang tua — chưa cập nhật thanh tua theo thời gian cũ
     NSUInteger _tickCount;
     // Menu «⋯»
@@ -143,6 +150,14 @@ static NSArray *CBParseSubtitles(NSString *text) {
     NSUInteger _cueIdx;
     NSInteger _subToken;
     UILabel *_subLabel;
+    // Phụ đề chọn được (dexter.pw: OpenSubtitles / Subsource) — [{label, url, lang}], tải qua lõi (http.get)
+    NSArray *_subTracks;
+    NSInteger _subIdx;           // phụ đề đang dùng; -1 = tắt / chưa có
+    NSMutableSet *_subFailed;    // url phụ đề tải lỗi (tự chọn thì bỏ qua)
+    NSString *_subsLater;        // phim bộ: trang còn đang tìm phụ đề — hỏi lại (dexter.subtitlesFrom) tối đa ~3 phút
+    NSInteger _subsLaterTries;
+    BOOL _subsPolling;
+    double _subDelay;            // giây, + = chữ hiện muộn hơn (nhớ theo tập)
     CBLimitBlock _pendingBlock;  // hết giờ xem trước khi màn hiện xong — xử lý lúc viewDidAppear
     NSString *_blockedEp;
     long long _lastSave;
@@ -629,8 +644,16 @@ static NSArray *CBParseSubtitles(NSString *text) {
     for (NSUInteger k = 0; k < eps.count; k++) {
         if ([CBStr(eps[k], @"url") isEqualToString:_epUrl]) i = (NSInteger)k;
     }
-    // Mở từ «Xem tiếp» mà tập đó đã xem hết → sang tập sau
-    if (_resumeOpen && [CBPrefs finished:CBStr(eps[i], @"url") ?: @""] && i + 1 < (NSInteger)eps.count) i++;
+    // Mở từ «Xem tiếp» mà tập đó đã xem hết → sang tập sau (hết mùa thì tập đầu mùa sau)
+    if (_resumeOpen && [CBPrefs finished:CBStr(eps[i], @"url") ?: @""]) {
+        NSInteger next = [self seasonFrom:_groupIndex step:1];
+        if (i + 1 < (NSInteger)eps.count) {
+            i++;
+        } else if (next >= 0) {
+            _groupIndex = next;
+            i = 0;
+        }
+    }
     [self openEpisode:i];
 }
 
@@ -659,14 +682,31 @@ static NSArray *CBParseSubtitles(NSString *text) {
     [self loadIntro];
     [self setServerTitle:@"Server"];
     [self clearSubtitles];
+    _versionFallback = NO;
+    _fallbackFrom = nil;
+    _embedHosts = [NSMutableSet set];
+    _localUrl = nil;
+    _levels = nil;
+    _levelsToken++;
+    _subTracks = nil;
+    _subIdx = -1;
+    _subFailed = [NSMutableSet set];
+    _subsLater = nil;
+    _subsLaterTries = 0;
     _index = i;
     NSDictionary *ep = eps[i];
     _epUrl = CBStr(ep, @"url");
+    _subDelay = [CBPrefs subDelayFor:_epUrl];
     NSArray *groups = CBArr(_detail, @"groups");
-    NSString *groupName = groups.count > 1 ? [NSString stringWithFormat:@" (%@)", CBStr(groups[_groupIndex], @"name") ?: @""] : @"";
-    _titleLabel.text = [NSString stringWithFormat:@"%@ — %@%@", CBStr(_detail, @"title") ?: @"", CBStr(ep, @"title") ?: @"", groupName];
-    _prevButton.enabled = i > 0;
-    _nextButton.enabled = i + 1 < (NSInteger)eps.count;
+    NSString *groupName = CBStr(groups[_groupIndex], @"name") ?: @"";
+    if (CBDetailSeasons(_detail)) {  // «Dexter — Mùa 2, Tập 1 · It's Alive!»
+        _titleLabel.text = [NSString stringWithFormat:@"%@ — %@, %@", CBStr(_detail, @"title") ?: @"", groupName, CBStr(ep, @"title") ?: @""];
+    } else {
+        NSString *suffix = groups.count > 1 ? [NSString stringWithFormat:@" (%@)", groupName] : @"";
+        _titleLabel.text = [NSString stringWithFormat:@"%@ — %@%@", CBStr(_detail, @"title") ?: @"", CBStr(ep, @"title") ?: @"", suffix];
+    }
+    _prevButton.enabled = [self hasPrevious];
+    _nextButton.enabled = [self hasNext];
     _episodesButton.hidden = eps.count <= 1 && groups.count <= 1;
     [self.view setNeedsLayout];
     _resumeAt = [CBPrefs positionOf:_epUrl];
@@ -765,10 +805,17 @@ static NSArray *CBParseSubtitles(NSString *text) {
     for (NSInteger i = k + 1; i < (NSInteger)_probeResults.count; i++) {
         NSDictionary *v = _probeResults[i];
         if (!CBIsDict(v) || CBBool(v, @"pending", NO)) continue;
-        NSString *url = CBStr(v, @"url");
-        if (url && (CBBool(v, @"file", NO) || [[[NSURL URLWithString:url].path lowercaseString] hasSuffix:@".m3u8"])) return YES;
+        if ([self isDirect:v]) return YES;
     }
     return NO;
+}
+
+/// Link phát thẳng được bằng AVPlayer qua cổng phát nội bộ: tệp video, luồng .m3u8, hoặc luồng HLS không đuôi (`hls` — dexter.pw;
+/// đoạn fMP4 được lõi đổi thành MPEG-TS cho iOS 6)
+- (BOOL)isDirect:(NSDictionary *)v {
+    NSString *url = CBStr(v, @"url");
+    if (!url) return NO;
+    return CBBool(v, @"file", NO) || CBBool(v, @"hls", NO) || [[[NSURL URLWithString:url].path lowercaseString] hasSuffix:@".m3u8"];
 }
 
 - (void)advanceProbe:(NSInteger)t {
@@ -796,11 +843,11 @@ static NSArray *CBParseSubtitles(NSString *text) {
         }
         NSDictionary *s = _servers[_probeNext];
         NSString *url = CBStr(v, @"url");
-        NSString *path = [[NSURL URLWithString:url].path lowercaseString];
-        BOOL playable = url && (CBBool(v, @"file", NO) || [path hasSuffix:@".m3u8"]);
+        BOOL playable = [self isDirect:v];
         NSString *local = nil, *sub = nil;
         if (playable) {
-            NSMutableDictionary *args = [@{@"src": url, @"page": CBStr(_source, @"epUrl") ?: @"", @"hls": @NO} mutableCopy];
+            NSMutableDictionary *args = [@{@"src": url, @"page": CBStr(_source, @"epUrl") ?: @"",
+                                           @"hls": @(CBBool(v, @"hls", NO))} mutableCopy];
             if (CBStr(v, @"subtitle")) args[@"sub"] = CBStr(v, @"subtitle");
             id opened = [CBCore sync:@"media.open" args:args];
             local = CBStr(opened, @"url");
@@ -810,15 +857,21 @@ static NSArray *CBParseSubtitles(NSString *text) {
             _serverIdx = _probeNext;
             [self setServerTitle:CBStr(s, @"label")];
             if (sub) [self loadSubtitles:sub];
-            else [self clearSubtitles];
+            else [self setSubTracks:CBArr(v, @"subs") later:CBStr(v, @"subsLater")];
             [self showLoading:[NSString stringWithFormat:@"Đang tải %@…", CBStr(s, @"label") ?: @"server"]];
             CBLog(@"Phát %@ qua %@ (server %@, bắt đầu %ds)", url, local, CBStr(s, @"label"), _resumeAt);
             _probing = NO;
-            [self play:local];
+            if (![local isEqualToString:_localUrl]) {
+                _localUrl = local;
+                _levels = nil;
+                _levelsToken++;
+            }
+            [self play:[self withQuality:local]];
             return;
         }
         CBLog(@"Server %@: bỏ qua — %@", CBStr(s, @"label"),
               playable ? @"cổng phát nội bộ không mở được" : (url ? @"chỉ có trình phát nhúng" : CBStr(v, @"err")));
+        if (!playable && url && CBHostOf(url)) [_embedHosts addObject:CBHostOf(url)];
         _probeNext++;
     }
     _probing = NO;
@@ -828,9 +881,67 @@ static NSArray *CBParseSubtitles(NSString *text) {
                  action:@selector(retryEpisode)];
         return;
     }
-    [self showError:@"Không server nào phát được trên iOS 6 (các server còn lại chỉ có trình phát nhúng của trang).\n"
-                    @"Chọn lại server hoặc xem ở trang phim khác (vd KKPhim)."
-              retry:_servers.count > 0];
+    if (!_versionFallback && [self tryOtherVersion]) return;
+    [self showError:[self noServerMessage] retry:_servers.count > 0];
+}
+
+/// Số tập trong tên («Tập 05» → «5», «Tập 130->132» → «130»); nil nếu không có số
+static NSString *CBEpisodeNumber(NSString *title) {
+    NSScanner *sc = [NSScanner scannerWithString:title ?: @""];
+    [sc scanUpToCharactersFromSet:[NSCharacterSet decimalDigitCharacterSet] intoString:NULL];
+    NSInteger n;
+    return [sc scanInteger:&n] ? [NSString stringWithFormat:@"%ld", (long)n] : nil;
+}
+
+/// Bản đang xem (vd Thuyết Minh) không có server phát được trên iOS 6 cho tập này — thường vì server dự phòng KKPhim của bản
+/// đó chưa có tập (Tiên Nghịch: KKPhim Thuyết Minh mới tới tập 107, Vietsub tới 166): mở cùng tập ở bản khác của phim. Phim chia
+/// mùa thì không (nhóm là mùa, không phải bản).
+- (BOOL)tryOtherVersion {
+    NSArray *groups = CBArr(_detail, @"groups");
+    NSArray *eps = [self episodes];
+    if (CBDetailSeasons(_detail) || groups.count < 2 || _index >= (NSInteger)eps.count) return NO;
+    NSString *title = CBStr(eps[_index], @"title");
+    NSString *num = CBEpisodeNumber(title);
+    for (NSInteger g = 0; g < (NSInteger)groups.count; g++) {
+        if (g == _groupIndex) continue;
+        NSArray *other = CBArr(groups[g], @"episodes");
+        for (NSUInteger k = 0; k < other.count; k++) {
+            NSString *t = CBStr(other[k], @"title");
+            if (![t isEqualToString:title] && !(num && [CBEpisodeNumber(t) isEqualToString:num])) continue;
+            NSString *from = CBStr(groups[_groupIndex], @"name") ?: @"đang xem";
+            NSString *to = CBStr(groups[g], @"name") ?: @"khác";
+            CBLog(@"%@ bản %@: không server nào phát được — thử bản %@", title, from, to);
+            _groupIndex = g;
+            [self openEpisode:(NSInteger)k];
+            _versionFallback = YES;
+            _fallbackFrom = from;
+            [CBTheme toast:[NSString stringWithFormat:@"%@ bản %@ chưa có server phát được trên iOS 6 — mở bản %@.", title, from, to]];
+            return YES;
+        }
+    }
+    return NO;
+}
+
+/// Lời báo khi không server nào phát được: tập chỉ có trình phát có khoá riêng của trang (streamfree / NguonC — iOS 6 không chạy,
+/// app không vượt lớp khoá) thì nói rõ, kèm gợi ý chờ bản KKPhim
+- (NSString *)noServerMessage {
+    NSArray *eps = [self episodes];
+    NSString *ep = _index < (NSInteger)eps.count ? CBStr(eps[_index], @"title") : nil;
+    BOOL locked = NO;
+    for (NSString *h in _embedHosts) {
+        if ([h hasSuffix:@"streamfree.vip"] || [h rangeOfString:@"streamc."].location != NSNotFound) locked = YES;
+    }
+    NSString *msg = locked
+        ? [NSString stringWithFormat:@"%@ hiện chỉ có trình phát có khoá riêng của trang (streamfree / NguonC) — iOS 6 không phát được.\n"
+                                     @"Bản KKPhim thường có sau vài giờ tới một ngày: xem tập khác hoặc thử lại sau.", ep ?: @"Tập này"]
+        : @"Không server nào phát được trên iOS 6 (các server còn lại chỉ có trình phát nhúng của trang).\n"
+          @"Chọn lại server hoặc xem ở trang phim khác (vd KKPhim).";
+    if (_versionFallback) {
+        NSArray *groups = CBArr(_detail, @"groups");
+        msg = [msg stringByAppendingFormat:@"\n(Đã thử cả bản %@ và bản %@.)", _fallbackFrom ?: @"?",
+                                           _groupIndex < (NSInteger)groups.count ? CBStr(groups[_groupIndex], @"name") : @"?"];
+    }
+    return msg;
 }
 
 - (void)debugStreamFailed {
@@ -967,7 +1078,7 @@ static NSArray *CBParseSubtitles(NSString *text) {
     dispatch_async(dispatch_get_main_queue(), ^{
         if (self->_closed) return;
         [CBPrefs savePosition:self->_epUrl seconds:0 film:self->_filmUrl];
-        BOOL more = self->_index + 1 < (NSInteger)[self episodes].count;
+        BOOL more = [self hasNext];
         if (self->_sleepEndOfEp) {  // hẹn «hết tập này»: dừng ở đây, không tự chuyển tập
             self->_sleepEndOfEp = NO;
             self->_ended = YES;
@@ -977,7 +1088,7 @@ static NSArray *CBParseSubtitles(NSString *text) {
         }
         if ([CBPrefs autoNext] && more) {
             CBLog(@"Hết tập — tự chuyển tập sau");
-            [self openEpisode:self->_index + 1];
+            [self nextEpisode];
         } else {
             self->_ended = YES;
             if (more) [self showError:@"Hết tập." button:@"Tập sau »" action:@selector(nextEpisode)];
@@ -1013,6 +1124,7 @@ static NSArray *CBParseSubtitles(NSString *text) {
         [self setControlsVisible:NO];
         NSString *type = _serverIdx < (NSInteger)_servers.count ? CBStr(_servers[_serverIdx], @"type") : nil;
         if (type) [CBPrefs set:[self workedKey:_source] value:type];
+        if (!_levels) [self loadLevels];
     }
     if (++_tickCount % 2) return;  // phần dưới mỗi 0,5 giây (nhịp 0,25 giây chỉ để phụ đề khớp hơn)
     if (!_dragging && !_seeking) {
@@ -1146,12 +1258,50 @@ static NSArray *CBParseSubtitles(NSString *text) {
     [self setControlsVisible:YES];
 }
 
-- (void)nextEpisode {
-    if (_index + 1 < (NSInteger)[self episodes].count) [self openEpisode:_index + 1];
+/// Phim chia mùa: mùa có tập kế tiếp theo hướng step (±1), bỏ «Tập đặc biệt»; -1 = hết / phim không chia mùa
+- (NSInteger)seasonFrom:(NSInteger)g step:(NSInteger)step {
+    if (!CBDetailSeasons(_detail)) return -1;
+    NSArray *groups = CBArr(_detail, @"groups");
+    for (NSInteger k = g + step; k >= 0 && k < (NSInteger)groups.count; k += step) {
+        if ([CBStr(groups[k], @"name") isEqualToString:CBSpecialsGroup]) continue;
+        if (CBArr(groups[k], @"episodes").count) return k;
+    }
+    return -1;
 }
 
+- (BOOL)hasNext {
+    return _index + 1 < (NSInteger)[self episodes].count || [self seasonFrom:_groupIndex step:1] >= 0;
+}
+
+- (BOOL)hasPrevious {
+    return _index > 0 || [self seasonFrom:_groupIndex step:-1] >= 0;
+}
+
+/// Tập sau; hết mùa thì sang tập đầu của mùa sau
+- (void)nextEpisode {
+    if (_index + 1 < (NSInteger)[self episodes].count) {
+        [self openEpisode:_index + 1];
+        return;
+    }
+    NSInteger g = [self seasonFrom:_groupIndex step:1];
+    if (g < 0) return;
+    [self savePosition];
+    CBLog(@"Hết mùa — sang %@", CBStr(CBArr(_detail, @"groups")[g], @"name"));
+    _groupIndex = g;
+    [self openEpisode:0];
+}
+
+/// Tập trước; đang ở tập đầu mùa thì về tập cuối của mùa trước
 - (void)previousEpisode {
-    if (_index > 0) [self openEpisode:_index - 1];
+    if (_index > 0) {
+        [self openEpisode:_index - 1];
+        return;
+    }
+    NSInteger g = [self seasonFrom:_groupIndex step:-1];
+    if (g < 0) return;
+    [self savePosition];
+    _groupIndex = g;
+    [self openEpisode:(NSInteger)[self episodes].count - 1];
 }
 
 - (void)showServers {
@@ -1261,6 +1411,15 @@ static NSArray *CBParseSubtitles(NSString *text) {
 - (void)showMenu {
     __weak CBPlayerViewController *weakSelf = self;
     NSMutableArray *items = [NSMutableArray array];
+    if (_subTracks.count) {
+        NSString *cur = _subIdx >= 0 && _subIdx < (NSInteger)_subTracks.count ? CBStr(_subTracks[_subIdx], @"label") : @"tắt";
+        [items addObject:@[[NSString stringWithFormat:@"Phụ đề: %@…", cur], ^{ [weakSelf showSubtitleMenu]; }]];
+    } else if (_subsLater) {
+        [items addObject:@[@"Phụ đề: trang đang tìm…", ^{ [weakSelf showToast:@"Trang đang tìm phụ đề — có là tự hiện"]; }]];
+    }
+    if (_levels.count >= 2) {
+        [items addObject:@[[NSString stringWithFormat:@"Chất lượng: %@…", [self qualityText]], ^{ [weakSelf showQualities]; }]];
+    }
     NSString *speed = [NSString stringWithFormat:@"Tốc độ: %@", [self speedText:[self playRate]]];
     if (_item && !_item.canPlayFastForward && !_item.canPlaySlowForward) speed = @"Tốc độ: 1× (server này không đổi được)";
     [items addObject:@[speed, ^{ [weakSelf showSpeeds]; }]];
@@ -1282,6 +1441,126 @@ static NSArray *CBParseSubtitles(NSString *text) {
     [items addObject:@[sleep, ^{ [weakSelf showSleep]; }]];
     [items addObject:@[@"Tải lại tập này", ^{ [weakSelf reloadEpisode]; }]];
     [self sheet:CBStr(_detail, @"title") items:items];
+}
+
+#pragma mark - Chất lượng
+
+/// Địa chỉ phát: danh sách chính kèm ?h=<chiều cao> khi người xem đã chọn chất lượng (lõi chỉ giữ bản đó)
+- (NSString *)withQuality:(NSString *)url {
+    NSInteger q = [CBPrefs videoQuality];
+    if (q <= 0 || ![url hasSuffix:@".m3u8"]) return url;
+    return [url stringByAppendingFormat:@"?h=%ld", (long)q];
+}
+
+/// Các bản của luồng (RESOLUTION / BANDWIDTH + địa chỉ trong danh sách chính): [{h, bw, uri}] cao → thấp, mỗi chiều cao một bản
+static NSArray *CBParseLevels(NSString *text) {
+    NSMutableDictionary *byHeight = [NSMutableDictionary dictionary];
+    NSArray *lines = [text componentsSeparatedByString:@"\n"];
+    for (NSUInteger i = 0; i < lines.count; i++) {
+        NSString *l = [lines[i] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        if (![l hasPrefix:@"#EXT-X-STREAM-INF:"]) continue;
+        double bw = 0;
+        NSInteger h = 0;
+        for (NSString *attr in [[l substringFromIndex:18] componentsSeparatedByString:@","]) {
+            if ([attr hasPrefix:@"BANDWIDTH="]) bw = [[attr substringFromIndex:10] doubleValue];
+            if ([attr hasPrefix:@"RESOLUTION="]) h = [[[attr substringFromIndex:11] componentsSeparatedByString:@"x"].lastObject integerValue];
+        }
+        NSString *uri = @"";
+        for (NSUInteger k = i + 1; k < lines.count; k++) {
+            NSString *u = [lines[k] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+            if (u.length && ![u hasPrefix:@"#"]) {
+                uri = u;
+                break;
+            }
+        }
+        if (h > 0 && bw >= [byHeight[@(h)][@"bw"] doubleValue]) byHeight[@(h)] = @{@"h": @(h), @"bw": @(bw), @"uri": uri};
+    }
+    NSMutableArray *out = [NSMutableArray array];
+    for (NSNumber *h in [[[byHeight allKeys] sortedArrayUsingSelector:@selector(compare:)] reverseObjectEnumerator]) {
+        [out addObject:byHeight[h]];
+    }
+    return out;
+}
+
+/// Đọc danh sách chính (không kèm ?h=) từ cổng phát nội bộ khi đã phát được — để biết các bản cho mục «Chất lượng»
+- (void)loadLevels {
+    NSString *url = _localUrl;
+    if (![url hasSuffix:@".m3u8"]) return;
+    NSInteger t = ++_levelsToken;
+    NSURLRequest *req = [NSURLRequest requestWithURL:[NSURL URLWithString:url] cachePolicy:NSURLRequestReloadIgnoringLocalCacheData
+                                     timeoutInterval:30];
+    __weak CBPlayerViewController *weakSelf = self;
+    [NSURLConnection sendAsynchronousRequest:req queue:[NSOperationQueue mainQueue]
+                           completionHandler:^(NSURLResponse *resp, NSData *data, NSError *err) {
+        CBPlayerViewController *s = weakSelf;
+        if (!s || t != s->_levelsToken || s->_closed) return;
+        NSString *text = data ? [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] : nil;
+        s->_levels = CBParseLevels(text ?: @"");
+        if (s->_levels.count >= 2) {
+            CBLog(@"Luồng có %lu bản: %@", (unsigned long)s->_levels.count,
+                  [[s->_levels valueForKey:@"h"] componentsJoinedByString:@", "]);
+        }
+    }];
+}
+
+- (NSString *)levelName:(NSInteger)h {
+    if (h >= 2000) return @"4K";
+    if (h >= 1400) return @"2K";
+    return [NSString stringWithFormat:@"%ldp", (long)h];
+}
+
+/// Bản đang phát: theo địa chỉ danh sách con trong nhật ký truy cập của AVPlayer; không có thì bản có BANDWIDTH gần nhất
+/// (indicatedBitrate của iOS 6 là tốc độ đo được, không đúng bằng BANDWIDTH ghi trong danh sách); 0 = chưa biết
+- (NSInteger)playingHeight {
+    AVPlayerItemAccessLogEvent *ev = _item.accessLog.events.lastObject;
+    for (NSDictionary *l in _levels) {
+        if (ev.URI.length && [ev.URI isEqualToString:l[@"uri"]]) return [l[@"h"] integerValue];
+    }
+    double bw = ev ? ev.indicatedBitrate : 0;
+    NSInteger best = 0;
+    double diff = INFINITY;
+    for (NSDictionary *l in _levels) {
+        double d = fabs([l[@"bw"] doubleValue] - bw);
+        if (bw > 0 && d < diff) {
+            diff = d;
+            best = [l[@"h"] integerValue];
+        }
+    }
+    return best;
+}
+
+- (NSString *)qualityText {
+    NSInteger q = [CBPrefs videoQuality], now = [self playingHeight];
+    if (q <= 0) return now ? [NSString stringWithFormat:@"Tự động (đang %@)", [self levelName:now]] : @"Tự động";
+    return now ? [self levelName:now] : [NSString stringWithFormat:@"tối đa %@", [self levelName:q]];
+}
+
+- (void)showQualities {
+    __weak CBPlayerViewController *weakSelf = self;
+    NSInteger q = [CBPrefs videoQuality];
+    NSMutableArray *items = [NSMutableArray array];
+    [items addObject:@[q <= 0 ? @"✓ Tự động (theo mạng)" : @"Tự động (theo mạng)", ^{ [weakSelf setQuality:0]; }]];
+    for (NSDictionary *l in _levels) {
+        NSInteger h = [l[@"h"] integerValue];
+        NSString *t = [NSString stringWithFormat:@"%@ (%.1f Mbps)", [self levelName:h], [l[@"bw"] doubleValue] / 1e6];
+        t = [t stringByReplacingOccurrencesOfString:@"." withString:@","];
+        [items addObject:@[q == h ? [@"✓ " stringByAppendingString:t] : t, ^{ [weakSelf setQuality:h]; }]];
+    }
+    [self sheet:@"Chất lượng (nhớ cho người xem này)" items:items];
+}
+
+/// Đổi chất lượng: nhớ cho người xem, mở lại luồng đúng chỗ đang xem (AVPlayer iOS 6 không đổi bản giữa chừng theo ý mình được)
+- (void)setQuality:(NSInteger)h {
+    if (h == [CBPrefs videoQuality]) return;
+    [CBPrefs setVideoQuality:h];
+    CBLog(@"Chất lượng: %@", h ? [self levelName:h] : @"tự động");
+    if (!_localUrl || !_player) return;
+    double now = [self now];
+    if (_started && now > 5) _resumeAt = (int)now;
+    _seekedResume = NO;
+    _started = NO;
+    [self showLoading:[NSString stringWithFormat:@"Đang chuyển sang %@…", h ? [self levelName:h] : @"tự động"]];
+    [self play:[self withQuality:_localUrl]];
 }
 
 - (void)showSpeeds {
@@ -1429,7 +1708,158 @@ static NSArray *CBParseSubtitles(NSString *text) {
     }];
 }
 
+/// Phụ đề chọn được của server vừa mở (dexter.pw): tự chọn theo ngôn ngữ ưa dùng; trang còn đang tìm (phim bộ) thì hỏi lại sau
+- (void)setSubTracks:(NSArray *)tracks later:(NSString *)later {
+    NSMutableArray *list = [NSMutableArray array];
+    for (id s in tracks ?: @[]) if (CBStr(s, @"url")) [list addObject:s];
+    if (list.count && [list isEqualToArray:_subTracks ?: @[]]) return;  // đổi server cùng tập: giữ phụ đề đang dùng
+    [self clearSubtitles];
+    _subTracks = list;
+    _subIdx = -1;
+    _subsLater = list.count ? nil : later;
+    if (list.count) [self autoPickSubtitle];
+    else if (_subsLater) [self pollSubtitlesLater];
+}
+
+/// Ngôn ngữ ưa dùng của người xem trước (tiếng Việt mặc định), rồi ngôn ngữ khác; bỏ tệp đã lỗi. Đã chọn «Tắt» thì thôi.
+- (void)autoPickSubtitle {
+    NSString *lang = [CBPrefs subLang];
+    if ([lang isEqualToString:@"off"]) return;
+    for (int pass = 0; pass < 2; pass++) {
+        for (NSUInteger i = 0; i < _subTracks.count; i++) {
+            NSDictionary *s = _subTracks[i];
+            if ([_subFailed containsObject:CBStr(s, @"url")]) continue;
+            if (pass == 0 && ![CBStr(s, @"lang") isEqualToString:lang]) continue;
+            [self useSubtitle:(NSInteger)i];
+            return;
+        }
+    }
+    _subIdx = -1;
+    if (_subTracks.count) CBLog(@"Phụ đề: không tệp nào dùng được");
+}
+
+/// Tải phụ đề thứ i qua lõi (DNS mã hoá / vượt chặn / proxy; iOS 6 không tự vào được trang), đọc ở luồng nền
+- (void)useSubtitle:(NSInteger)i {
+    if (i < 0 || i >= (NSInteger)_subTracks.count) return;
+    [self clearSubtitles];
+    _subIdx = i;
+    NSDictionary *track = _subTracks[i];
+    NSString *url = CBStr(track, @"url");
+    NSInteger t = _subToken;
+    __weak CBPlayerViewController *weakSelf = self;
+    // Trang tìm tệp chậm rồi mới báo 404 (có tệp treo 30–40 giây): quá 20 giây chưa trả lời thì thử tệp sau (như bản TV);
+    // trả lời muộn bị bỏ qua nhờ mã _subToken
+    __block BOOL answered = NO;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(20 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        CBPlayerViewController *s = weakSelf;
+        if (answered || !s || t != s->_subToken || s->_closed) return;
+        CBLog(@"Phụ đề %@: quá 20 giây chưa tải xong — thử tệp khác", CBStr(track, @"label"));
+        [s->_subFailed addObject:url];
+        [s autoPickSubtitle];
+    });
+    [CBCore call:@"http.get" args:@{@"url": url} done:^(id ok, NSString *err) {
+        answered = YES;
+        NSInteger code = (NSInteger)CBNum(ok, @"code", 0);
+        NSString *text = code >= 200 && code < 300 ? CBStr(ok, @"text") : nil;
+        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+            NSRange head = text ? [text rangeOfString:@"WEBVTT"] : NSMakeRange(NSNotFound, 0);
+            NSArray *cues = text ? CBParseSubtitles(head.location != NSNotFound ? [text substringFromIndex:head.location] : text) : nil;
+            dispatch_async(dispatch_get_main_queue(), ^{
+                CBPlayerViewController *s = weakSelf;
+                if (!s || t != s->_subToken || s->_closed) return;
+                if (cues.count) {
+                    CBLog(@"Phụ đề %@: %lu câu", CBStr(track, @"label"), (unsigned long)cues.count);
+                    s->_cues = cues;
+                    s->_cueIdx = 0;
+                    return;
+                }
+                // Tệp lỗi (vài tệp trang báo 404 «No such subtitle») / rỗng: thử tệp sau
+                CBLog(@"Phụ đề %@ lỗi (HTTP %ld%@) — thử tệp khác", CBStr(track, @"label"), (long)code,
+                      err ? [@", " stringByAppendingString:err] : @"");
+                [s->_subFailed addObject:url];
+                [s autoPickSubtitle];
+            });
+        });
+    }];
+}
+
+/// Phim bộ dexter.pw: lúc mở tập trang còn đang tìm phụ đề — hỏi lại 15 giây một lần, tối đa 12 lần (~3 phút)
+- (void)pollSubtitlesLater {
+    if (_subsPolling || !_subsLater) return;
+    _subsPolling = YES;
+    NSString *url = _subsLater;
+    __weak CBPlayerViewController *weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(15 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        CBPlayerViewController *s = weakSelf;
+        if (!s) return;
+        s->_subsPolling = NO;
+        if (s->_closed || ![s->_subsLater isEqualToString:url]) return;
+        [CBCore call:@"dexter.subtitlesFrom" args:@{@"url": url} done:^(id ok, NSString *err) {
+            CBPlayerViewController *me = weakSelf;
+            if (!me || me->_closed || ![me->_subsLater isEqualToString:url]) return;
+            NSArray *subs = CBArr(ok, @"subs");
+            BOOL pending = CBBool(ok, @"pending", NO);
+            CBLog(@"Hỏi lại phụ đề (lần %ld): %lu tệp%@%@", (long)me->_subsLaterTries + 1, (unsigned long)subs.count,
+                  pending ? @", trang còn đang tìm" : @"", err ? [@" — lỗi " stringByAppendingString:err] : @"");
+            if (subs.count) {
+                [me setSubTracks:subs later:nil];
+                if (me->_subIdx >= 0) [me showToast:@"Đã có phụ đề"];
+                return;
+            }
+            if ((pending || err) && ++me->_subsLaterTries < 12) [me pollSubtitlesLater];
+            else me->_subsLater = nil;
+        }];
+    });
+}
+
+- (void)showSubtitleMenu {
+    __weak CBPlayerViewController *weakSelf = self;
+    NSMutableArray *items = [NSMutableArray array];
+    for (NSUInteger i = 0; i < _subTracks.count; i++) {
+        NSString *label = CBStr(_subTracks[i], @"label") ?: @"?";
+        if ([_subFailed containsObject:CBStr(_subTracks[i], @"url")]) label = [label stringByAppendingString:@" (lỗi)"];
+        if ((NSInteger)i == _subIdx) label = [@"✓ " stringByAppendingString:label];
+        [items addObject:@[label, ^{ [weakSelf chooseSubtitle:(NSInteger)i]; }]];
+    }
+    [items addObject:@[_subIdx < 0 ? @"✓ Tắt phụ đề" : @"Tắt phụ đề", ^{ [weakSelf chooseSubtitle:-1]; }]];
+    if (_subIdx >= 0) {
+        [items addObject:@[@"Chữ sớm hơn 0,5 s", ^{ [weakSelf shiftSubtitles:-0.5]; }]];
+        [items addObject:@[@"Chữ muộn hơn 0,5 s", ^{ [weakSelf shiftSubtitles:0.5]; }]];
+    }
+    [self sheet:_subDelay != 0 ? [NSString stringWithFormat:@"Phụ đề (đang lệch %@)", [self delayText]] : @"Phụ đề" items:items];
+}
+
+- (NSString *)delayText {
+    return [[NSString stringWithFormat:@"%@%.1f s", _subDelay > 0 ? @"+" : @"", _subDelay] stringByReplacingOccurrencesOfString:@"."
+                                                                                                                  withString:@","];
+}
+
+/// Chọn phụ đề (i < 0: tắt) — nhớ ngôn ngữ cho người xem này (các tập / phim sau tự chọn theo)
+- (void)chooseSubtitle:(NSInteger)i {
+    if (i < 0 || i >= (NSInteger)_subTracks.count) {
+        [self clearSubtitles];
+        _subIdx = -1;
+        [CBPrefs setSubLang:@"off"];
+        [self showToast:@"Tắt phụ đề"];
+        return;
+    }
+    NSDictionary *track = _subTracks[i];
+    [CBPrefs setSubLang:CBStr(track, @"lang") ?: @"vi"];
+    [_subFailed removeObject:CBStr(track, @"url")];
+    [self useSubtitle:i];
+    [self showToast:CBStr(track, @"label") ?: @"Phụ đề"];
+}
+
+/// Chữ sớm / muộn hơn (nhớ theo tập, như bản TV / Windows)
+- (void)shiftSubtitles:(double)delta {
+    _subDelay = round((_subDelay + delta) * 10) / 10;
+    [CBPrefs setSubDelay:_subDelay for:_epUrl];
+    _cueIdx = 0;
+    [self showToast:_subDelay == 0 ? @"Phụ đề khớp gốc" : [@"Phụ đề " stringByAppendingString:[self delayText]]];
+}
+
 - (void)updateSubtitle:(double)now {
+    now -= _subDelay;
     if (!_cues || !isfinite(now)) return;
     NSUInteger n = _cues.count;
     if (_cueIdx >= n || [_cues[_cueIdx][@"s"] doubleValue] > now) _cueIdx = 0;  // tua lùi
@@ -1496,10 +1926,17 @@ static NSArray *CBParseSubtitles(NSString *text) {
 - (NSString *)statusLine {
     double now = _player ? CMTimeGetSeconds(_player.currentTime) : 0;
     AVPlayerItemAccessLogEvent *ev = _item.accessLog.events.lastObject;
-    return [NSString stringWithFormat:@"%@ | %@ / %@ | rate %.2f (chọn %.2f) | server %@ | đệm %@ | bitrate %.0f kbps | khựng %ld | RAM %.0f MB",
+    // Rãnh AVPlayer đang có (luồng tiếng tách riêng — dexter.pw server 20 — thì phải có cả «soun»); bản đang phát theo BANDWIDTH
+    NSMutableArray *tracks = [NSMutableArray array];
+    for (AVPlayerItemTrack *t in _item.tracks) [tracks addObject:[NSString stringWithFormat:@"%@%@", t.assetTrack.mediaType ?: @"?", t.enabled ? @"" : @"(tắt)"]];
+    return [NSString stringWithFormat:@"%@ | %@ / %@ | rate %.2f (chọn %.2f) | server %@ | đệm %@ | bitrate %.0f kbps (bản %.0f kbps, %@) | rãnh %@ | khựng %ld | phụ đề %@%@ | RAM %.0f MB",
             _titleLabel.text, [CBTheme time:now], [CBTheme time:CBDuration(_item)], _player.rate, _speed,
             CBStr(_servers.count > _serverIdx ? _servers[_serverIdx] : nil, @"label"),
-            _item.playbackLikelyToKeepUp ? @"đủ" : @"thiếu", ev.observedBitrate / 1000, (long)ev.numberOfStalls, CBResidentMB()];
+            _item.playbackLikelyToKeepUp ? @"đủ" : @"thiếu", ev.observedBitrate / 1000, ev.indicatedBitrate / 1000,
+            _levels.count >= 2 ? [self qualityText] : @"một bản",
+            [tracks componentsJoinedByString:@","], (long)ev.numberOfStalls,
+            _subIdx >= 0 && _subIdx < (NSInteger)_subTracks.count ? CBStr(_subTracks[_subIdx], @"label") : (_cues ? @"rời" : @"không"),
+            _subDelay != 0 ? [@" lệch " stringByAppendingString:[self delayText]] : @"", CBResidentMB()];
 }
 
 @end
