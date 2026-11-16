@@ -417,6 +417,12 @@ static void CBForceOrientation(UIInterfaceOrientation o) {
     return [CBTheme isPad] ? UIInterfaceOrientationMaskAll : UIInterfaceOrientationMaskLandscape;
 }
 
+// iOS 5 hỏi hàm này (iOS 6 dùng supportedInterfaceOrientations). Phải khai báo ngay trong lớp: màn trình bày đè lên (modal) trên
+// iOS 5 không theo hàm thay chung ở CBCompat — trình phát bị kéo về dọc, không xoay ngang được (iPad 1, 0.5.0)
+- (BOOL)shouldAutorotateToInterfaceOrientation:(UIInterfaceOrientation)o {
+    return ([self supportedInterfaceOrientations] & (1u << o)) != 0;
+}
+
 - (UIInterfaceOrientation)preferredInterfaceOrientationForPresentation {
     if (![CBTheme isPad]) return UIInterfaceOrientationLandscapeRight;
     return [UIApplication sharedApplication].statusBarOrientation;
@@ -975,7 +981,7 @@ static void CBForceOrientation(UIInterfaceOrientation o) {
                 _levels = nil;
                 _levelsToken++;
             }
-            [self play:[self withQuality:local]];
+            [self playLocalWithQuality];
             return;
         }
         CBLog(@"Server %@: bỏ qua — %@", CBStr(s, @"label"),
@@ -1563,25 +1569,61 @@ static void CBForceOrientation(UIInterfaceOrientation o) {
 
 #pragma mark - Chất lượng
 
-/// Địa chỉ phát: danh sách chính kèm ?h=<chiều cao> khi người xem đã chọn chất lượng (lõi chỉ giữ bản đó)
+/// Địa chỉ phát: danh sách chính kèm ?h=<chiều cao> khi người xem đã chọn chất lượng (lõi chỉ giữ bản cao nhất không quá mức đó)
 - (NSString *)withQuality:(NSString *)url {
-    NSInteger q = [CBPrefs videoQuality];
+    NSInteger q = [self effectiveQuality];
     if (q <= 0 || ![url hasSuffix:@".m3u8"]) return url;
     return [url stringByAppendingFormat:@"?h=%ld", (long)q];
 }
 
-/// Các bản của luồng (RESOLUTION / BANDWIDTH + địa chỉ trong danh sách chính): [{h, bw, uri}] cao → thấp, mỗi chiều cao một bản
+/// Mức sẽ phát thật: bản cao nhất máy giải mã được, không quá mức người xem chọn (_levels chỉ còn bản máy phát được). Vd phim
+/// khổ siêu rộng của dexter.pw: «1080p» là 2592×1080, H.264 mức 5.0 — A5 / A6 chỉ tới 1920×1088 (iOS 6 báo -11848 «không thể
+/// mở») → chọn 1080p thì phát 720p (1728×720)
+- (NSInteger)effectiveQuality {
+    NSInteger q = [CBPrefs videoQuality];
+    if (q <= 0 || !_levels.count) return q;
+    NSInteger best = 0, lowest = 0;
+    for (NSDictionary *l in _levels) {  // cao → thấp
+        NSInteger h = [l[@"h"] integerValue];
+        if (!best && h <= q) best = h;
+        lowest = h;
+    }
+    return best ?: lowest;
+}
+
+/// Máy giải mã được bản này? H.264 phần cứng: A4 (iPad 1, iPhone 4 — máy RAM 256 MB) tới 1280×720; A5 / A6 tới 1920×1088, mức 4.2
+static BOOL CBDecodable(NSInteger w, NSInteger h, NSInteger avcLevel) {
+    BOOL a4 = [NSProcessInfo processInfo].physicalMemory < 300ull * 1024 * 1024;
+    NSInteger maxW = a4 ? 1280 : 1920, maxH = a4 ? 720 : 1088;
+    if (w > 0 && h > 0 && (MAX(w, h) > maxW || MIN(w, h) > maxH)) return NO;
+    return avcLevel <= 42;
+}
+
+/// Các bản của luồng (RESOLUTION / BANDWIDTH / CODECS + địa chỉ trong danh sách chính): [{h, bw, uri}] cao → thấp, mỗi chiều cao
+/// một bản; bỏ bản máy này không giải mã được (trừ khi không còn bản nào)
 static NSArray *CBParseLevels(NSString *text) {
-    NSMutableDictionary *byHeight = [NSMutableDictionary dictionary];
+    NSMutableDictionary *byHeight = [NSMutableDictionary dictionary], *all = [NSMutableDictionary dictionary];
     NSArray *lines = [text componentsSeparatedByString:@"\n"];
+    static NSRegularExpression *avc;
+    if (!avc) avc = [NSRegularExpression regularExpressionWithPattern:@"avc1\\.[0-9a-fA-F]{4}([0-9a-fA-F]{2})" options:0 error:NULL];
     for (NSUInteger i = 0; i < lines.count; i++) {
         NSString *l = [lines[i] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
         if (![l hasPrefix:@"#EXT-X-STREAM-INF:"]) continue;
         double bw = 0;
-        NSInteger h = 0;
+        NSInteger w = 0, h = 0, level = 0;
         for (NSString *attr in [[l substringFromIndex:18] componentsSeparatedByString:@","]) {
             if ([attr hasPrefix:@"BANDWIDTH="]) bw = [[attr substringFromIndex:10] doubleValue];
-            if ([attr hasPrefix:@"RESOLUTION="]) h = [[[attr substringFromIndex:11] componentsSeparatedByString:@"x"].lastObject integerValue];
+            if ([attr hasPrefix:@"RESOLUTION="]) {
+                NSArray *wh = [[attr substringFromIndex:11] componentsSeparatedByString:@"x"];
+                w = [wh.firstObject integerValue];
+                h = [wh.lastObject integerValue];
+            }
+        }
+        NSTextCheckingResult *m = [avc firstMatchInString:l options:0 range:NSMakeRange(0, l.length)];
+        if (m) {
+            unsigned v = 0;
+            [[NSScanner scannerWithString:[l substringWithRange:[m rangeAtIndex:1]]] scanHexInt:&v];
+            level = v;
         }
         NSString *uri = @"";
         for (NSUInteger k = i + 1; k < lines.count; k++) {
@@ -1591,8 +1633,16 @@ static NSArray *CBParseLevels(NSString *text) {
                 break;
             }
         }
-        if (h > 0 && bw >= [byHeight[@(h)][@"bw"] doubleValue]) byHeight[@(h)] = @{@"h": @(h), @"bw": @(bw), @"uri": uri};
+        if (h <= 0) continue;
+        NSDictionary *entry = @{@"h": @(h), @"bw": @(bw), @"uri": uri};
+        if (bw >= [all[@(h)][@"bw"] doubleValue]) all[@(h)] = entry;
+        if (!CBDecodable(w, h, level)) {
+            CBLog(@"Bỏ bản %ldx%ld (H.264 mức %.1f): máy này không giải mã được", (long)w, (long)h, level / 10.0);
+            continue;
+        }
+        if (bw >= [byHeight[@(h)][@"bw"] doubleValue]) byHeight[@(h)] = entry;
     }
+    if (!byHeight.count) byHeight = all;  // không bản nào vừa: giữ hết (còn hơn không có gì)
     NSMutableArray *out = [NSMutableArray array];
     for (NSNumber *h in [[[byHeight allKeys] sortedArrayUsingSelector:@selector(compare:)] reverseObjectEnumerator]) {
         [out addObject:byHeight[h]];
@@ -1600,10 +1650,39 @@ static NSArray *CBParseLevels(NSString *text) {
     return out;
 }
 
-/// Đọc danh sách chính (không kèm ?h=) từ cổng phát nội bộ khi đã phát được — để biết các bản cho mục «Chất lượng»
+/// Phát danh sách chính của cổng phát nội bộ theo chất lượng đã chọn. Đã chọn cố định (vd 1080p) mà chưa biết các bản: đọc danh
+/// sách chính trước để không mở bản máy không giải mã được (xem effectiveQuality)
+- (void)playLocalWithQuality {
+    NSString *local = _localUrl;
+    if ([CBPrefs videoQuality] <= 0 || ![local hasSuffix:@".m3u8"] || _levels) {
+        [self play:[self withQuality:local]];
+        return;
+    }
+    __weak CBPlayerViewController *weakSelf = self;
+    [self loadLevelsThen:^{
+        CBPlayerViewController *s = weakSelf;
+        if (!s || s->_closed || ![local isEqualToString:s->_localUrl]) return;
+        NSInteger q = [CBPrefs videoQuality], eff = [s effectiveQuality];
+        if (eff != q) {
+            CBLog(@"Chất lượng %@: phim này không có bản máy phát được — phát %@", [s levelName:q], [s levelName:eff]);
+            [CBTheme toast:[NSString stringWithFormat:@"Bản %@ của phim này máy không phát được — đang phát %@",
+                                                      [s levelName:q], [s levelName:eff]]];
+        }
+        [s play:[s withQuality:local]];
+    }];
+}
+
+/// Đọc danh sách chính (không kèm ?h=) từ cổng phát nội bộ — để biết các bản cho mục «Chất lượng» (và mức phát thật)
 - (void)loadLevels {
+    [self loadLevelsThen:nil];
+}
+
+- (void)loadLevelsThen:(dispatch_block_t)done {
     NSString *url = _localUrl;
-    if (![url hasSuffix:@".m3u8"]) return;
+    if (![url hasSuffix:@".m3u8"]) {
+        if (done) done();
+        return;
+    }
     NSInteger t = ++_levelsToken;
     NSURLRequest *req = [NSURLRequest requestWithURL:[NSURL URLWithString:url] cachePolicy:NSURLRequestReloadIgnoringLocalCacheData
                                      timeoutInterval:30];
@@ -1614,10 +1693,16 @@ static NSArray *CBParseLevels(NSString *text) {
         if (!s || t != s->_levelsToken || s->_closed) return;
         NSString *text = data ? [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] : nil;
         s->_levels = CBParseLevels(text ?: @"");
+#ifdef DEBUG
+        for (NSString *line in [text componentsSeparatedByString:@"\n"]) {
+            if ([line hasPrefix:@"#EXT-X-STREAM-INF:"] || [line hasPrefix:@"#EXT-X-MEDIA:"]) CBLog(@"[danh sách chính] %@", line);
+        }
+#endif
         if (s->_levels.count >= 2) {
             CBLog(@"Luồng có %lu bản: %@", (unsigned long)s->_levels.count,
                   [[s->_levels valueForKey:@"h"] componentsJoinedByString:@", "]);
         }
+        if (done) done();
     }];
 }
 
@@ -1678,7 +1763,7 @@ static NSArray *CBParseLevels(NSString *text) {
     _seekedResume = NO;
     _started = NO;
     [self showLoading:[NSString stringWithFormat:@"Đang chuyển sang %@…", h ? [self levelName:h] : @"tự động"]];
-    [self play:[self withQuality:_localUrl]];
+    [self playLocalWithQuality];
 }
 
 - (void)showSpeeds {

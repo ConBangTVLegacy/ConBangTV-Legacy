@@ -28,6 +28,12 @@
     return [CBTheme isPad] ? UIInterfaceOrientationMaskAll : UIInterfaceOrientationMaskPortrait;
 }
 
+// iOS 5 hỏi hàm này (iOS 6 dùng supportedInterfaceOrientations). Phải khai báo ngay trong lớp: màn trình bày đè lên (modal) trên
+// iOS 5 không theo hàm thay chung ở CBCompat — trình phát bị kéo về dọc, không xoay ngang được (iPad 1, 0.5.0)
+- (BOOL)shouldAutorotateToInterfaceOrientation:(UIInterfaceOrientation)o {
+    return ([self supportedInterfaceOrientations] & (1u << o)) != 0;
+}
+
 - (UIInterfaceOrientation)preferredInterfaceOrientationForPresentation {
     return [CBTheme isPad] ? [UIApplication sharedApplication].statusBarOrientation : UIInterfaceOrientationPortrait;
 }

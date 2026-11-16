@@ -6,7 +6,9 @@
 //   • UILabel minimumScaleFactor (iOS 6) → minimumFontSize của iOS 5.
 //   • AVPlayerItem canPlaySlowForward (iOS 6) → NO.
 //   • Xoay màn hình: iOS 5 hỏi shouldAutorotateToInterfaceOrientation:, iOS 6 hỏi supportedInterfaceOrientations — màn nào
-//     khai báo supportedInterfaceOrientations thì iOS 5 cũng theo đúng mặt nạ đó.
+//     khai báo supportedInterfaceOrientations thì iOS 5 cũng theo đúng mặt nạ đó. Riêng màn trình bày đè lên (modal: trình phát, «Ai đang
+//     xem?», miễn trừ) iOS 5 không theo hàm thay chung này — các màn đó tự khai báo shouldAutorotateToInterfaceOrientation:
+//     (0.5.0 trên iPad 1: trình phát bị kéo về dọc); thanh điều hướng cũng tự khai báo (CBNavController).
 //   • Thiếu bộ nhớ: iOS 5 gỡ view của các màn đang khuất (viewDidUnload) rồi dựng lại khi quay về — các màn của app dựng view
 //     một lần trong viewDidLoad (đăng ký thông báo, tải dữ liệu…), dựng lại sẽ tải lại / đăng ký hai lần. iOS 6 không gỡ view
 //     nữa → trên iOS 5 cũng giữ view cho các màn của app (ảnh bìa vẫn tự xoá khỏi bộ đệm khi thiếu bộ nhớ).
