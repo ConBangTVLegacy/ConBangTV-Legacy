@@ -18,6 +18,10 @@
 #import "CBSyncViewController.h"
 #import "CBTouch.h"
 #import "CBJSON.h"
+#import "CBIPTV.h"
+#import "CBLivePlayerViewController.h"
+#import "CBTVSettingsViewController.h"
+#import "CBTVViewController.h"
 #import <AVFoundation/AVFoundation.h>
 #import <QuartzCore/QuartzCore.h>
 #import <UIKit/UIKit.h>
@@ -137,6 +141,127 @@
     return [vc isKindOfClass:[CBPlayerViewController class]] ? (CBPlayerViewController *)vc : nil;
 }
 
++ (CBLivePlayerViewController *)live {
+    UIViewController *vc = [self top];
+    return [vc isKindOfClass:[CBLivePlayerViewController class]] ? (CBLivePlayerViewController *)vc : nil;
+}
+
+/// Màn «Truyền hình» trên cùng của thanh điều hướng (mở nếu chưa có)
++ (CBTVViewController *)tvScreen:(BOOL)open {
+    CBNavController *nav = [self nav];
+    for (UIViewController *vc in nav.viewControllers.reverseObjectEnumerator) {
+        if ([vc isKindOfClass:[CBTVViewController class]]) {
+            if (nav.topViewController != vc) [nav popToViewController:vc animated:NO];
+            return (CBTVViewController *)vc;
+        }
+    }
+    if (!open) return nil;
+    CBTVViewController *tv = [[CBTVViewController alloc] init];
+    [nav pushViewController:tv animated:NO];
+    return tv;
+}
+
+/// Lệnh truyền hình (IPTV): tv, tvadd <url>, tvlists, tvuse <số>, tvrefresh, tvepg, tvgroup <số>, tvq <chữ>, tvplay <số>,
+/// tvguide <số>, tvnext / tvprev / tvch <số> / tvpanel / tvpause / tvlive / tvsrc / tvclose (trình phát), tvstatus, tvsettings
++ (BOOL)runTV:(NSString *)verb arg:(NSString *)arg {
+    if (![verb hasPrefix:@"tv"]) return NO;
+    CBLivePlayerViewController *live = [self live];
+    if ([verb isEqualToString:@"tv"]) {
+        [self tvScreen:YES];
+    } else if ([verb isEqualToString:@"tvadd"]) {
+        NSDictionary *l = [CBIPTV addList:arg name:nil];
+        CBLog(@"[gỡ lỗi] thêm danh sách %@ (%@)", CBStr(l, @"name"), CBStr(l, @"id"));
+        [CBIPTV refresh:YES done:^(NSString *err) {
+            CBLog(@"[gỡ lỗi] tải danh sách: %@", err ?: [NSString stringWithFormat:@"%lu kênh", (unsigned long)[CBIPTV channels].count]);
+        }];
+    } else if ([verb isEqualToString:@"tvlists"]) {
+        for (NSDictionary *l in [CBIPTV lists]) {
+            CBLog(@"[gỡ lỗi] danh sách %@ «%@» %@ — %@ kênh, lịch %@, lỗi %@", CBStr(l, @"id"), CBStr(l, @"name"), CBStr(l, @"url"),
+                  l[@"count"], CBStr(l, @"epg"), CBStr(l, @"err"));
+        }
+    } else if ([verb isEqualToString:@"tvuse"]) {
+        NSArray *lists = [CBIPTV lists];
+        NSInteger i = arg.integerValue;
+        if (i >= 0 && i < (NSInteger)lists.count) [CBIPTV setActive:CBStr(lists[i], @"id")];
+    } else if ([verb isEqualToString:@"tvrefresh"]) {
+        [CBIPTV refresh:YES done:^(NSString *err) { CBLog(@"[gỡ lỗi] tải lại danh sách: %@", err ?: @"xong"); }];
+    } else if ([verb isEqualToString:@"tvepg"]) {
+        [CBIPTV refreshGuide:YES done:^(NSString *err) {
+            CBLog(@"[gỡ lỗi] tải lịch: %@ — %lu kênh có lịch", err ?: @"xong", (unsigned long)[CBIPTV guideChannelCount]);
+        }];
+    } else if ([verb isEqualToString:@"tvepgurl"]) {
+        // tvepgurl <url> — đặt địa chỉ lịch phát sóng (trống = lấy từ danh sách) rồi tải
+        [CBIPTV setEpgOverride:arg];
+        [CBIPTV refreshGuide:YES done:^(NSString *err) {
+            CBLog(@"[gỡ lỗi] tải lịch %@: %@ — %lu kênh có lịch", [CBIPTV epgUrl], err ?: @"xong", (unsigned long)[CBIPTV guideChannelCount]);
+        }];
+    } else if ([verb isEqualToString:@"tvgroup"]) {
+        [[self tvScreen:YES] selectGroupAt:arg.integerValue];
+    } else if ([verb isEqualToString:@"tvq"]) {
+        [[self tvScreen:YES] setQuery:arg];
+    } else if ([verb isEqualToString:@"tvplay"]) {
+        [[self tvScreen:YES] openChannelAt:arg.integerValue];
+    } else if ([verb isEqualToString:@"tvguide"]) {
+        [[self tvScreen:YES] showGuideAt:arg.integerValue];
+    } else if ([verb isEqualToString:@"tvsettings"]) {
+        [[self nav] pushViewController:[[CBTVSettingsViewController alloc] init] animated:NO];
+    } else if ([verb isEqualToString:@"tvnext"]) {
+        [live nextChannel];
+    } else if ([verb isEqualToString:@"tvprev"]) {
+        [live previousChannel];
+    } else if ([verb isEqualToString:@"tvch"]) {
+        [live playChannelAt:arg.integerValue];
+    } else if ([verb isEqualToString:@"tvpanel"]) {
+        [live toggleChannels];
+    } else if ([verb isEqualToString:@"tvpause"]) {
+        [live togglePlay];
+    } else if ([verb isEqualToString:@"tvlive"]) {
+        [live goLive];
+    } else if ([verb isEqualToString:@"tvsrc"]) {
+        [live nextSource];
+    } else if ([verb isEqualToString:@"tvclose"]) {
+        [live close];
+    } else if ([verb isEqualToString:@"tvstatus"]) {
+        if (live) CBLog(@"[gỡ lỗi] [truyền hình] %@", [live statusLine]);
+        CBTVViewController *tv = [self tvScreen:NO];
+        NSArray *vis = tv.visibleChannels;
+        CBLog(@"[gỡ lỗi] [truyền hình] danh sách %@ · %lu kênh · đang hiện %lu · lịch %lu kênh (%@) · %@",
+              CBStr([CBIPTV activeList], @"name"), (unsigned long)[CBIPTV channels].count, (unsigned long)vis.count,
+              (unsigned long)[CBIPTV guideChannelCount], [CBIPTV epgUrl], [CBIPTV status] ?: @"rảnh");
+        for (NSUInteger i = 0; i < MIN(vis.count, 8u); i++) {
+            NSDictionary *c = vis[i];
+            NSDictionary *p = [CBIPTV nowFor:c at:[[NSDate date] timeIntervalSince1970]];
+            CBLog(@"[gỡ lỗi]   %lu. %@ [%@] %lu nguồn — %@%@", (unsigned long)i, CBStr(c, @"n"), CBStr(c, @"g"),
+                  (unsigned long)CBArr(c, @"urls").count, p ? CBStr(p, @"t") : @"(không lịch)",
+                  [CBIPTV channelBadReason:c] ? [@" — LỖI: " stringByAppendingString:[CBIPTV channelBadReason:c]] : @"");
+        }
+    } else if ([verb isEqualToString:@"tvmatches"]) {
+        // tvmatches [từ] — 12 ô đang hiện từ vị trí «từ»: trạng thái trận, nguồn (HLS / FLV), tiêu đề riêng
+        NSArray *vis = [self tvScreen:NO].visibleChannels;
+        NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
+        NSUInteger from = (NSUInteger)MAX(0, arg.integerValue);
+        for (NSUInteger i = from; i < MIN(vis.count, from + 12); i++) {
+            NSDictionary *c = vis[i];
+            NSMutableArray *kinds = [NSMutableArray array];
+            for (NSString *u in CBArr(c, @"urls")) [kinds addObject:[[[NSURL URLWithString:u] path] hasSuffix:@".flv"] ? @"flv" : @"hls"];
+            CBLog(@"[gỡ lỗi]   %lu. %@ [%@] — %@ · nguồn %@%@%@", (unsigned long)i, CBStr(c, @"n"), CBStr(c, @"g"),
+                  [CBIPTV matchLine:c at:now] ?: @"(kênh thường)", [kinds componentsJoinedByString:@","],
+                  CBStr(c, @"ua") ? @" · UA riêng" : @"", [CBIPTV hasKickReminder:c] ? @" · 🔔" : @"");
+        }
+    } else if ([verb isEqualToString:@"tvremind"]) {
+        // tvremind <ô> — bật / tắt «Nhắc lúc bóng lăn»
+        NSArray *vis = [self tvScreen:NO].visibleChannels;
+        NSInteger i = arg.integerValue;
+        if (i >= 0 && i < (NSInteger)vis.count) {
+            BOOL on = [CBIPTV toggleKickReminder:vis[i]];
+            CBLog(@"[gỡ lỗi] [truyền hình] nhắc %@: %@", CBStr(vis[i], @"n"), on ? @"bật" : @"tắt");
+        }
+    } else {
+        return NO;
+    }
+    return YES;
+}
+
 + (void)run:(NSString *)cmd {
     // Không ghi khoá trong link ss:// (lệnh «alert 1 ss://…» khi thử Shadowsocks) vào nhật ký
     static NSRegularExpression *secret;
@@ -150,6 +275,7 @@
     NSArray *args = [arg componentsSeparatedByString:@" "];
     CBNavController *nav = [self nav];
     CBPlayerViewController *player = [self player];
+    if ([self runTV:verb arg:arg]) return;
     if ([verb isEqualToString:@"shot"]) {
         [self shot:arg.length ? arg : @"shot"];
     } else if ([verb isEqualToString:@"film"]) {

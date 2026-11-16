@@ -1,0 +1,943 @@
+#import "CBLivePlayerViewController.h"
+#import "CBCompat.h"
+#import "CBCore.h"
+#import "CBImages.h"
+#import "CBIPTV.h"
+#import "CBJSON.h"
+#import "CBLog.h"
+#import "CBNavController.h"
+#import "CBParental.h"
+#import "CBPrefs.h"
+#import "CBSync.h"
+#import "CBTVGuideViewController.h"
+#import "CBTheme.h"
+#import "CBWatchLimit.h"
+#import <AVFoundation/AVFoundation.h>
+#import <MediaPlayer/MediaPlayer.h>
+#import <objc/message.h>
+
+static void *kLiveKVO = &kLiveKVO;
+
+@interface CBLiveVideoView : UIView
+@end
+@implementation CBLiveVideoView
++ (Class)layerClass {
+    return [AVPlayerLayer class];
+}
+@end
+
+/// iOS 5: xoay giao diện theo ý app (như CBPlayerViewController)
+static void CBLiveForceOrientation(UIInterfaceOrientation o) {
+    SEL s = NSSelectorFromString(@"setOrientation:animated:");
+    UIDevice *d = [UIDevice currentDevice];
+    if ([d respondsToSelector:s]) ((void (*)(id, SEL, NSInteger, BOOL))objc_msgSend)(d, s, (NSInteger)o, YES);
+}
+
+@interface CBLivePlayerViewController () <UITableViewDataSource, UITableViewDelegate, UIGestureRecognizerDelegate>
+@end
+
+@implementation CBLivePlayerViewController {
+    NSArray *_channels;
+    NSInteger _index, _source;
+    AVPlayer *_player;
+    AVPlayerItem *_item;
+    BOOL _observing;
+    CBLiveVideoView *_video;
+    UIView *_top, *_bottom, *_track, *_fill;
+    UIButton *_closeButton, *_guideButton, *_sourceButton, *_channelsButton, *_prevButton, *_playButton, *_nextButton, *_liveButton;
+    UILabel *_titleLabel, *_badge, *_progLabel, *_timeLabel, *_nextLabel, *_status;
+    UIActivityIndicatorView *_spinner;
+    UIButton *_retryButton, *_skipButton;
+    UITableView *_panel;
+    BOOL _panelOpen, _controlsVisible;
+    NSTimer *_tick, *_hideTimer;
+    NSInteger _token, _ticks;
+    BOOL _closed, _started, _appeared, _retriedReset, _baseSet;
+    long long _startedAt;
+    NSInteger _reopens;   // số lần luồng tự dừng rồi mở lại (cùng nguồn)
+    double _baseBehind;   // độ trễ tự nhiên sau mép trực tiếp lúc vừa phát (AVPlayer phát sau mép ~3 đoạn)
+    NSString *_srcUrl;
+}
+
+- (instancetype)initWithChannels:(NSArray *)channels index:(NSInteger)index {
+    if ((self = [super initWithNibName:nil bundle:nil])) {
+        _channels = channels ?: @[];
+        _index = MAX(0, MIN(index, (NSInteger)_channels.count - 1));
+        _panelOpen = NO;  // mở kênh là xem toàn màn hình; bảng kênh chỉ hiện khi bấm «☰ Kênh» (anh báo: iPad luôn hiện bảng)
+        self.modalTransitionStyle = UIModalTransitionStyleCrossDissolve;
+    }
+    return self;
+}
+
+- (void)dealloc {
+    [self teardownPlayer];
+    [_tick invalidate];
+    [_hideTimer invalidate];
+    _panel.delegate = nil;   // iOS 5 / 6: delegate của UITableView không tự về nil
+    _panel.dataSource = nil;
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
+}
+
+- (NSDictionary *)channel {
+    return _index >= 0 && _index < (NSInteger)_channels.count ? _channels[_index] : nil;
+}
+
+#pragma mark - Giao diện
+
+- (UIButton *)barButton:(NSString *)title action:(SEL)action {
+    UIButton *b = [UIButton buttonWithType:UIButtonTypeCustom];
+    [b setTitle:title forState:UIControlStateNormal];
+    [b setTitleColor:[CBTheme text] forState:UIControlStateNormal];
+    [b setTitleColor:[CBTheme dim] forState:UIControlStateHighlighted];
+    b.titleLabel.font = [CBTheme bold:[CBTheme isPad] ? 17 : 15];
+    [b addTarget:self action:action forControlEvents:UIControlEventTouchUpInside];
+    return b;
+}
+
+- (UILabel *)label:(UIFont *)font {
+    UILabel *l = [[UILabel alloc] init];
+    l.backgroundColor = [UIColor clearColor];
+    l.textColor = [CBTheme text];
+    l.font = font;
+    return l;
+}
+
+- (void)loadView {
+    UIView *root = [[UIView alloc] initWithFrame:[UIScreen mainScreen].bounds];
+    root.backgroundColor = [UIColor blackColor];
+    self.view = root;
+}
+
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    [CBSync setPlaying:YES];
+    BOOL pad = [CBTheme isPad];
+    _video = [[CBLiveVideoView alloc] initWithFrame:self.view.bounds];
+    _video.backgroundColor = [UIColor blackColor];
+    [(AVPlayerLayer *)_video.layer setVideoGravity:[CBPrefs videoFill] ? AVLayerVideoGravityResizeAspectFill : AVLayerVideoGravityResizeAspect];
+    [self.view addSubview:_video];
+
+    UIColor *shade = [UIColor colorWithWhite:0 alpha:0.62];
+    _top = [[UIView alloc] init];
+    _top.backgroundColor = shade;
+    [self.view addSubview:_top];
+    _closeButton = [self barButton:@"✕ Đóng" action:@selector(close)];
+    _guideButton = [self barButton:@"Lịch" action:@selector(openGuide)];
+    _sourceButton = [self barButton:@"Nguồn 1/1" action:@selector(nextSource)];
+    _channelsButton = [self barButton:@"☰ Kênh" action:@selector(toggleChannels)];
+    _titleLabel = [self label:[CBTheme bold:pad ? 16 : 14]];
+    _titleLabel.textAlignment = NSTextAlignmentCenter;
+    _titleLabel.lineBreakMode = NSLineBreakByTruncatingTail;
+    _badge = [self label:[CBTheme bold:11]];
+    _badge.textAlignment = NSTextAlignmentCenter;
+    _badge.textColor = [UIColor whiteColor];
+    _badge.layer.cornerRadius = 4;
+    _badge.clipsToBounds = YES;
+    for (UIView *v in @[_closeButton, _guideButton, _sourceButton, _channelsButton, _titleLabel, _badge]) [_top addSubview:v];
+
+    _bottom = [[UIView alloc] init];
+    _bottom.backgroundColor = shade;
+    [self.view addSubview:_bottom];
+    _progLabel = [self label:[CBTheme bold:pad ? 18 : 15]];
+    _timeLabel = [self label:[CBTheme font:13]];
+    _timeLabel.textColor = [CBTheme dim];
+    _nextLabel = [self label:[CBTheme font:13]];
+    _nextLabel.textColor = [CBTheme dim];
+    _nextLabel.textAlignment = NSTextAlignmentRight;
+    _track = [[UIView alloc] init];
+    _track.backgroundColor = [UIColor colorWithWhite:1 alpha:0.2];
+    _fill = [[UIView alloc] init];
+    _fill.backgroundColor = [CBTheme brand];
+    [_track addSubview:_fill];
+    _prevButton = [self barButton:@"« Kênh trước" action:@selector(previousChannel)];
+    _playButton = [self barButton:@"Tạm dừng" action:@selector(togglePlay)];
+    _nextButton = [self barButton:@"Kênh sau »" action:@selector(nextChannel)];
+    _liveButton = [CBTheme button:@"Về trực tiếp" primary:YES];
+    _liveButton.titleLabel.font = [CBTheme bold:14];
+    [_liveButton addTarget:self action:@selector(goLive) forControlEvents:UIControlEventTouchUpInside];
+    _liveButton.hidden = YES;
+    for (UIView *v in @[_progLabel, _timeLabel, _nextLabel, _track, _prevButton, _playButton, _nextButton, _liveButton]) [_bottom addSubview:v];
+
+    _panel = [[UITableView alloc] initWithFrame:CGRectZero style:UITableViewStylePlain];
+    _panel.backgroundColor = CBRGB(0x15181C);
+    _panel.separatorColor = CBRGB(0x2A2F36);
+    _panel.dataSource = self;
+    _panel.delegate = self;
+    _panel.rowHeight = pad ? 58 : 50;
+    _panel.hidden = !_panelOpen;
+    [self.view addSubview:_panel];
+
+    _spinner = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleWhiteLarge];
+    _spinner.hidesWhenStopped = YES;
+    [self.view addSubview:_spinner];
+    _status = [self label:[CBTheme font:16]];
+    _status.textAlignment = NSTextAlignmentCenter;
+    _status.numberOfLines = 0;
+    [self.view addSubview:_status];
+    _retryButton = [CBTheme button:@"Thử lại" primary:YES];
+    [_retryButton addTarget:self action:@selector(retry) forControlEvents:UIControlEventTouchUpInside];
+    _retryButton.hidden = YES;
+    [self.view addSubview:_retryButton];
+    _skipButton = [CBTheme button:@"Kênh sau »" primary:NO];
+    [_skipButton addTarget:self action:@selector(nextChannel) forControlEvents:UIControlEventTouchUpInside];
+    _skipButton.hidden = YES;
+    [self.view addSubview:_skipButton];
+
+    UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(toggleControls)];
+    tap.delegate = self;
+    [_video addGestureRecognizer:tap];
+    UISwipeGestureRecognizer *up = [[UISwipeGestureRecognizer alloc] initWithTarget:self action:@selector(nextChannel)];
+    up.direction = UISwipeGestureRecognizerDirectionUp;
+    [_video addGestureRecognizer:up];
+    UISwipeGestureRecognizer *down = [[UISwipeGestureRecognizer alloc] initWithTarget:self action:@selector(previousChannel)];
+    down.direction = UISwipeGestureRecognizerDirectionDown;
+    [_video addGestureRecognizer:down];
+
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(guideChanged) name:CBIPTVChangedNotification object:nil];
+    _tick = [NSTimer scheduledTimerWithTimeInterval:1 target:self selector:@selector(tick) userInfo:nil repeats:YES];
+    [self setControlsVisible:YES];
+    [self openSource];
+}
+
+- (void)viewWillAppear:(BOOL)animated {
+    [super viewWillAppear:animated];
+    [[UIApplication sharedApplication] setStatusBarHidden:YES withAnimation:UIStatusBarAnimationFade];
+    [UIApplication sharedApplication].idleTimerDisabled = YES;
+}
+
+- (void)viewDidAppear:(BOOL)animated {
+    [super viewDidAppear:animated];
+    _appeared = YES;
+    if ([CBImages lowRam]) [CBImages purgeOffscreen];
+    if (CBOldIOS() && ![CBTheme isPad] && UIInterfaceOrientationIsPortrait([UIApplication sharedApplication].statusBarOrientation)) {
+        CBLiveForceOrientation(UIInterfaceOrientationLandscapeRight);
+    }
+    [[UIApplication sharedApplication] beginReceivingRemoteControlEvents];
+    [self becomeFirstResponder];
+    [self scrollPanelToCurrent];
+}
+
+- (void)viewWillDisappear:(BOOL)animated {
+    [super viewWillDisappear:animated];
+    if (self.presentedViewController) return;  // mở «Lịch» đè lên: vẫn đang xem
+    if (CBOldIOS() && ![CBTheme isPad] && self.isBeingDismissed) CBLiveForceOrientation(UIInterfaceOrientationPortrait);
+    [[UIApplication sharedApplication] setStatusBarHidden:NO withAnimation:UIStatusBarAnimationFade];
+    [UIApplication sharedApplication].idleTimerDisabled = NO;
+    [[UIApplication sharedApplication] endReceivingRemoteControlEvents];
+}
+
+- (BOOL)canBecomeFirstResponder {
+    return YES;
+}
+
+- (BOOL)shouldAutorotate {
+    return YES;
+}
+
+- (UIInterfaceOrientationMask)supportedInterfaceOrientations {
+    return [CBTheme isPad] ? UIInterfaceOrientationMaskAll : UIInterfaceOrientationMaskLandscape;
+}
+
+// iOS 5 hỏi hàm này; màn trình bày đè lên phải tự khai báo (xem CBCompat)
+- (BOOL)shouldAutorotateToInterfaceOrientation:(UIInterfaceOrientation)o {
+    return ([self supportedInterfaceOrientations] & (1u << o)) != 0;
+}
+
+- (UIInterfaceOrientation)preferredInterfaceOrientationForPresentation {
+    if (![CBTheme isPad]) return UIInterfaceOrientationLandscapeRight;
+    return [UIApplication sharedApplication].statusBarOrientation;
+}
+
+- (void)viewDidLayoutSubviews {
+    [super viewDidLayoutSubviews];
+    BOOL pad = [CBTheme isPad];
+    CGFloat w = self.view.bounds.size.width, h = self.view.bounds.size.height;
+    CGFloat panelW = _panelOpen ? (pad ? 300 : 230) : 0, cw = w - panelW;
+    _video.frame = CGRectMake(0, 0, cw, h);  // bảng kênh mở: hình thu vào phần còn lại, không bị che
+    _panel.frame = CGRectMake(cw, 0, panelW, h);
+
+    CGFloat topH = pad ? 52 : 44;
+    _top.frame = CGRectMake(0, 0, cw, topH);
+    CGFloat x = 6;
+    CGSize cs = [_closeButton sizeThatFits:CGSizeMake(200, topH)];
+    _closeButton.frame = CGRectMake(x, 0, cs.width + 16, topH);
+    CGFloat right = cw - 6;
+    for (UIButton *b in @[_channelsButton, _sourceButton, _guideButton]) {
+        if (b.hidden) continue;
+        CGSize s = [b sizeThatFits:CGSizeMake(200, topH)];
+        right -= s.width + 16;
+        b.frame = CGRectMake(right, 0, s.width + 16, topH);
+    }
+    CGFloat titleL = CGRectGetMaxX(_closeButton.frame) + 8, titleR = right - 8;
+    CGSize bs = [_badge.text ?: @"" sizeWithFont:_badge.font];
+    CGFloat badgeW = bs.width + 12;
+    CGSize ts = [_titleLabel.text ?: @"" sizeWithFont:_titleLabel.font];
+    CGFloat avail = MAX(40, titleR - titleL - badgeW - 8), tw = MIN(ts.width, avail);
+    CGFloat startX = titleL + (titleR - titleL - tw - 8 - badgeW) / 2;
+    _titleLabel.frame = CGRectMake(startX, 0, tw, topH);
+    _badge.frame = CGRectMake(startX + tw + 8, (topH - 20) / 2, badgeW, 20);
+
+    CGFloat bh = pad ? 124 : 104;
+    _bottom.frame = CGRectMake(0, h - bh, cw, bh);
+    CGFloat pad16 = pad ? 18 : 12;
+    CGFloat nextW = MIN(cw * 0.42, [_nextLabel.text ?: @"" sizeWithFont:_nextLabel.font].width + 4);
+    _progLabel.frame = CGRectMake(pad16, 8, cw - pad16 * 2 - nextW - 10, pad ? 24 : 20);
+    _nextLabel.frame = CGRectMake(cw - pad16 - nextW, 10, nextW, 20);
+    _timeLabel.frame = CGRectMake(pad16, CGRectGetMaxY(_progLabel.frame), cw - pad16 * 2, 18);
+    _track.frame = CGRectMake(pad16, CGRectGetMaxY(_timeLabel.frame) + 6, cw - pad16 * 2, 4);
+    [self layoutFill];
+    CGFloat by = CGRectGetMaxY(_track.frame) + 6, bH = bh - by - 4;
+    NSArray *btns = @[_prevButton, _playButton, _nextButton];
+    CGFloat liveW = _liveButton.hidden ? 0 : [_liveButton sizeThatFits:CGSizeMake(200, 34)].width + 24;
+    // Chỗ hẹp (bảng kênh mở khi máy dọc / iPhone): chữ ngắn «« Trước» / «Sau »», khoảng cách co lại cho vừa
+    for (int pass = 0; pass < 2; pass++) {
+        BOOL shortTitles = pass == 1;
+        [_prevButton setTitle:shortTitles ? @"« Trước" : @"« Kênh trước" forState:UIControlStateNormal];
+        [_nextButton setTitle:shortTitles ? @"Sau »" : @"Kênh sau »" forState:UIControlStateNormal];
+        CGFloat sum = liveW;
+        for (UIButton *b in btns) sum += [b sizeThatFits:CGSizeMake(200, bH)].width + 16;
+        if (sum + 3 * 12 <= cw - 16) break;
+    }
+    CGFloat sum = liveW;
+    for (UIButton *b in btns) sum += [b sizeThatFits:CGSizeMake(200, bH)].width + 16;
+    NSInteger gaps = liveW ? 3 : 2;
+    CGFloat gap = MAX(4, MIN(pad ? 30 : 14, (cw - 16 - sum) / gaps));
+    CGFloat total = sum + gap * gaps;
+    CGFloat bx = MAX(8, (cw - total) / 2);
+    for (UIButton *b in btns) {
+        CGFloat bw = [b sizeThatFits:CGSizeMake(200, bH)].width + 16;
+        b.frame = CGRectMake(bx, by, bw, bH);
+        bx += bw + gap;
+    }
+    if (liveW) _liveButton.frame = CGRectMake(bx, by + (bH - 34) / 2, liveW, 34);
+
+    _spinner.center = CGPointMake(cw / 2, h / 2 - 20);
+    CGFloat sw = MIN(cw - 40, 560);
+    CGFloat sh = [CBTheme heightOf:_status.text ?: @"" font:_status.font width:sw] + 4;
+    _status.frame = CGRectMake((cw - sw) / 2, h / 2 + (_spinner.isAnimating ? 20 : -sh - 10), sw, sh);
+    CGFloat rw = 150, ry = CGRectGetMaxY(_status.frame) + 14;
+    BOOL both = !_retryButton.hidden && !_skipButton.hidden;
+    _retryButton.frame = CGRectMake(both ? cw / 2 - rw - 6 : (cw - rw) / 2, ry, rw, 44);
+    _skipButton.frame = CGRectMake(both ? cw / 2 + 6 : (cw - rw) / 2, ry, rw, 44);
+}
+
+- (void)layoutFill {
+    NSDictionary *c = [self channel];
+    NSDictionary *p = [CBIPTV nowFor:c at:[[NSDate date] timeIntervalSince1970]];
+    double s = CBNum(p, @"s", 0), e = CBNum(p, @"e", 0), now = [[NSDate date] timeIntervalSince1970];
+    double f = p && e > s ? MAX(0, MIN(1, (now - s) / (e - s))) : 0;
+    // Trận đang đá: thanh tiến độ theo thời lượng trận
+    BOOL live = !p && [CBIPTV matchState:c at:now] == CBMatchLive;
+    if (live) f = MAX(0, MIN(1, (now - CBNum(c, @"kick", 0)) / (CBNum(c, @"dur", 150) * 60)));
+    _track.hidden = !p && !live;
+    _fill.frame = CGRectMake(0, 0, _track.bounds.size.width * f, 4);
+}
+
+- (void)setControlsVisible:(BOOL)visible {
+    [_hideTimer invalidate];
+    _hideTimer = nil;
+    _controlsVisible = visible;
+    [UIView animateWithDuration:0.2 animations:^{
+        self->_top.alpha = visible ? 1 : 0;
+        self->_bottom.alpha = visible ? 1 : 0;
+    }];
+    if (visible && _started) {
+        _hideTimer = [NSTimer scheduledTimerWithTimeInterval:6 target:self selector:@selector(autoHide) userInfo:nil repeats:NO];
+    }
+}
+
+/// Không chạm 6 giây khi đang phát: ẩn thanh nút và cả bảng kênh (hình toàn màn hình)
+- (void)autoHide {
+    if (!_started || _player.rate <= 0) return;
+    if (_panelOpen) [self toggleChannels];
+    [self setControlsVisible:NO];
+}
+
+- (void)scrollViewWillBeginDragging:(UIScrollView *)sv {
+    if (sv == _panel) [self setControlsVisible:YES];  // đang lướt bảng kênh: chưa ẩn
+}
+
+- (void)toggleControls {
+    [self setControlsVisible:!_controlsVisible];
+}
+
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)g shouldReceiveTouch:(UITouch *)touch {
+    return touch.view == _video;
+}
+
+#pragma mark - Phát
+
+- (void)showLoading:(NSString *)text {
+    [_spinner startAnimating];
+    _status.text = text;
+    _status.hidden = NO;
+    _retryButton.hidden = YES;
+    _skipButton.hidden = YES;
+    [self.view setNeedsLayout];
+}
+
+- (void)showError:(NSString *)text retry:(BOOL)retry {
+    CBLog(@"Truyền hình: %@", [text stringByReplacingOccurrencesOfString:@"\n" withString:@" "]);
+    [_spinner stopAnimating];
+    _status.text = text;
+    _status.hidden = NO;
+    _retryButton.hidden = !retry;
+    _skipButton.hidden = _channels.count < 2;
+    [self setControlsVisible:YES];
+    [self.view setNeedsLayout];
+}
+
+- (void)hideStatus {
+    [_spinner stopAnimating];
+    _status.hidden = YES;
+    _retryButton.hidden = YES;
+    _skipButton.hidden = YES;
+}
+
+- (void)playChannelAt:(NSInteger)index {
+    if (index < 0 || index >= (NSInteger)_channels.count) return;
+    _index = index;
+    _source = 0;
+    // Bỏ qua nguồn đã biết là máy không phát được
+    NSArray *urls = CBArr([self channel], @"urls");
+    while (_source + 1 < (NSInteger)urls.count && [CBIPTV badReason:urls[_source]]) _source++;
+    _retriedReset = NO;
+    _reopens = 0;
+    [self openSource];
+    [self scrollPanelToCurrent];
+}
+
+- (void)nextChannel {
+    if (_channels.count < 2) return;
+    [self playChannelAt:(_index + 1) % (NSInteger)_channels.count];
+}
+
+- (void)previousChannel {
+    if (_channels.count < 2) return;
+    [self playChannelAt:(_index - 1 + (NSInteger)_channels.count) % (NSInteger)_channels.count];
+}
+
+- (void)nextSource {
+    NSArray *urls = CBArr([self channel], @"urls");
+    if (urls.count < 2) return;
+    _source = (_source + 1) % (NSInteger)urls.count;
+    _retriedReset = NO;
+    _reopens = 0;
+    [self openSource];
+}
+
+- (void)retry {
+    // Kênh trận đấu: lấy danh sách mới (link thật hay được thêm sát giờ) rồi thử lại từ nguồn đầu
+    if (CBNum([self channel], @"kick", 0) > 0) {
+        [self showLoading:@"Đang kiểm tra link mới…"];
+        [self refreshThenRetry];
+        return;
+    }
+    _retriedReset = NO;
+    _reopens = 0;
+    [self openSource];
+}
+
+- (void)updateLabels {
+    NSDictionary *c = [self channel];
+    NSArray *urls = CBArr(c, @"urls");
+    [_sourceButton setTitle:[NSString stringWithFormat:@"Nguồn %ld/%lu", (long)_source + 1, (unsigned long)urls.count]
+                   forState:UIControlStateNormal];
+    _sourceButton.hidden = urls.count < 2;
+    _prevButton.enabled = _nextButton.enabled = _channels.count > 1;
+    [self updateProgramme];
+    [self updateBadge];
+    [self.view setNeedsLayout];
+}
+
+- (void)updateProgramme {
+    NSDictionary *c = [self channel];
+    NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
+    NSDictionary *p = [CBIPTV nowFor:c at:now], *n = [CBIPTV nextFor:c at:now];
+    NSString *name = CBStr(c, @"n") ?: @"";
+    _titleLabel.text = p ? [NSString stringWithFormat:@"%@ · %@", name, CBStr(p, @"t")] : name;
+    _progLabel.text = p ? CBStr(p, @"t") : name;
+    if (p) {
+        double e = CBNum(p, @"e", 0);
+        _timeLabel.text = [NSString stringWithFormat:@"%@–%@ · còn %ld phút", [CBIPTV clock:CBNum(p, @"s", 0)], [CBIPTV clock:e],
+                                                     (long)MAX(1, ceil((e - now) / 60))];
+    } else if ([CBIPTV matchLine:c at:now]) {
+        _timeLabel.text = [NSString stringWithFormat:@"%@ · %@", CBStr(c, @"g") ?: @"Trận đấu", [CBIPTV matchLine:c at:now]];
+    } else {
+        _timeLabel.text = [NSString stringWithFormat:@"%@ · chưa có lịch phát sóng", CBStr(c, @"g") ?: @"Kênh"];
+    }
+    _nextLabel.text = n ? [NSString stringWithFormat:@"Tiếp theo: %@ %@", [CBIPTV clock:CBNum(n, @"s", 0)], CBStr(n, @"t")] : @"";
+    [self layoutFill];
+}
+
+- (double)behindLive {
+    NSValue *v = _item.seekableTimeRanges.lastObject;
+    if (!v) return 0;
+    CMTimeRange r = [v CMTimeRangeValue];
+    double end = CMTimeGetSeconds(CMTimeRangeGetEnd(r)), cur = CMTimeGetSeconds(_player.currentTime);
+    if (!isfinite(end) || !isfinite(cur)) return 0;
+    return MAX(0, end - cur);
+}
+
+- (void)updateBadge {
+    double delay = _started && _baseSet ? [self behindLive] - _baseBehind : 0;
+    BOOL behind = _started && (delay > 8 || _player.rate == 0);
+    NSString *text = behind ? (delay > 8 ? [NSString stringWithFormat:@"CHẬM %@", [CBTheme time:delay]] : @"TẠM DỪNG")
+                            : (_started ? @"● TRỰC TIẾP" : @"CHƯA PHÁT");
+    if (![_badge.text isEqualToString:text]) {
+        _badge.text = text;
+        [self.view setNeedsLayout];   // bề ngang nhãn tính lúc bố cục
+    }
+    _badge.backgroundColor = behind || !_started ? CBRGB(0x5A6068) : CBRGB(0xD93A3F);
+    BOOL showLive = behind && delay > 8;
+    if (_liveButton.hidden == showLive) {
+        _liveButton.hidden = !showLive;
+        [self.view setNeedsLayout];
+    }
+}
+
+- (void)openSource {
+    NSInteger t = ++_token;
+    [self teardownPlayer];
+    _started = NO;
+    _baseBehind = 0;
+    _baseSet = NO;
+    [self updateLabels];
+    [_panel reloadData];
+    NSDictionary *c = [self channel];
+    NSArray *urls = CBArr(c, @"urls");
+    NSString *name = CBStr(c, @"n") ?: @"kênh";
+    if (_source >= (NSInteger)urls.count) {
+        [self showError:[NSString stringWithFormat:@"%@ không có địa chỉ phát.", name] retry:NO];
+        return;
+    }
+    NSString *url = urls[_source];
+    _srcUrl = url;
+    NSString *bad = [CBIPTV badReason:url];
+    if (bad) {
+        [self sourceFailed:bad permanent:YES token:t];
+        return;
+    }
+    if ([CBIPTV isPlaceholderURL:url]) {
+        // Link giả «không có tín hiệu»: đừng phát hình chờ (hết 10 s lại mở lại) — coi như nguồn chưa có
+        [self sourceFailed:@"Danh sách chưa có link phát (đang để hình «không có tín hiệu»)." permanent:NO token:t];
+        return;
+    }
+    [self showLoading:[NSString stringWithFormat:@"Đang mở %@…", name]];
+    NSString *path = [[[NSURL URLWithString:url] path] lowercaseString] ?: @"";
+    if ([path hasSuffix:@".mpd"]) {
+        [CBIPTV markBad:url reason:@"Luồng DASH (.mpd) — iOS 5 / 6 chỉ phát HLS."];
+        [self sourceFailed:[CBIPTV badReason:url] permanent:YES token:t];
+        return;
+    }
+    BOOL file = [path hasSuffix:@".mp4"] || [path hasSuffix:@".m4v"] || [path hasSuffix:@".mov"] || [path hasSuffix:@".mp3"];
+    // HTTP-FLV trực tiếp: lõi đổi sang HLS trực tiếp (bản vá 0004)
+    BOOL flv = [path hasSuffix:@".flv"];
+    BOOL ts = [path hasSuffix:@".ts"] || [path hasSuffix:@".mkv"];
+    NSMutableDictionary *args = [@{@"src": url, @"hls": @(!file && !ts && !flv), @"flv": @(flv)} mutableCopy];
+    // Referer gửi đúng như danh sách kênh ghi; User-Agent riêng của nguồn (máy chủ thể thao hay đòi)
+    [args addEntriesFromDictionary:[CBIPTV headersFor:c url:url]];
+    id opened = [CBCore sync:@"media.open" args:args];
+    NSString *local = CBStr(opened, @"url");
+    if (!local) {
+        [self sourceFailed:@"Địa chỉ kênh không dùng được." permanent:NO token:t];
+        return;
+    }
+    CBLog(@"Truyền hình: %@ (nguồn %ld/%lu) %@ qua %@", name, (long)_source + 1, (unsigned long)urls.count, url, local);
+    if (ts) {
+        // Luồng TS liền / MKV: AVPlayer của iOS 5 / 6 chỉ phát HLS và tệp MP4 — báo ngay, sang nguồn khác (thường có bản HLS)
+        NSString *kind = [path hasSuffix:@".mkv"] ? @"MKV" : @"TS liền";
+        NSString *why = [NSString stringWithFormat:@"Luồng %@ — iOS 5 / 6 chỉ phát luồng HLS (.m3u8).", kind];
+        [CBIPTV markBad:url reason:why];
+        [self sourceFailed:why permanent:YES token:t];
+        return;
+    }
+    if (file) {
+        [self play:local];
+        return;
+    }
+    // Đọc danh sách chính qua cổng nội bộ trước khi đưa cho AVPlayer: bản nào cũng quá sức máy thì báo ngay
+    // (FLV: lõi chờ đủ vài đoạn — tối đa 25 s — mới trả danh sách phát)
+    if (flv) [self showLoading:[NSString stringWithFormat:@"Đang mở %@ (luồng FLV)…", name]];
+    NSURLRequest *req = [NSURLRequest requestWithURL:[NSURL URLWithString:local] cachePolicy:NSURLRequestReloadIgnoringLocalCacheData
+                                     timeoutInterval:flv ? 40 : 25];
+    __weak CBLivePlayerViewController *weakSelf = self;
+    [NSURLConnection sendAsynchronousRequest:req queue:[NSOperationQueue mainQueue]
+                           completionHandler:^(NSURLResponse *resp, NSData *data, NSError *err) {
+        CBLivePlayerViewController *s = weakSelf;
+        if (!s || t != s->_token || s->_closed) return;
+        NSInteger code = [resp isKindOfClass:[NSHTTPURLResponse class]] ? [(NSHTTPURLResponse *)resp statusCode] : 0;
+        NSString *text = data ? [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] : nil;
+        if (code != 200 || [text rangeOfString:@"#EXTM3U"].location == NSNotFound) {
+            if (flv && code == 502) {
+                // Lõi báo lý do trong thân trả lời: mã hình máy không giải mã được / không phải FLV → hỏng hẳn; còn lại (404 lúc
+                // chưa tới giờ phát, đứt mạng) thì thử lại được
+                NSString *r = text.length ? text : @"Máy chủ của kênh không trả hình.";
+                BOOL hard = [r rangeOfString:@"H.265"].location != NSNotFound || [r rangeOfString:@"mã hình"].location != NSNotFound ||
+                            [r rangeOfString:@"không phải luồng FLV"].location != NSNotFound;
+                NSString *why = [[[r substringToIndex:1] uppercaseString] stringByAppendingString:[r substringFromIndex:1]];
+                if (hard) [CBIPTV markBad:url reason:why];
+                [s sourceFailed:why permanent:hard token:t];
+                return;
+            }
+            NSString *why = code == 502 ? @"Máy chủ của kênh không trả lời, hoặc nguồn này không phải luồng HLS."
+                                        : (err.localizedDescription ?: [NSString stringWithFormat:@"Lỗi HTTP %ld.", (long)code]);
+            [s sourceFailed:why permanent:NO token:t];
+            return;
+        }
+        NSString *undecodable = [CBIPTV undecodableReason:text];
+        if (undecodable) {
+            [CBIPTV markBad:url reason:undecodable];
+            [s sourceFailed:undecodable permanent:YES token:t];
+            return;
+        }
+        if ([CBIPTV isPlaceholderPlaylist:text]) {
+            [s sourceFailed:@"Kênh đang phát hình chờ (đoạn phim ngắn), chưa có luồng trực tiếp." permanent:NO token:t];
+            return;
+        }
+        [s play:local];
+    }];
+}
+
+- (void)sourceFailed:(NSString *)reason permanent:(BOOL)permanent token:(NSInteger)t {
+    if (t != _token || _closed) return;
+    [self teardownPlayer];
+    NSDictionary *c = [self channel];
+    NSArray *urls = CBArr(c, @"urls");
+    NSString *name = CBStr(c, @"n") ?: @"Kênh";
+    if ([CBIPTV autoSource] && _source + 1 < (NSInteger)urls.count) {
+        CBLog(@"Truyền hình: %@ nguồn %ld lỗi (%@) — sang nguồn %ld", name, (long)_source + 1, reason, (long)_source + 2);
+        _source++;
+        _retriedReset = NO;
+        _reopens = 0;
+        [self openSource];
+        return;
+    }
+    // Trận sắp / đang đá mà chưa nguồn nào có hình (kênh trận chỉ lên sóng gần giờ bóng lăn, có khi trễ): chờ rồi thử lại từ nguồn
+    // đầu — trừ khi mọi nguồn đều đã biết là máy không phát được
+    NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
+    CBMatchState ms = [CBIPTV matchState:c at:now];
+    BOOL usable = NO;
+    for (NSString *u in urls) if (![CBIPTV badReason:u]) { usable = YES; break; }
+    if (usable && (ms == CBMatchLater || ms == CBMatchSoon || ms == CBMatchLive)) {
+        double kick = CBNum(c, @"kick", 0);
+        NSString *msg = now < kick
+            ? [NSString stringWithFormat:@"Trận chưa bắt đầu — bóng lăn lúc %@.\nKênh chưa lên sóng, tự thử lại sau 20 giây…", [CBIPTV kickText:kick now:now]]
+            : @"Trận đang đá nhưng kênh chưa phát hình.\nTự thử lại sau 20 giây…";
+        CBLog(@"Truyền hình: %@ chưa có hình (%@) — chờ 20 s", name, reason);
+        [self showError:msg retry:YES];
+        __weak CBLivePlayerViewController *weakSelf = self;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(20 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            CBLivePlayerViewController *s = weakSelf;
+            if (!s || s->_closed || t != s->_token || s->_started) return;
+            [s refreshThenRetry];
+        });
+        return;
+    }
+    [self showError:[NSString stringWithFormat:@"%@ không phát được.\n%@", name, reason] retry:!permanent];
+}
+
+/// Kênh trận đấu chờ lên sóng: link thật thường chỉ có khi người làm danh sách cập nhật — tải lại danh sách (cũ quá 2 phút),
+/// lấy bản mới của kênh (cùng khoá) rồi thử lại từ nguồn đầu
+- (void)refreshThenRetry {
+    NSInteger t = _token;
+    __weak CBLivePlayerViewController *weakSelf = self;
+    [CBIPTV refreshIfOlderThan:120 done:^(NSString *err) {
+        CBLivePlayerViewController *s = weakSelf;
+        if (!s || s->_closed || t != s->_token || s->_started) return;
+        NSDictionary *old = [s channel];
+        NSDictionary *fresh = [CBIPTV channelForKey:CBStr(old, @"k")];
+        if (fresh && ![CBArr(fresh, @"urls") isEqualToArray:CBArr(old, @"urls")]) {
+            CBLog(@"Truyền hình: %@ — danh sách vừa cập nhật nguồn (%lu → %lu)", CBStr(old, @"n"),
+                  (unsigned long)CBArr(old, @"urls").count, (unsigned long)CBArr(fresh, @"urls").count);
+        }
+        if (fresh && s->_index < (NSInteger)s->_channels.count) {
+            NSMutableArray *m = [s->_channels mutableCopy];
+            m[s->_index] = fresh;
+            s->_channels = m;
+        }
+        [s retryFromFirstSource];
+    }];
+}
+
+- (void)retryFromFirstSource {
+    NSArray *urls = CBArr([self channel], @"urls");
+    _source = 0;
+    while (_source + 1 < (NSInteger)urls.count && [CBIPTV badReason:urls[_source]]) _source++;
+    _retriedReset = NO;
+    _reopens = 0;
+    [self openSource];
+}
+
+- (void)play:(NSString *)url {
+    [self teardownPlayer];
+    _item = [AVPlayerItem playerItemWithURL:[NSURL URLWithString:url]];
+    _player = [AVPlayer playerWithPlayerItem:_item];
+    [(AVPlayerLayer *)_video.layer setPlayer:_player];
+    [_item addObserver:self forKeyPath:@"status" options:0 context:kLiveKVO];
+    [_item addObserver:self forKeyPath:@"playbackLikelyToKeepUp" options:0 context:kLiveKVO];
+    [_player addObserver:self forKeyPath:@"rate" options:0 context:kLiveKVO];
+    _observing = YES;
+    NSNotificationCenter *nc = [NSNotificationCenter defaultCenter];
+    [nc addObserver:self selector:@selector(itemEnded:) name:AVPlayerItemDidPlayToEndTimeNotification object:_item];
+    [nc addObserver:self selector:@selector(itemEnded:) name:AVPlayerItemFailedToPlayToEndTimeNotification object:_item];
+    [_player play];
+}
+
+- (void)teardownPlayer {
+    if (!_player) return;
+    [_player pause];
+    if (_observing) {
+        [_item removeObserver:self forKeyPath:@"status" context:kLiveKVO];
+        [_item removeObserver:self forKeyPath:@"playbackLikelyToKeepUp" context:kLiveKVO];
+        [_player removeObserver:self forKeyPath:@"rate" context:kLiveKVO];
+        _observing = NO;
+    }
+    [[NSNotificationCenter defaultCenter] removeObserver:self name:AVPlayerItemDidPlayToEndTimeNotification object:_item];
+    [[NSNotificationCenter defaultCenter] removeObserver:self name:AVPlayerItemFailedToPlayToEndTimeNotification object:_item];
+    [(AVPlayerLayer *)_video.layer setPlayer:nil];
+    _player = nil;
+    _item = nil;
+}
+
+- (void)observeValueForKeyPath:(NSString *)keyPath ofObject:(id)object change:(NSDictionary *)change context:(void *)context {
+    if (context != kLiveKVO) {
+        [super observeValueForKeyPath:keyPath ofObject:object change:change context:context];
+        return;
+    }
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (!self->_player || self->_closed) return;
+        if ([keyPath isEqualToString:@"status"]) {
+            if (self->_item.status == AVPlayerItemStatusReadyToPlay && !self->_started) {
+                self->_started = YES;
+                self->_startedAt = CBNowMs();
+                [self hideStatus];
+                [CBIPTV addRecent:[self channel]];
+                CBLog(@"Truyền hình: %@ đang phát (nguồn %ld)", CBStr([self channel], @"n"), (long)self->_source + 1);
+                [self setControlsVisible:YES];
+                [self updateNowPlaying];
+            } else if (self->_item.status == AVPlayerItemStatusFailed) {
+                [self playbackFailed:self->_item.error];
+            }
+        } else if ([keyPath isEqualToString:@"playbackLikelyToKeepUp"]) {
+            if (self->_item.playbackLikelyToKeepUp || self->_player.rate > 0) [self->_spinner stopAnimating];
+            else if (self->_started) [self->_spinner startAnimating];
+        } else if ([keyPath isEqualToString:@"rate"]) {
+            [self->_playButton setTitle:self->_player.rate > 0 ? @"Tạm dừng" : @"Phát" forState:UIControlStateNormal];
+            [self updateBadge];
+            [self.view setNeedsLayout];
+        }
+    });
+}
+
+- (void)playbackFailed:(NSError *)error {
+    NSError *under = error.userInfo[NSUnderlyingErrorKey];
+    CBLog(@"Truyền hình: AVPlayer lỗi %@ [%@ %ld; gốc %@ %ld]", error.localizedDescription, error.domain, (long)error.code,
+          under.domain, (long)under.code);
+    NSInteger t = _token;
+    // Dịch vụ phát của iOS vừa khởi động lại (-11819): thử lại cùng nguồn một lần
+    if (error.code == -11819 && !_retriedReset) {
+        _retriedReset = YES;
+        [self openSource];
+        return;
+    }
+    if (error.code == -11848 || error.code == -11828 || error.code == -11829 || under.code == -12925) {
+        NSString *why = @"Máy không giải mã được định dạng của luồng này.";
+        [CBIPTV markBad:_srcUrl reason:why];
+        [self sourceFailed:why permanent:YES token:t];
+        return;
+    }
+    [self sourceFailed:[NSString stringWithFormat:@"%@ (lỗi %ld)", error.localizedDescription ?: @"Không mở được luồng.", (long)error.code]
+             permanent:NO token:t];
+}
+
+- (void)itemEnded:(NSNotification *)n {
+    NSError *err = n.userInfo[AVPlayerItemFailedToPlayToEndTimeErrorKey];
+    BOOL failed = [n.name isEqualToString:AVPlayerItemFailedToPlayToEndTimeNotification];
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (self->_closed || n.object != self->_item) return;
+        AVPlayerItemErrorLogEvent *ev = self->_item.errorLog.events.lastObject;
+        // Luồng trực tiếp «hết» / đứt (máy chủ ngừng phát, đoạn video lỗi, mạng chập chờn): mở lại nguồn này — sau 1 giây,
+        // tối đa 5 lần liền; quá thì báo lỗi (nguồn sau nếu có)
+        CBLog(@"Truyền hình: luồng %@ %@ (%@ %ld; nhật ký lỗi %ld %@ %@) — mở lại lần %ld", CBStr([self channel], @"n"),
+              failed ? @"đứt" : @"hết", err.localizedDescription ?: @"", (long)err.code, (long)ev.errorStatusCode, ev.errorDomain ?: @"",
+              ev.errorComment ?: @"", (long)self->_reopens + 1);
+        if (++self->_reopens > 5) {
+            [self sourceFailed:@"Luồng liên tục bị đứt." permanent:NO token:self->_token];
+            return;
+        }
+        NSInteger t = self->_token;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            if (t == self->_token && !self->_closed) [self openSource];
+        });
+    });
+}
+
+- (void)togglePlay {
+    if (!_player) {
+        [self openSource];
+        return;
+    }
+    if (_player.rate > 0) [_player pause];
+    else [_player play];
+    [self setControlsVisible:YES];
+}
+
+- (void)goLive {
+    NSValue *v = _item.seekableTimeRanges.lastObject;
+    if (!v) {
+        [self openSource];
+        return;
+    }
+    CMTimeRange r = [v CMTimeRangeValue];
+    CMTime target = CMTimeSubtract(CMTimeRangeGetEnd(r), CMTimeMakeWithSeconds(_baseBehind, 600));
+    [_player seekToTime:target];
+    [_player play];
+    [self updateBadge];
+}
+
+- (void)tick {
+    if (_closed) return;
+    _ticks++;
+    BOOL playing = _started && _player.rate > 0;
+    [CBWatchLimit tick:playing];
+    CBLimitBlock b = [CBWatchLimit blocked];
+    if (b != CBLimitNone && _appeared) {
+        UIViewController *host = self.presentingViewController;
+        [self close];
+        [CBParental limitReached:b film:nil episode:nil host:host];
+        return;
+    }
+    // Độ trễ tự nhiên sau mép trực tiếp: đo ở giây đầu có khung xem lùi (seekableTimeRanges) khi đang phát — AVPlayer báo khung
+    // này muộn; đo sớm quá thì gốc = 0 và luồng có khung dài (ABC News) bị báo «CHẬM 1:17» dù không tạm dừng
+    if (playing && _reopens && CBNowMs() - _startedAt > 60000) _reopens = 0;  // phát ổn một phút: đếm lại từ đầu
+    if (playing && !_baseSet && _item.seekableTimeRanges.count && CBNowMs() - _startedAt > 2000) {
+        _baseSet = YES;
+        _baseBehind = [self behindLive];
+    }
+    [self updateBadge];
+    if (_ticks % 15 == 0) {
+        [self updateProgramme];
+        [self.view setNeedsLayout];
+        if (_panelOpen) [_panel reloadData];
+        [self updateNowPlaying];
+    }
+}
+
+- (void)guideChanged {
+    [self updateProgramme];
+    [_panel reloadData];
+    [self.view setNeedsLayout];
+}
+
+#pragma mark - Bảng kênh / lịch
+
+- (void)toggleChannels {
+    _panelOpen = !_panelOpen;
+    _panel.hidden = !_panelOpen;
+    [_panel reloadData];
+    [self.view setNeedsLayout];
+    [self scrollPanelToCurrent];
+    [self setControlsVisible:YES];
+}
+
+- (void)scrollPanelToCurrent {
+    if (!_panelOpen || _index >= (NSInteger)_channels.count) return;
+    [_panel layoutIfNeeded];
+    [_panel scrollToRowAtIndexPath:[NSIndexPath indexPathForRow:_index inSection:0] atScrollPosition:UITableViewScrollPositionMiddle
+                          animated:NO];
+}
+
+- (void)openGuide {
+    CBTVGuideViewController *g = [[CBTVGuideViewController alloc] initWithChannel:[self channel]];
+    g.fromPlayer = YES;
+    CBNavController *nav = [[CBNavController alloc] initWithRootViewController:g];
+    if ([CBTheme isPad]) nav.modalPresentationStyle = UIModalPresentationFormSheet;
+    [self presentViewController:nav animated:YES completion:nil];
+}
+
+- (NSInteger)tableView:(UITableView *)tv numberOfRowsInSection:(NSInteger)section {
+    return _channels.count;
+}
+
+- (UITableViewCell *)tableView:(UITableView *)tv cellForRowAtIndexPath:(NSIndexPath *)ip {
+    UITableViewCell *cell = [tv dequeueReusableCellWithIdentifier:@"ch"];
+    if (!cell) {
+        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"ch"];
+        cell.textLabel.font = [CBTheme bold:[CBTheme isPad] ? 15 : 14];
+        cell.detailTextLabel.font = [CBTheme font:12];
+        cell.textLabel.backgroundColor = cell.detailTextLabel.backgroundColor = [UIColor clearColor];
+        UIView *sel = [[UIView alloc] init];
+        sel.backgroundColor = CBRGB(0x1B2B26);
+        cell.selectedBackgroundView = sel;
+    }
+    NSDictionary *c = _channels[ip.row];
+    BOOL cur = ip.row == _index;
+    cell.backgroundColor = cur ? CBRGB(0x1B2B26) : CBRGB(0x15181C);
+    cell.textLabel.textColor = cur ? [CBTheme brand] : [CBTheme text];
+    cell.textLabel.text = [NSString stringWithFormat:@"%@   %@", CBStr(c, @"num") ?: @"", CBStr(c, @"n") ?: @""];
+    NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
+    NSDictionary *p = [CBIPTV nowFor:c at:now];
+    NSString *bad = [CBIPTV channelBadReason:c], *match = [CBIPTV matchLine:c at:now];
+    BOOL live = [CBIPTV matchState:c at:now] == CBMatchLive;
+    cell.detailTextLabel.textColor = bad ? CBRGB(0xF0B44C) : (live ? CBRGB(0xFF6166) : [CBTheme dim]);
+    cell.detailTextLabel.text = bad ? @"Máy này không phát được" : (p ? CBStr(p, @"t") : (match ?: (CBStr(c, @"g") ?: @"")));
+    return cell;
+}
+
+- (void)tableView:(UITableView *)tv didSelectRowAtIndexPath:(NSIndexPath *)ip {
+    [tv deselectRowAtIndexPath:ip animated:NO];
+    if (ip.row != _index) [self playChannelAt:ip.row];
+    [self setControlsVisible:YES];
+}
+
+#pragma mark - Đóng / màn khoá
+
+- (void)close {
+    if (_closed) return;
+    [CBWatchLimit flush];
+    _closed = YES;
+    _token++;
+    [_tick invalidate];
+    _tick = nil;
+    [_hideTimer invalidate];
+    [self teardownPlayer];
+    [CBCore sync:@"media.closeAll" args:nil];
+    [CBSync setPlaying:NO];
+    [MPNowPlayingInfoCenter defaultCenter].nowPlayingInfo = nil;
+    [self.presentingViewController dismissViewControllerAnimated:YES completion:nil];
+}
+
+- (void)updateNowPlaying {
+    NSDictionary *c = [self channel];
+    NSDictionary *p = [CBIPTV nowFor:c at:[[NSDate date] timeIntervalSince1970]];
+    NSMutableDictionary *info = [NSMutableDictionary dictionary];
+    info[MPMediaItemPropertyTitle] = p ? CBStr(p, @"t") : (CBStr(c, @"n") ?: @"");
+    info[MPMediaItemPropertyArtist] = [NSString stringWithFormat:@"%@ · trực tiếp", CBStr(c, @"n") ?: @"Truyền hình"];
+    [MPNowPlayingInfoCenter defaultCenter].nowPlayingInfo = info;
+}
+
+- (void)remoteControlReceivedWithEvent:(UIEvent *)event {
+    if (event.type != UIEventTypeRemoteControl) return;
+    switch (event.subtype) {
+        case UIEventSubtypeRemoteControlTogglePlayPause: [self togglePlay]; break;
+        case UIEventSubtypeRemoteControlPlay: [_player play]; break;
+        case UIEventSubtypeRemoteControlPause: [_player pause]; break;
+        case UIEventSubtypeRemoteControlNextTrack: [self nextChannel]; break;
+        case UIEventSubtypeRemoteControlPreviousTrack: [self previousChannel]; break;
+        default: break;
+    }
+}
+
+- (NSString *)statusLine {
+    AVPlayerItemAccessLogEvent *ev = _item.accessLog.events.lastObject;
+    CGSize px = _item.presentationSize;
+    NSDictionary *c = [self channel];
+    return [NSString stringWithFormat:@"kênh %@ (%ld/%lu) nguồn %ld/%lu | %@ | rate %.2f | hình %.0fx%.0f, rớt %ld khung | đệm %@ | bitrate %.0f kbps | sau mép trực tiếp %.0f s (gốc %.0f s) | khựng %ld | RAM %.0f MB",
+            CBStr(c, @"n"), (long)_index + 1, (unsigned long)_channels.count, (long)_source + 1, (unsigned long)CBArr(c, @"urls").count,
+            _status.hidden ? @"đang phát" : [_status.text stringByReplacingOccurrencesOfString:@"\n" withString:@" "], _player.rate,
+            px.width, px.height, (long)ev.numberOfDroppedVideoFrames, _item.playbackLikelyToKeepUp ? @"đủ" : @"thiếu",
+            ev.observedBitrate / 1000, [self behindLive], _baseBehind, (long)ev.numberOfStalls, CBResidentMB()];
+}
+
+@end

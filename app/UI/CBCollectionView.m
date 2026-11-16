@@ -87,9 +87,29 @@ static NSString *CBSuppKey(NSString *kind, NSInteger section) {
     NSMutableDictionary *_visibleCells;  // NSIndexPath → ô
     NSMutableDictionary *_visibleSupps;  // «loại|mục» → ô đầu / ô cuối
     NSIndexPath *_touchPath;
+    // Đang dựng ô (tile): ô vừa lấy gọi layoutIfNeeded (ô kênh — đo khung logo) thì CALayer bố cục ngược lên tới lưới nếu lưới
+    // cũng đang chờ bố cục → tile lồng trong tile; tile ngoài ghi đè ô tile trong đã đặt cho cùng vị trí, ô đó thành «mồ côi»:
+    // vẫn hiện, không ai quản — nằm đè ô thật mãi (iPad 1: ô kênh của danh sách cũ còn đó sau khi đổi danh sách)
+    BOOL _tiling, _retile;
+    // delegate của UIScrollView trên iOS 5 / 6 là con trỏ «assign» (không tự về nil): màn chủ đã giải phóng mà lưới còn vẽ lại
+    // (chuyển cảnh, CATransaction) thì gọi vào vùng nhớ đã trả — văng (iPad 1, «home» khi đang ở màn Truyền hình). Giữ thêm
+    // tham chiếu yếu: lưới tự gọi qua nó, và gỡ delegate của UIScrollView khi chủ đã mất.
+    __weak id<CBCollectionViewDelegate> _weakDelegate;
 }
 
 @dynamic delegate;
+
+- (void)setDelegate:(id<CBCollectionViewDelegate>)delegate {
+    _weakDelegate = delegate;
+    [super setDelegate:delegate];
+}
+
+/// Delegate còn sống (nil nếu chủ đã giải phóng — khi đó gỡ luôn khỏi UIScrollView)
+- (id<CBCollectionViewDelegate>)liveDelegate {
+    id<CBCollectionViewDelegate> d = _weakDelegate;
+    if (!d && [super delegate]) [super setDelegate:nil];
+    return d;
+}
 
 - (instancetype)initWithFrame:(CGRect)frame collectionViewLayout:(CBCollectionViewFlowLayout *)layout {
     if ((self = [super initWithFrame:frame])) {
@@ -268,7 +288,7 @@ static NSString *CBSuppKey(NSString *kind, NSInteger section) {
     _headerFrames.length = 0;
     _footerFrames.length = 0;
     id<CBCollectionViewDataSource> ds = self.dataSource;
-    id<CBCollectionViewDelegate> dg = self.delegate;
+    id<CBCollectionViewDelegate> dg = [self liveDelegate];
     CBCollectionViewFlowLayout *L = _layout;
     _sections = !ds ? 0 : ([ds respondsToSelector:@selector(numberOfSectionsInCollectionView:)] ? [ds numberOfSectionsInCollectionView:self] : 1);
     BOOL horizontal = L.scrollDirection == CBCollectionViewScrollDirectionHorizontal;
@@ -367,9 +387,21 @@ static NSString *CBSuppKey(NSString *kind, NSInteger section) {
 }
 
 - (void)layoutSubviews {
+    [self liveDelegate];  // chủ đã mất: gỡ delegate trước khi UIScrollView gọi scrollViewDidScroll:
     [super layoutSubviews];
-    [self ensureLayout];
-    [self tile];
+    if (_tiling) {
+        _retile = YES;    // bố cục lồng (xem _tiling): lần đang chạy dựng lại thêm một lượt
+        return;
+    }
+    _tiling = YES;
+    for (int pass = 0; pass < 2; pass++) {
+        _retile = NO;
+        [self ensureLayout];
+        [self tile];
+        if (!_retile) break;
+    }
+    _tiling = NO;
+    _retile = NO;
 }
 
 /// Hiện đúng các ô nằm trong khung đang thấy, cất ô đã ra khỏi khung
@@ -395,6 +427,9 @@ static NSString *CBSuppKey(NSString *kind, NSInteger section) {
         if (!cell) {
             cell = [ds collectionView:self cellForItemAtIndexPath:ip];
             if (!cell) continue;
+            // Phòng hờ: trong lúc lấy ô, chỗ này đã có ô khác (gọi lồng) — cất ô kia, đừng để nó mồ côi
+            CBCollectionViewCell *other = _visibleCells[ip];
+            if (other && other != cell) [self enqueue:other];
             _visibleCells[ip] = cell;
         }
         [self show:cell frame:((const CGRect *)[_itemFrames[ip.section] bytes])[ip.row]];
@@ -455,7 +490,7 @@ static NSString *CBSuppKey(NSString *kind, NSInteger section) {
     if (!start) return;
     [self cellForItemAtIndexPath:start].highlighted = NO;
     NSIndexPath *ip = [self indexPathForItemAtPoint:[[touches anyObject] locationInView:self]];
-    id<CBCollectionViewDelegate> dg = self.delegate;
+    id<CBCollectionViewDelegate> dg = [self liveDelegate];
     if ([ip isEqual:start] && [dg respondsToSelector:@selector(collectionView:didSelectItemAtIndexPath:)]) {
         [dg collectionView:self didSelectItemAtIndexPath:ip];
     }

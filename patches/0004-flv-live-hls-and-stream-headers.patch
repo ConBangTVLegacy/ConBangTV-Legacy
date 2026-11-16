@@ -1,0 +1,1103 @@
+diff --git a/linux/core/src/flv_hls.rs b/linux/core/src/flv_hls.rs
+new file mode 100644
+index 0000000..ce9248a
+--- /dev/null
++++ b/linux/core/src/flv_hls.rs
+@@ -0,0 +1,561 @@
++//! Luồng HTTP-FLV trực tiếp (máy chủ phát bóng đá / IPTV: «…/live/xxx.flv», H.264 + AAC) → HLS trực tiếp cho AVPlayer của iOS
++//! cũ (chỉ phát HLS dạng MPEG-TS). Chỉ đổi vỏ, không giải mã: đọc thẻ FLV liên tục, H.264 → Annex B (SPS / PPS trước khung
++//! khoá), AAC → ADTS (dùng bộ ghi TS của fmp4_ts), cắt đoạn ~2 s tại khung khoá, giữ vài đoạn mới nhất trong bộ nhớ; cổng phát
++//! nội bộ trả danh sách phát trực tiếp (cửa sổ trượt) và từng đoạn. H.265 trong FLV (codec 12 / FLV mở rộng) không phát được
++//! trên máy cũ → báo lỗi rõ.
++
++use crate::fmp4_ts::{aac_params, adts_header, annex_b, avcc, pat, pes_header, pmt, ts_packets, PID_AUDIO, PID_VIDEO};
++use std::collections::VecDeque;
++use std::sync::atomic::{AtomicBool, Ordering};
++use std::sync::{Arc, Mutex};
++use std::time::Instant;
++
++/// Độ dài đoạn tối thiểu (90 kHz): cắt ở khung khoá đầu tiên sau mốc này.
++const TARGET: i128 = 2 * 90_000;
++/// Luồng không có hình: cắt theo thời lượng tiếng.
++const AUDIO_TARGET: i128 = 2 * 90_000;
++/// Số đoạn giữ trong bộ nhớ / ghi trong danh sách phát.
++const KEEP: usize = 8;
++const LIST: usize = 6;
++/// Số đoạn cần có trước khi trả danh sách phát (AVPlayer bắt đầu cách mép trực tiếp ~3 đoạn).
++pub const READY: usize = 3;
++/// Mốc thời gian cộng thêm (90 kHz): 10 s, như fmp4_ts.
++const OFFSET: i128 = 900_000;
++/// Số khung AAC gom vào một gói PES.
++const AUDIO_PER_PES: usize = 5;
++/// Mốc thời gian nhảy quá mức này (lùi / tiến) = máy chủ khởi động lại luồng → đoạn mới, đánh dấu gián đoạn.
++const JUMP: i128 = 10 * 90_000;
++
++type Res<T> = Result<T, String>;
++
++/// Một đoạn TS đã cắt xong.
++#[derive(Debug, Clone)]
++pub struct Seg {
++    pub seq: u64,
++    pub dur: f64,
++    pub disc: bool,
++    pub data: Arc<Vec<u8>>,
++}
++
++#[derive(Default)]
++struct State {
++    segs: VecDeque<Seg>,
++    next_seq: u64,
++    err: Option<String>,
++    ended: bool,
++    disc_next: bool,
++}
++
++/// Phiên FLV → HLS của cổng phát: việc tải chạy nền đẩy đoạn vào đây, cổng phát đọc ra.
++pub struct Live {
++    st: Mutex<State>,
++    closed: AtomicBool,
++    touched: Mutex<Instant>,
++}
++
++impl Default for Live {
++    fn default() -> Self {
++        Live { st: Mutex::new(State::default()), closed: AtomicBool::new(false), touched: Mutex::new(Instant::now()) }
++    }
++}
++
++impl Live {
++    pub fn new() -> Live {
++        Live::default()
++    }
++    /// Trình phát đóng / phiên bị bỏ: việc tải nền dừng ở lần đọc sau.
++    pub fn close(&self) {
++        self.closed.store(true, Ordering::SeqCst);
++    }
++    pub fn closed(&self) -> bool {
++        self.closed.load(Ordering::SeqCst)
++    }
++    /// Trình phát vừa hỏi danh sách phát / đoạn.
++    pub fn touch(&self) {
++        *self.touched.lock().unwrap() = Instant::now();
++    }
++    pub fn idle_secs(&self) -> u64 {
++        self.touched.lock().unwrap().elapsed().as_secs()
++    }
++    pub fn push(&self, dur: f64, data: Vec<u8>, disc: bool) {
++        let mut st = self.st.lock().unwrap();
++        let seq = st.next_seq;
++        st.next_seq += 1;
++        let disc = disc || std::mem::take(&mut st.disc_next);
++        st.segs.push_back(Seg { seq, dur, disc, data: Arc::new(data) });
++        while st.segs.len() > KEEP {
++            st.segs.pop_front();
++        }
++        st.err = None;
++    }
++    /// Nối lại luồng (đứt mạng / máy chủ khởi động lại): đoạn sau đánh dấu gián đoạn.
++    pub fn mark_discontinuity(&self) {
++        self.st.lock().unwrap().disc_next = true;
++    }
++    pub fn fail(&self, e: String) {
++        self.st.lock().unwrap().err = Some(e);
++    }
++    pub fn end(&self) {
++        self.st.lock().unwrap().ended = true;
++    }
++    pub fn seg_count(&self) -> usize {
++        self.st.lock().unwrap().segs.len()
++    }
++    /// Đủ đoạn để phát (Ok(true)), chưa (Ok(false)), hay lỗi khi chưa có đoạn nào.
++    pub fn ready(&self) -> Res<bool> {
++        let st = self.st.lock().unwrap();
++        if st.segs.len() >= READY || (st.ended && !st.segs.is_empty()) {
++            return Ok(true);
++        }
++        match &st.err {
++            Some(e) if st.segs.is_empty() => Err(e.clone()),
++            _ if st.ended => Err("luồng FLV kết thúc trước khi có hình".into()),
++            _ => Ok(false),
++        }
++    }
++    /// Danh sách phát trực tiếp: LIST đoạn mới nhất, địa chỉ đoạn = `<prefix>/w/<số>.ts`.
++    pub fn playlist(&self, prefix: &str) -> String {
++        let st = self.st.lock().unwrap();
++        let skip = st.segs.len().saturating_sub(LIST);
++        let segs: Vec<&Seg> = st.segs.iter().skip(skip).collect();
++        let target = segs.iter().map(|s| s.dur.ceil() as u64).max().unwrap_or(2).max(1);
++        let first = segs.first().map(|s| s.seq).unwrap_or(0);
++        let mut out = format!("#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:{target}\n#EXT-X-MEDIA-SEQUENCE:{first}\n");
++        for s in segs {
++            if s.disc {
++                out.push_str("#EXT-X-DISCONTINUITY\n");
++            }
++            out.push_str(&format!("#EXTINF:{:.3},\n{prefix}/w/{}.ts\n", s.dur, s.seq));
++        }
++        if st.ended {
++            out.push_str("#EXT-X-ENDLIST\n");
++        }
++        out
++    }
++    pub fn segment(&self, seq: u64) -> Option<Arc<Vec<u8>>> {
++        self.st.lock().unwrap().segs.iter().find(|s| s.seq == seq).map(|s| s.data.clone())
++    }
++}
++
++fn be24(d: &[u8]) -> u32 {
++    ((d[0] as u32) << 16) | ((d[1] as u32) << 8) | d[2] as u32
++}
++
++/// Đọc FLV theo dòng byte, trả các đoạn TS cắt xong.
++pub struct Remuxer {
++    buf: Vec<u8>,
++    pos: usize,
++    header: bool,
++    has_video: bool,
++    has_audio: bool,
++    avc: Option<(usize, Vec<Vec<u8>>, Vec<Vec<u8>>)>,
++    aac: Option<(u8, u8, u8)>,
++    cur: Vec<u8>,
++    cur_start: Option<i128>,
++    cur_disc: bool,
++    last_dts: Option<i128>,
++    cc_v: u8,
++    cc_a: u8,
++    audio_buf: Vec<u8>,
++    audio_pts: i128,
++    audio_frames: usize,
++    first_audio: Option<i128>,
++}
++
++impl Default for Remuxer {
++    fn default() -> Self {
++        Remuxer {
++            buf: Vec::new(),
++            pos: 0,
++            header: false,
++            has_video: true,
++            has_audio: true,
++            avc: None,
++            aac: None,
++            cur: Vec::new(),
++            cur_start: None,
++            cur_disc: false,
++            last_dts: None,
++            cc_v: 0,
++            cc_a: 0,
++            audio_buf: Vec::new(),
++            audio_pts: 0,
++            audio_frames: 0,
++            first_audio: None,
++        }
++    }
++}
++
++/// Đoạn cắt xong: (thời lượng giây, dữ liệu TS, gián đoạn)
++pub type Out = (f64, Vec<u8>, bool);
++
++impl Remuxer {
++    pub fn new() -> Remuxer {
++        Remuxer::default()
++    }
++
++    pub fn feed(&mut self, data: &[u8]) -> Res<Vec<Out>> {
++        if self.pos > 1 << 20 {
++            self.buf.drain(..self.pos);
++            self.pos = 0;
++        }
++        self.buf.extend_from_slice(data);
++        let mut out = Vec::new();
++        if !self.header {
++            if self.buf.len() - self.pos < 13 {
++                return Ok(out);
++            }
++            let h = &self.buf[self.pos..];
++            if &h[..3] != b"FLV" {
++                return Err("không phải luồng FLV".into());
++            }
++            let flags = h[4];
++            if flags & 0x05 != 0 {
++                self.has_video = flags & 0x01 != 0;
++                self.has_audio = flags & 0x04 != 0;
++            }
++            let off = u32::from_be_bytes([h[5], h[6], h[7], h[8]]) as usize;
++            if self.buf.len() - self.pos < off + 4 {
++                return Ok(out);
++            }
++            self.pos += off + 4; // + PreviousTagSize0
++            self.header = true;
++        }
++        loop {
++            let avail = self.buf.len() - self.pos;
++            if avail < 11 {
++                break;
++            }
++            let h = &self.buf[self.pos..self.pos + 11];
++            let kind = h[0] & 0x1f;
++            let size = be24(&h[1..4]) as usize;
++            let ts = (((h[7] as u32) << 24) | be24(&h[4..7])) as i128;
++            if size > 16 << 20 {
++                return Err("thẻ FLV hỏng (quá lớn)".into());
++            }
++            if avail < 11 + size + 4 {
++                break;
++            }
++            let body = self.buf[self.pos + 11..self.pos + 11 + size].to_vec();
++            self.pos += 11 + size + 4;
++            if h[0] & 0x20 != 0 {
++                continue; // thẻ mã hoá (FLV có khoá) — bỏ
++            }
++            self.tag(kind, ts, &body, &mut out)?;
++        }
++        Ok(out)
++    }
++
++    fn tag(&mut self, kind: u8, ts_ms: i128, body: &[u8], out: &mut Vec<Out>) -> Res<()> {
++        if body.is_empty() {
++            return Ok(());
++        }
++        let dts = ts_ms * 90 + OFFSET;
++        match kind {
++            9 => self.video(dts, body, out),
++            8 => self.audio(dts, body, out),
++            _ => Ok(()),
++        }
++    }
++
++    /// Mốc thời gian nhảy (máy chủ khởi động lại luồng): cắt đoạn đang có, đoạn sau đánh dấu gián đoạn.
++    fn check_jump(&mut self, dts: i128, out: &mut Vec<Out>) {
++        if let Some(last) = self.last_dts {
++            // DTS của FLV tăng dần: lùi quá 0,5 s hoặc nhảy tới quá JUMP = luồng khởi động lại
++            if (dts < last - 45_000 || dts - last > JUMP) && self.cur_start.is_some() {
++                self.finish(last, out);
++                self.cur_disc = true;
++            }
++        }
++    }
++
++    fn video(&mut self, dts: i128, body: &[u8], out: &mut Vec<Out>) -> Res<()> {
++        let b0 = body[0];
++        if b0 & 0x80 != 0 {
++            return Err("luồng FLV dùng H.265 / AV1 (FLV mở rộng) — máy chỉ giải mã H.264".into());
++        }
++        let codec = b0 & 0x0f;
++        if codec == 12 {
++            return Err("luồng FLV dùng H.265 — máy chỉ giải mã H.264".into());
++        }
++        if codec != 7 {
++            return Err(format!("luồng FLV dùng mã hình {codec} — chỉ phát được H.264"));
++        }
++        if body.len() < 5 {
++            return Ok(());
++        }
++        let key = b0 >> 4 == 1;
++        let cts_raw = be24(&body[2..5]);
++        let cts = if cts_raw & 0x80_0000 != 0 { cts_raw as i128 - (1 << 24) } else { cts_raw as i128 };
++        let data = &body[5..];
++        match body[1] {
++            0 => {
++                self.avc = avcc(data);
++                if self.avc.is_none() {
++                    return Err("cấu hình H.264 của luồng FLV hỏng".into());
++                }
++                Ok(())
++            }
++            1 => {
++                let Some((nal_len, sps, pps)) = self.avc.clone() else { return Ok(()) };
++                self.check_jump(dts, out);
++                let start_new = match self.cur_start {
++                    None => key,
++                    Some(s) => key && dts - s >= TARGET,
++                };
++                if start_new {
++                    if self.cur_start.is_some() {
++                        self.finish(dts, out);
++                    }
++                    self.begin(dts);
++                }
++                if self.cur_start.is_none() {
++                    return Ok(()); // chờ khung khoá đầu tiên
++                }
++                self.last_dts = Some(dts);
++                let mut es = Vec::with_capacity(data.len() + 64);
++                let idr = annex_b(data, nal_len, &sps, &pps, &mut es);
++                let pts = dts + cts * 90;
++                let mut pes = pes_header(0xE0, pts, (pts != dts).then_some(dts), es.len());
++                pes.extend_from_slice(&es);
++                ts_packets(&mut self.cur, &mut self.cc_v, PID_VIDEO, &pes, Some(dts - 9000), key || idr);
++                Ok(())
++            }
++            _ => Ok(()),
++        }
++    }
++
++    fn audio(&mut self, dts: i128, body: &[u8], out: &mut Vec<Out>) -> Res<()> {
++        let format = body[0] >> 4;
++        if format != 10 || body.len() < 2 {
++            return Ok(()); // chỉ AAC (MP3 / Speex… trong FLV hiếm — bỏ tiếng)
++        }
++        match body[1] {
++            0 => {
++                self.aac = aac_params(&body[2..]);
++                Ok(())
++            }
++            1 => {
++                let Some((profile, freq, ch)) = self.aac else { return Ok(()) };
++                // Đầu FLV báo có hình nhưng 4 s tiếng vẫn chưa thấy cấu hình hình → luồng chỉ có tiếng (radio)
++                let first = *self.first_audio.get_or_insert(dts);
++                if self.has_video && self.avc.is_none() && dts - first > 4 * 90_000 {
++                    self.has_video = false;
++                }
++                if !self.has_video {
++                    // Chỉ có tiếng: cắt theo thời lượng
++                    self.check_jump(dts, out);
++                    match self.cur_start {
++                        None => self.begin(dts),
++                        Some(s) if dts - s >= AUDIO_TARGET => {
++                            self.finish(dts, out);
++                            self.begin(dts);
++                        }
++                        _ => {}
++                    }
++                    self.last_dts = Some(dts);
++                }
++                if self.cur_start.is_none() {
++                    return Ok(());
++                }
++                let raw = &body[2..];
++                if self.audio_frames == 0 {
++                    self.audio_pts = dts;
++                }
++                self.audio_buf.extend_from_slice(&adts_header(profile, freq, ch, raw.len()));
++                self.audio_buf.extend_from_slice(raw);
++                self.audio_frames += 1;
++                if self.audio_frames >= AUDIO_PER_PES {
++                    self.flush_audio();
++                }
++                Ok(())
++            }
++            _ => Ok(()),
++        }
++    }
++
++    fn flush_audio(&mut self) {
++        if self.audio_buf.is_empty() {
++            return;
++        }
++        let mut pes = pes_header(0xC0, self.audio_pts, None, self.audio_buf.len());
++        pes.extend_from_slice(&self.audio_buf);
++        let alone = !self.has_video;
++        ts_packets(&mut self.cur, &mut self.cc_a, PID_AUDIO, &pes, alone.then_some(self.audio_pts - 9000), alone);
++        self.audio_buf.clear();
++        self.audio_frames = 0;
++    }
++
++    fn begin(&mut self, dts: i128) {
++        self.cur.clear();
++        pat(&mut self.cur);
++        // Chỉ khai báo tiếng khi đã có cấu hình AAC (đầu FLV hay báo có tiếng dù luồng không có) — khai thừa làm trình phát chờ
++        pmt(&mut self.cur, self.has_video, self.has_audio && self.aac.is_some());
++        self.cur_start = Some(dts);
++    }
++
++    fn finish(&mut self, end: i128, out: &mut Vec<Out>) {
++        self.flush_audio();
++        let Some(start) = self.cur_start.take() else { return };
++        let dur = ((end - start).max(1) as f64) / 90_000.0;
++        out.push((dur, std::mem::take(&mut self.cur), std::mem::take(&mut self.cur_disc)));
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    fn tag(kind: u8, ts: u32, body: &[u8]) -> Vec<u8> {
++        let mut v = vec![kind, (body.len() >> 16) as u8, (body.len() >> 8) as u8, body.len() as u8];
++        v.extend_from_slice(&[(ts >> 16) as u8, (ts >> 8) as u8, ts as u8, (ts >> 24) as u8, 0, 0, 0]);
++        v.extend_from_slice(body);
++        v.extend_from_slice(&((11 + body.len()) as u32).to_be_bytes());
++        v
++    }
++
++    fn header(flags: u8) -> Vec<u8> {
++        let mut v = b"FLV\x01".to_vec();
++        v.push(flags);
++        v.extend_from_slice(&9u32.to_be_bytes());
++        v.extend_from_slice(&0u32.to_be_bytes());
++        v
++    }
++
++    fn avc_config() -> Vec<u8> {
++        // AVCDecoderConfigurationRecord: version 1, profile 66, compat 0, level 30, 4-byte NAL, 1 SPS, 1 PPS
++        let sps = [0x67, 0x42, 0x00, 0x1e, 0xab];
++        let pps = [0x68, 0xce, 0x3c, 0x80];
++        let mut c = vec![1, 66, 0, 30, 0xff, 0xe1, 0, sps.len() as u8];
++        c.extend_from_slice(&sps);
++        c.push(1);
++        c.extend_from_slice(&[0, pps.len() as u8]);
++        c.extend_from_slice(&pps);
++        let mut body = vec![0x17, 0, 0, 0, 0];
++        body.extend_from_slice(&c);
++        body
++    }
++
++    fn frame(key: bool, cts: u32) -> Vec<u8> {
++        let nal: &[u8] = if key { &[0x65, 0x88, 0x84, 0x00] } else { &[0x41, 0x9a, 0x00] };
++        let mut body = vec![if key { 0x17 } else { 0x27 }, 1, (cts >> 16) as u8, (cts >> 8) as u8, cts as u8];
++        body.extend_from_slice(&(nal.len() as u32).to_be_bytes());
++        body.extend_from_slice(nal);
++        body
++    }
++
++    fn aac_config() -> Vec<u8> {
++        // AAC-LC 44,1 kHz stereo: 00010 0100 0010 000
++        vec![0xAF, 0, 0x12, 0x10]
++    }
++
++    fn aac_frame() -> Vec<u8> {
++        vec![0xAF, 1, 0x21, 0x10, 0x05, 0x00]
++    }
++
++    /// 6 giây hình 25 khung/giây, khung khoá mỗi giây, tiếng AAC ~43 khung/giây
++    fn stream() -> Vec<u8> {
++        let mut v = header(0x05);
++        v.extend(tag(9, 0, &avc_config()));
++        v.extend(tag(8, 0, &aac_config()));
++        for i in 0..150u32 {
++            let t = i * 40;
++            v.extend(tag(9, t, &frame(i % 25 == 0, 80)));
++            if i % 2 == 0 {
++                v.extend(tag(8, t, &aac_frame()));
++                v.extend(tag(8, t + 23, &aac_frame()));
++            }
++        }
++        v
++    }
++
++    fn pts_of(pkt: &[u8]) -> Option<u64> {
++        // gói đầu PES: payload bắt đầu 00 00 01
++        if pkt[1] & 0x40 == 0 {
++            return None;
++        }
++        let mut i = 4;
++        if pkt[3] & 0x20 != 0 {
++            i += 1 + pkt[4] as usize;
++        }
++        let p = &pkt[i..];
++        if p.len() < 14 || p[..3] != [0, 0, 1] {
++            return None;
++        }
++        let b = &p[9..14];
++        Some(((((b[0] >> 1) & 7) as u64) << 30) | ((b[1] as u64) << 22) | (((b[2] >> 1) as u64) << 15) | ((b[3] as u64) << 7) | (b[4] >> 1) as u64)
++    }
++
++    #[test]
++    fn cuts_segments_at_keyframes() {
++        let data = stream();
++        let mut r = Remuxer::new();
++        let mut segs = Vec::new();
++        // nạp từng khúc 1000 byte như đọc mạng
++        for c in data.chunks(1000) {
++            segs.extend(r.feed(c).unwrap());
++        }
++        // khung khoá ở 0, 1, 2, …, 5 s; đoạn ≥ 2 s → cắt ở 2 s và 4 s
++        assert_eq!(segs.len(), 2, "{:?}", segs.iter().map(|s| s.0).collect::<Vec<_>>());
++        for (dur, ts, disc) in &segs {
++            assert!((*dur - 2.0).abs() < 0.01);
++            assert!(!disc);
++            assert_eq!(ts.len() % 188, 0);
++            assert_eq!(ts[0], 0x47);
++            // gói 1 = PAT, gói 2 = PMT
++            assert_eq!(((ts[1] as u16 & 0x1f) << 8) | ts[2] as u16, 0);
++            assert_eq!(((ts[189] as u16 & 0x1f) << 8) | ts[190] as u16, 0x1000);
++        }
++        // PTS hình đầu đoạn 2 = 2 s + 10 s + 80 ms (cts)
++        let ts = &segs[1].1;
++        let first_video = ts.chunks(188).find(|p| ((p[1] as u16 & 0x1f) << 8 | p[2] as u16) == PID_VIDEO).unwrap();
++        assert_eq!(pts_of(first_video), Some((2000 + 80) * 90 + 900_000));
++        // có cả tiếng
++        assert!(ts.chunks(188).any(|p| ((p[1] as u16 & 0x1f) << 8 | p[2] as u16) == PID_AUDIO));
++    }
++
++    #[test]
++    fn rejects_hevc_and_non_flv() {
++        let mut r = Remuxer::new();
++        let mut v = header(0x01);
++        v.extend(tag(9, 0, &[0x1C, 0, 0, 0, 0, 1, 2, 3]));
++        assert!(r.feed(&v).unwrap_err().contains("H.265"));
++        let mut r = Remuxer::new();
++        assert!(r.feed(b"#EXTM3U\n#EXTINF:2,\nseg.ts\n").is_err());
++    }
++
++    #[test]
++    fn timestamp_jump_marks_discontinuity() {
++        let mut v = header(0x01);
++        v.extend(tag(9, 0, &avc_config()));
++        for i in 0..75u32 {
++            v.extend(tag(9, i * 40, &frame(i % 25 == 0, 0)));
++        }
++        // máy chủ khởi động lại: mốc thời gian về 0
++        for i in 0..75u32 {
++            v.extend(tag(9, i * 40, &frame(i % 25 == 0, 0)));
++        }
++        let mut r = Remuxer::new();
++        let segs = r.feed(&v).unwrap();
++        assert!(segs.len() >= 2);
++        assert!(segs.iter().skip(1).any(|s| s.2), "đoạn sau khi nhảy mốc phải đánh dấu gián đoạn");
++    }
++
++    #[test]
++    fn live_playlist_window() {
++        let live = Live::new();
++        assert_eq!(live.ready(), Ok(false));
++        for _ in 0..10 {
++            live.push(2.0, vec![0x47; 188], false);
++        }
++        assert_eq!(live.ready(), Ok(true));
++        let pl = live.playlist("http://127.0.0.1:1/tok");
++        assert!(pl.contains("#EXT-X-MEDIA-SEQUENCE:4"));
++        assert_eq!(pl.matches("#EXTINF").count(), LIST);
++        assert!(pl.contains("http://127.0.0.1:1/tok/w/9.ts"));
++        assert!(live.segment(1).is_none() && live.segment(9).is_some());
++        let dead = Live::new();
++        dead.fail("HTTP 404".into());
++        assert_eq!(dead.ready(), Err("HTTP 404".into()));
++    }
++}
+diff --git a/linux/core/src/fmp4_ts.rs b/linux/core/src/fmp4_ts.rs
+index 4310a3c..8368f8e 100644
+--- a/linux/core/src/fmp4_ts.rs
++++ b/linux/core/src/fmp4_ts.rs
+@@ -8,8 +8,8 @@ use std::collections::HashMap;
+ type Res<T> = Result<T, String>;
+ 
+ const PID_PMT: u16 = 0x1000;
+-const PID_VIDEO: u16 = 0x100;
+-const PID_AUDIO: u16 = 0x101;
++pub(crate) const PID_VIDEO: u16 = 0x100;
++pub(crate) const PID_AUDIO: u16 = 0x101;
+ /// Mốc thời gian cộng thêm (90 kHz): 10 s.
+ const OFFSET: i128 = 900_000;
+ /// Số khung AAC gom vào một gói PES.
+@@ -191,7 +191,12 @@ fn edit_shift(elst: &[u8]) -> i64 {
+ }
+ 
+ fn parse_avc(entry: &[u8]) -> Option<Codec> {
+-    let c = child(entry.get(78..)?, b"avcC")?;
++    let (nal_len, sps, pps) = avcc(child(entry.get(78..)?, b"avcC")?)?;
++    Some(Codec::Avc { nal_len, sps, pps })
++}
++
++/// AVCDecoderConfigurationRecord (hộp avcC / gói cấu hình AVC của FLV) → (độ dài tiền tố NAL, SPS, PPS).
++pub(crate) fn avcc(c: &[u8]) -> Option<(usize, Vec<Vec<u8>>, Vec<Vec<u8>>)> {
+     let nal_len = (*c.get(4)? & 3) as usize + 1;
+     let mut i = 5usize;
+     let sets = |count_mask: u8, i: &mut usize| -> Option<Vec<Vec<u8>>> {
+@@ -207,7 +212,15 @@ fn parse_avc(entry: &[u8]) -> Option<Codec> {
+     };
+     let sps = sets(0x1f, &mut i)?;
+     let pps = sets(0xff, &mut i).unwrap_or_default();
+-    Some(Codec::Avc { nal_len, sps, pps })
++    Some((nal_len, sps, pps))
++}
++
++/// AudioSpecificConfig → (profile, freq_idx, channels) cho đầu khung ADTS.
++pub(crate) fn aac_params(d: &[u8]) -> Option<(u8, u8, u8)> {
++    match asc(d)? {
++        Codec::Aac { profile, freq_idx, channels } => Some((profile, freq_idx, channels)),
++        _ => None,
++    }
+ }
+ 
+ fn parse_mp4a(entry: &[u8]) -> Option<Codec> {
+@@ -412,7 +425,7 @@ fn samples<'a>(init: &Init, seg: &'a [u8]) -> Res<Vec<Sample<'a>>> {
+ }
+ 
+ /// Mẫu H.264 (NAL có độ dài đứng trước) → Annex B: AUD, SPS / PPS trước khung khoá (nếu mẫu chưa có), các NAL.
+-fn annex_b(sample: &[u8], nal_len: usize, sps: &[Vec<u8>], pps: &[Vec<u8>], out: &mut Vec<u8>) -> bool {
++pub(crate) fn annex_b(sample: &[u8], nal_len: usize, sps: &[Vec<u8>], pps: &[Vec<u8>], out: &mut Vec<u8>) -> bool {
+     let mut nals: Vec<&[u8]> = Vec::new();
+     let mut i = 0usize;
+     while i + nal_len <= sample.len() {
+@@ -445,7 +458,7 @@ fn annex_b(sample: &[u8], nal_len: usize, sps: &[Vec<u8>], pps: &[Vec<u8>], out:
+     idr
+ }
+ 
+-fn adts_header(profile: u8, freq_idx: u8, channels: u8, payload: usize) -> [u8; 7] {
++pub(crate) fn adts_header(profile: u8, freq_idx: u8, channels: u8, payload: usize) -> [u8; 7] {
+     let len = payload + 7;
+     [
+         0xFF,
+@@ -482,12 +495,12 @@ fn psi_packet(out: &mut Vec<u8>, pid: u16, section: &[u8]) {
+     out.extend_from_slice(&pkt);
+ }
+ 
+-fn pat(out: &mut Vec<u8>) {
++pub(crate) fn pat(out: &mut Vec<u8>) {
+     let s = [0x00, 0xB0, 13, 0x00, 0x01, 0xC1, 0x00, 0x00, 0x00, 0x01, 0xE0 | (PID_PMT >> 8) as u8, PID_PMT as u8];
+     psi_packet(out, 0, &s);
+ }
+ 
+-fn pmt(out: &mut Vec<u8>, video: bool, audio: bool) {
++pub(crate) fn pmt(out: &mut Vec<u8>, video: bool, audio: bool) {
+     let pcr = if video { PID_VIDEO } else { PID_AUDIO };
+     let mut streams: Vec<(u8, u16)> = Vec::new();
+     if video {
+@@ -514,7 +527,7 @@ fn put_ts(h: &mut Vec<u8>, prefix: u8, t: i128) {
+     h.push(((t & 0x7f) << 1) as u8 | 1);
+ }
+ 
+-fn pes_header(stream_id: u8, pts: i128, dts: Option<i128>, payload: usize) -> Vec<u8> {
++pub(crate) fn pes_header(stream_id: u8, pts: i128, dts: Option<i128>, payload: usize) -> Vec<u8> {
+     let hlen = if dts.is_some() { 10 } else { 5 };
+     let total = 3 + hlen + payload;
+     // Gói hình: độ dài 0 (không giới hạn) như FFmpeg; gói tiếng ghi đúng độ dài
+@@ -531,7 +544,7 @@ fn pes_header(stream_id: u8, pts: i128, dts: Option<i128>, payload: usize) -> Ve
+ }
+ 
+ /// Chia một gói PES thành các gói TS 188 byte; gói đầu mang PCR / cờ truy cập ngẫu nhiên nếu có.
+-fn ts_packets(out: &mut Vec<u8>, cc: &mut u8, pid: u16, pes: &[u8], pcr: Option<i128>, random_access: bool) {
++pub(crate) fn ts_packets(out: &mut Vec<u8>, cc: &mut u8, pid: u16, pes: &[u8], pcr: Option<i128>, random_access: bool) {
+     let mut pos = 0usize;
+     let mut first = true;
+     while pos < pes.len() {
+diff --git a/linux/core/src/lib.rs b/linux/core/src/lib.rs
+index e02bd4d..6049e72 100644
+--- a/linux/core/src/lib.rs
++++ b/linux/core/src/lib.rs
+@@ -33,6 +33,7 @@ pub mod invite;
+ pub mod disclaimer;
+ pub mod media_proxy;
+ pub mod fmp4_ts;
++pub mod flv_hls;
+ pub mod web_fetch;
+ 
+ pub use models::*;
+diff --git a/linux/core/src/media_proxy.rs b/linux/core/src/media_proxy.rs
+index 4f0c5a9..48e8268 100644
+--- a/linux/core/src/media_proxy.rs
++++ b/linux/core/src/media_proxy.rs
+@@ -9,6 +9,11 @@
+ //! - `i/<n>.m3u8` danh sách phát có sẵn nội dung (trình phát nhúng tự giải mã ra `data:…;base64` — streamfree).
+ //! - `m/<đoạn>-<khởi tạo>.ts` (bản iOS cũ — `remux_fmp4`): đoạn fMP4 + đoạn khởi tạo EXT-X-MAP đổi thành MPEG-TS
+ //!   (fmp4_ts.rs) — AVPlayer iOS < 10 chỉ phát HLS dạng TS (dexter.pw).
++//! - `w/live.m3u8`, `w/<số>.ts` (bản iOS cũ — kênh truyền hình): luồng HTTP-FLV trực tiếp đổi thành HLS trực tiếp (flv_hls.rs);
++//!   việc tải FLV chạy nền theo phiên, tự nối lại khi đứt, dừng khi trình phát thôi hỏi.
++//!
++//! Tiêu đề gửi lên máy chủ gốc theo phiên (Hdr): Referer (gốc trang, hoặc đúng địa chỉ danh sách kênh ghi — «http-referrer»),
++//! User-Agent riêng của luồng (danh sách kênh M3U ghi «http-user-agent»: máy chủ thể thao chỉ trả cho trình phát nó quen).
+ //!
+ //! Mã phiên ngẫu nhiên; chỉ vài phiên mới nhất dùng được — trang web khác trên máy không mượn được cổng này để tải hộ.
+ 
+@@ -39,11 +44,35 @@ fn remux_fmp4() -> bool {
+ 
+ struct Session {
+     token: String,
+-    /// Referer gửi lên máy chủ video (dạng gốc trang — như trình duyệt gửi cho yêu cầu khác tên miền)
+-    referer: Option<String>,
++    /// Tiêu đề gửi lên máy chủ video
++    hd: Hdr,
+     /// Danh sách phát có sẵn nội dung (i/<n>.m3u8)
+     inline: Vec<String>,
+     links: Links,
++    /// Luồng FLV trực tiếp đang đổi sang HLS (w/…)
++    live: Option<Arc<crate::flv_hls::Live>>,
++}
++
++/// Tiêu đề riêng của phiên gửi lên máy chủ gốc.
++#[derive(Debug, Clone, Default, PartialEq)]
++pub struct Hdr {
++    /// Referer: gốc trang chứa trình phát (như trình duyệt gửi cho yêu cầu khác tên miền), hoặc đúng địa chỉ danh sách kênh ghi
++    pub referer: Option<String>,
++    /// User-Agent riêng (trống = của app)
++    pub ua: Option<String>,
++    pub origin: Option<String>,
++}
++
++impl Hdr {
++    /// `referer` (đúng như ghi) ưu tiên hơn gốc của `page`.
++    pub fn of(page: Option<&str>, referer: Option<&str>, ua: Option<&str>, origin: Option<&str>) -> Hdr {
++        let clean = |v: Option<&str>| v.map(str::trim).filter(|v| !v.is_empty() && !v.contains(['\r', '\n'])).map(str::to_string);
++        Hdr {
++            referer: clean(referer).filter(|r| r.starts_with("http")).or_else(|| page.and_then(referer_of)),
++            ua: clean(ua),
++            origin: clean(origin),
++        }
++    }
+ }
+ 
+ /// Bảng địa chỉ gốc của một phiên: đường dẫn trên cổng chỉ mang số thứ tự — link gốc có thể dài hàng nghìn ký tự (streamc của
+@@ -185,10 +214,10 @@ pub async fn probe(src: &str, page: Option<&str>, hls: bool) -> bool {
+     if !(hls || is_playlist(src)) {
+         return true;
+     }
+-    let referer = page.and_then(referer_of);
++    let hd = Hdr::of(page, None, None, None);
+     let mut url = src.to_string();
+     for _ in 0..2 {
+-        let Ok(mut resp) = fetch(&url, referer.as_deref(), None, false).await else { return false };
++        let Ok(mut resp) = fetch(&url, &hd, None, false).await else { return false };
+         if !resp.status().is_success() {
+             return false;
+         }
+@@ -213,14 +242,30 @@ pub async fn probe(src: &str, page: Option<&str>, hls: bool) -> bool {
+ /// `page` = trang chứa trình phát (để gửi Referer); `hls` = biết chắc là luồng HLS dù link không có đuôi .m3u8 (trình phát
+ /// nhúng báo — NguonC / streamc dùng link token). None khi địa chỉ không dùng được.
+ pub fn open(src: &str, subtitle: Option<&str>, page: Option<&str>, hls: bool) -> Option<Opened> {
++    open_ex(src, subtitle, hls, Hdr::of(page, None, None, None), false)
++}
++
++/// Như `open`, kèm tiêu đề riêng của luồng (`hd`); `flv` = luồng HTTP-FLV trực tiếp (kênh truyền hình) — đổi thành HLS trực
++/// tiếp: địa chỉ trả về là `w/live.m3u8`, việc tải luồng chạy nền tới khi phiên đóng.
++pub fn open_ex(src: &str, subtitle: Option<&str>, hls: bool, hd: Hdr, flv: bool) -> Option<Opened> {
+     let port = start();
+     let token = format!("{:032x}", rand::random::<u128>());
+     let prefix = format!("http://127.0.0.1:{port}/{token}");
+     let mut inline = Vec::new();
+     let mut links = Links::default();
++    let mut live = None;
+     let url = if src.starts_with("data:") {
+         inline.push(data_text(src)?);
+         format!("{prefix}/i/0.m3u8")
++    } else if flv {
++        let u = url::Url::parse(src).ok()?;
++        if u.scheme() != "http" && u.scheme() != "https" {
++            return None;
++        }
++        let l = Arc::new(crate::flv_hls::Live::new());
++        crate::rt().spawn(run_flv(src.to_string(), hd.clone(), l.clone()));
++        live = Some(l);
++        format!("{prefix}/w/live.m3u8")
+     } else {
+         let u = url::Url::parse(src).ok()?;
+         if u.scheme() != "http" && u.scheme() != "https" {
+@@ -230,10 +275,20 @@ pub fn open(src: &str, subtitle: Option<&str>, page: Option<&str>, hls: bool) ->
+     };
+     let subtitle = subtitle.filter(|s| s.starts_with("http")).map(|s| local(&prefix, 't', s, &mut links));
+     let mut ss = SESSIONS.lock().unwrap();
+-    ss.push(Session { token: token.clone(), referer: page.and_then(referer_of), inline, links });
++    // Mỗi lúc chỉ một trình phát: phiên mới (đổi kênh / nguồn) thì dừng luồng FLV của phiên cũ ngay, khỏi tải nền tới 90 s
++    for s in ss.iter() {
++        if let Some(l) = &s.live {
++            l.close();
++        }
++    }
++    ss.push(Session { token: token.clone(), hd, inline, links, live });
+     let n = ss.len();
+     if n > KEEP_SESSIONS {
+-        ss.drain(..n - KEEP_SESSIONS);
++        for old in ss.drain(..n - KEEP_SESSIONS) {
++            if let Some(l) = old.live {
++                l.close();
++            }
++        }
+     }
+     Some(Opened { url, subtitle, token })
+ }
+@@ -249,7 +304,75 @@ pub fn debug_hang(on: bool) {
+ 
+ /// Đóng mọi phiên (thoát trình phát): địa chỉ cũ hết dùng được.
+ pub fn close_all() {
+-    SESSIONS.lock().unwrap().clear();
++    for s in SESSIONS.lock().unwrap().drain(..) {
++        if let Some(l) = s.live {
++            l.close();
++        }
++    }
++}
++
++/// Việc nền của phiên FLV: tải luồng, đổi thành đoạn TS; đứt thì nối lại (đoạn sau đánh dấu gián đoạn). Dừng khi phiên đóng,
++/// trình phát thôi hỏi quá 90 s, luồng không phát được (không phải FLV / H.265), hoặc hỏng liền 6 lần không ra đoạn nào.
++async fn run_flv(src: String, hd: Hdr, live: Arc<crate::flv_hls::Live>) {
++    let mut fails = 0u32;
++    let mut first = true;
++    while !live.closed() && live.idle_secs() < 90 && fails < 6 {
++        if !first {
++            tokio::time::sleep(Duration::from_secs(if fails == 0 { 1 } else { 3 })).await;
++            live.mark_discontinuity();
++        }
++        first = false;
++        let mut resp = match fetch(&src, &hd, None, true).await {
++            Ok(r) if r.status().is_success() => r,
++            Ok(r) => {
++                // 403 / 404: chưa tới giờ phát hoặc link chết — thử thêm vài lần rồi thôi
++                live.fail(format!("luồng FLV: máy chủ trả HTTP {}", r.status().as_u16()));
++                fails += 1;
++                continue;
++            }
++            Err(e) => {
++                live.fail(format!("luồng FLV: {e}"));
++                fails += 1;
++                continue;
++            }
++        };
++        crate::log::d("media", &format!("luồng FLV: đã kết nối {}", short(&src)));
++        let mut rx = crate::flv_hls::Remuxer::new();
++        let mut produced = false;
++        loop {
++            if live.closed() || live.idle_secs() >= 90 {
++                break;
++            }
++            match chunk(&mut resp).await {
++                Ok(Some(c)) => match rx.feed(&c) {
++                    Ok(segs) => {
++                        for (dur, data, disc) in segs {
++                            live.push(dur, data, disc);
++                            produced = true;
++                        }
++                    }
++                    Err(e) => {
++                        // Không phát được (không phải FLV, H.265…): báo ngay, không nối lại
++                        crate::log::d("media", &format!("luồng FLV không đổi được ({e}): {}", short(&src)));
++                        live.fail(e);
++                        live.end();
++                        return;
++                    }
++                },
++                Ok(None) => {
++                    live.fail("luồng FLV: máy chủ đóng kết nối".into());
++                    break;
++                }
++                Err(e) => {
++                    live.fail(format!("luồng FLV đứt: {e}"));
++                    break;
++                }
++            }
++        }
++        fails = if produced { 0 } else { fails + 1 };
++    }
++    crate::log::d("media", &format!("luồng FLV dừng ({} đoạn trong bộ nhớ): {}", live.seg_count(), short(&src)));
++    live.end();
+ }
+ 
+ /// Nội dung của `data:…;base64,…` (hoặc `data:…,văn bản%xx`).
+@@ -633,9 +756,9 @@ async fn reply<W: AsyncWrite + Unpin>(w: &mut W, code: u16, ct: &str, body: &[u8
+     w.flush().await.is_ok()
+ }
+ 
+-fn session(token: &str) -> Option<(Option<String>, Vec<String>)> {
++fn session(token: &str) -> Option<(Hdr, Vec<String>, Option<Arc<crate::flv_hls::Live>>)> {
+     let ss = SESSIONS.lock().unwrap();
+-    ss.iter().find(|s| s.token == token).map(|s| (s.referer.clone(), s.inline.clone()))
++    ss.iter().find(|s| s.token == token).map(|s| (s.hd.clone(), s.inline.clone(), s.live.clone()))
+ }
+ 
+ /// Dùng bảng địa chỉ của phiên (viết lại danh sách phát / tra số thứ tự).
+@@ -645,7 +768,7 @@ fn with_links<R>(token: &str, f: impl FnOnce(&mut Links) -> R) -> Option<R> {
+ }
+ 
+ /// Tải từ máy chủ gốc qua máy khách của app; lỗi kết nối / 5xx / 429 thì thử lại (1 → 2 → 4 s) như hls.html.
+-async fn fetch(url: &str, referer: Option<&str>, range: Option<&str>, long: bool) -> Result<reqwest::Response, String> {
++async fn fetch(url: &str, hd: &Hdr, range: Option<&str>, long: bool) -> Result<reqwest::Response, String> {
+     let mut last = String::new();
+     for attempt in 0..4u32 {
+         if attempt > 0 {
+@@ -656,9 +779,15 @@ async fn fetch(url: &str, referer: Option<&str>, range: Option<&str>, long: bool
+             .header("Accept", "*/*")
+             .header("Accept-Language", "vi-VN,vi;q=0.9,en;q=0.8")
+             .timeout(Duration::from_secs(if long { 6 * 3600 } else { 180 }));
+-        if let Some(r) = referer {
++        if let Some(r) = &hd.referer {
+             rb = rb.header("Referer", r);
+         }
++        if let Some(u) = &hd.ua {
++            rb = rb.header("User-Agent", u);
++        }
++        if let Some(o) = &hd.origin {
++            rb = rb.header("Origin", o);
++        }
+         if let Some(r) = range {
+             rb = rb.header("Range", r);
+         }
+@@ -696,11 +825,11 @@ async fn handle<W: AsyncWrite + Unpin>(req: &Request, w: &mut W) -> bool {
+     let path = req.path.split('?').next().unwrap_or("");
+     let mut it = path.trim_start_matches('/').splitn(3, '/');
+     let (token, kind, name) = (it.next().unwrap_or(""), it.next().unwrap_or(""), it.next().unwrap_or(""));
+-    let Some((referer, inline)) = session(token) else {
++    let Some((hd, inline, live)) = session(token) else {
+         return reply(w, 404, "text/plain", b"", head_only).await;
+     };
+     let prefix = format!("http://127.0.0.1:{}/{token}", start());
+-    let referer = referer.as_deref();
++    let hd = &hd;
+     // ?h=<chiều cao>: chất lượng người xem chọn (danh sách chính — tidy_master)
+     let want_h: u32 = req
+         .path
+@@ -719,7 +848,36 @@ async fn handle<W: AsyncWrite + Unpin>(req: &Request, w: &mut W) -> bool {
+         };
+     }
+     if kind == "m" {
+-        return remux_segment(token, name, referer, w, head_only).await;
++        return remux_segment(token, name, hd, w, head_only).await;
++    }
++    if kind == "w" {
++        let Some(live) = live else { return reply(w, 404, "text/plain", b"", head_only).await };
++        live.touch();
++        if name.starts_with("live") {
++            // Lần đầu: chờ đủ vài đoạn (tối đa 25 s) — luồng FLV cần vài giây mới cắt được đoạn đầu
++            for _ in 0..250 {
++                match live.ready() {
++                    Ok(true) => break,
++                    Ok(false) if !live.closed() => tokio::time::sleep(Duration::from_millis(100)).await,
++                    Ok(false) => break,
++                    Err(e) => {
++                        crate::log::d("media", &format!("danh sách phát FLV lỗi: {e}"));
++                        return reply(w, 502, "text/plain", e.as_bytes(), head_only).await;
++                    }
++                }
++            }
++            if live.seg_count() == 0 {
++                crate::log::d("media", "luồng FLV: 25 s chưa có hình");
++                return reply(w, 502, "text/plain", b"", head_only).await;
++            }
++            let t = live.playlist(&prefix);
++            return reply(w, 200, "application/vnd.apple.mpegurl", t.as_bytes(), head_only).await;
++        }
++        let seq = name.split('.').next().and_then(|n| n.parse::<u64>().ok());
++        return match seq.and_then(|n| live.segment(n)) {
++            Some(d) => reply(w, 200, "video/mp2t", &d, head_only).await,
++            None => reply(w, 404, "text/plain", b"", head_only).await,
++        };
+     }
+     let Some(url) = id_of(name).and_then(|id| with_links(token, |l| l.get(id).cloned()).flatten()) else {
+         return reply(w, 404, "text/plain", b"", head_only).await;
+@@ -727,7 +885,7 @@ async fn handle<W: AsyncWrite + Unpin>(req: &Request, w: &mut W) -> bool {
+     match kind {
+         "p" => {
+             let r = async {
+-                let mut resp = fetch(&url, referer, None, false).await?;
++                let mut resp = fetch(&url, hd, None, false).await?;
+                 if !resp.status().is_success() {
+                     return Err(format!("HTTP {}", resp.status().as_u16()));
+                 }
+@@ -753,7 +911,7 @@ async fn handle<W: AsyncWrite + Unpin>(req: &Request, w: &mut W) -> bool {
+         }
+         "k" | "t" => {
+             let r = async {
+-                let mut resp = fetch(&url, referer, None, false).await?;
++                let mut resp = fetch(&url, hd, None, false).await?;
+                 if !resp.status().is_success() {
+                     return Err(format!("HTTP {}", resp.status().as_u16()));
+                 }
+@@ -773,8 +931,8 @@ async fn handle<W: AsyncWrite + Unpin>(req: &Request, w: &mut W) -> bool {
+                 }
+             }
+         }
+-        "s" => segment(&url, referer, w, head_only).await,
+-        "f" => file(&url, referer, req.range.as_deref(), w, head_only).await,
++        "s" => segment(&url, hd, w, head_only).await,
++        "f" => file(&url, hd, req.range.as_deref(), w, head_only).await,
+         _ => reply(w, 404, "text/plain", b"", head_only).await,
+     }
+ }
+@@ -786,11 +944,11 @@ fn short(u: &str) -> String {
+ /// Đoạn khởi tạo fMP4 đã đọc (vài luồng gần nhất) — mỗi đoạn video dùng lại.
+ static INITS: Mutex<Vec<(String, Arc<crate::fmp4_ts::Init>)>> = Mutex::new(Vec::new());
+ 
+-async fn init_of(url: &str, referer: Option<&str>) -> Result<Arc<crate::fmp4_ts::Init>, String> {
++async fn init_of(url: &str, hd: &Hdr) -> Result<Arc<crate::fmp4_ts::Init>, String> {
+     if let Some(i) = INITS.lock().unwrap().iter().find(|x| x.0 == url).map(|x| x.1.clone()) {
+         return Ok(i);
+     }
+-    let mut resp = fetch(url, referer, None, false).await?;
++    let mut resp = fetch(url, hd, None, false).await?;
+     if !resp.status().is_success() {
+         return Err(format!("đoạn khởi tạo HTTP {}", resp.status().as_u16()));
+     }
+@@ -804,7 +962,7 @@ async fn init_of(url: &str, referer: Option<&str>) -> Result<Arc<crate::fmp4_ts:
+ }
+ 
+ /// m/<đoạn>-<khởi tạo>.ts: tải đoạn fMP4 (cùng lúc với đoạn khởi tạo nếu chưa có) rồi đổi thành MPEG-TS.
+-async fn remux_segment<W: AsyncWrite + Unpin>(token: &str, name: &str, referer: Option<&str>, w: &mut W, head_only: bool) -> bool {
++async fn remux_segment<W: AsyncWrite + Unpin>(token: &str, name: &str, hd: &Hdr, w: &mut W, head_only: bool) -> bool {
+     let stem = name.split('.').next().unwrap_or("");
+     let ids: Option<(usize, usize)> = stem.split_once('-').and_then(|(a, b)| Some((a.parse().ok()?, b.parse().ok()?)));
+     let urls = ids.and_then(|(s, m)| with_links(token, |l| Some((l.get(s)?.clone(), l.get(m)?.clone()))).flatten());
+@@ -813,13 +971,13 @@ async fn remux_segment<W: AsyncWrite + Unpin>(token: &str, name: &str, referer:
+     };
+     let r = async {
+         let seg = async {
+-            let mut resp = fetch(&seg_url, referer, None, false).await?;
++            let mut resp = fetch(&seg_url, hd, None, false).await?;
+             if !resp.status().is_success() {
+                 return Err(format!("HTTP {}", resp.status().as_u16()));
+             }
+             read_all(&mut resp).await
+         };
+-        let (init, seg) = tokio::join!(init_of(&init_url, referer), seg);
++        let (init, seg) = tokio::join!(init_of(&init_url, hd), seg);
+         let (init, seg) = (init?, seg?);
+         crate::fmp4_ts::remux(&init, &seg)
+     }
+@@ -835,8 +993,8 @@ async fn remux_segment<W: AsyncWrite + Unpin>(token: &str, name: &str, referer:
+ 
+ /// Đoạn video: biết trước độ dài và không phải PNG thì chuyển tiếp từng phần ngay (trình phát bắt đầu giải mã sớm);
+ /// đoạn ngụy trang PNG / không rõ độ dài thì tải trọn rồi trả.
+-async fn segment<W: AsyncWrite + Unpin>(url: &str, referer: Option<&str>, w: &mut W, head_only: bool) -> bool {
+-    let mut resp = match fetch(url, referer, None, false).await {
++async fn segment<W: AsyncWrite + Unpin>(url: &str, hd: &Hdr, w: &mut W, head_only: bool) -> bool {
++    let mut resp = match fetch(url, hd, None, false).await {
+         Ok(r) if r.status().is_success() => r,
+         Ok(r) => {
+             crate::log::d("media", &format!("đoạn video HTTP {}: {}", r.status().as_u16(), short(url)));
+@@ -911,10 +1069,10 @@ async fn segment<W: AsyncWrite + Unpin>(url: &str, referer: Option<&str>, w: &mu
+ }
+ 
+ /// Tệp video thường: chuyển tiếp yêu cầu Range (tua) và trả lời của máy chủ gốc.
+-async fn file<W: AsyncWrite + Unpin>(url: &str, referer: Option<&str>, range: Option<&str>, w: &mut W, head_only: bool) -> bool {
++async fn file<W: AsyncWrite + Unpin>(url: &str, hd: &Hdr, range: Option<&str>, w: &mut W, head_only: bool) -> bool {
+     // Trình phát không xin Range (tải cả tệp): vẫn xin «bytes=0-» lên máy chủ — máy chủ trả từng khúc (k-20) mà không có Range thì
+     // chỉ trả khúc đầu với mã 200, trình phát tưởng cả tệp chỉ dài một khúc
+-    let mut resp = match fetch(url, referer, Some(range.unwrap_or("bytes=0-")), true).await {
++    let mut resp = match fetch(url, hd, Some(range.unwrap_or("bytes=0-")), true).await {
+         Ok(r) => r,
+         Err(e) => {
+             crate::log::d("media", &format!("tệp video lỗi ({e}): {}", short(url)));
+@@ -987,7 +1145,7 @@ async fn file<W: AsyncWrite + Unpin>(url: &str, referer: Option<&str>, range: Op
+                 }
+                 // Khúc sau (tới byte cuối đã xin)
+                 let next = format!("bytes={pos}-{}", stop - 1);
+-                resp = match fetch(url, referer, Some(&next), true).await {
++                resp = match fetch(url, hd, Some(&next), true).await {
+                     Ok(r) if r.status().as_u16() == 206 => r,
+                     _ => {
+                         crate::log::d("media", &format!("tệp video: không tải được khúc từ byte {pos}: {}", short(url)));
+@@ -1244,6 +1402,15 @@ mod tests {
+         let t = open("https://embed14.streamc.xyz/eyJ0IjoiZXlK", None, None, true).unwrap();
+         assert!(t.url.contains("/p/") && t.url.ends_with(".m3u8"));
+         assert!(open("ftp://x/y", None, None, false).is_none());
+-        assert_eq!(session(&o.token).unwrap().0.as_deref(), Some("https://site.vn/"));
++        assert_eq!(session(&o.token).unwrap().0.referer.as_deref(), Some("https://site.vn/"));
++        // Tiêu đề riêng của kênh: Referer đúng như ghi, User-Agent riêng; FLV → danh sách phát trực tiếp w/live.m3u8
++        let hd = Hdr::of(Some("https://site.vn/x"), Some("https://live.site/kenh/1"), Some("VLC/3.0"), None);
++        assert_eq!(hd.referer.as_deref(), Some("https://live.site/kenh/1"));
++        assert_eq!(Hdr::of(Some("https://site.vn/x"), Some("  "), Some("a\r\nX: y"), None), Hdr { referer: Some("https://site.vn/".into()), ua: None, origin: None });
++        let l = open_ex("http://cdn.invalid/live/a.flv", None, false, hd.clone(), true).unwrap();
++        assert!(l.url.ends_with("/w/live.m3u8"));
++        let (h, _, live) = session(&l.token).unwrap();
++        assert_eq!(h.ua.as_deref(), Some("VLC/3.0"));
++        live.expect("phiên FLV").close();
+     }
+ }
+diff --git a/linux/ffi/src/media.rs b/linux/ffi/src/media.rs
+index 4b85897..6d1e8bf 100644
+--- a/linux/ffi/src/media.rs
++++ b/linux/ffi/src/media.rs
+@@ -21,7 +21,15 @@ fn hls(a: &Value) -> bool {
+ pub fn sync(m: &str, a: &Value) -> Option<Res> {
+     Some(match m {
+         // Mở phiên phát: {url, subtitle, token} cho mpv; null = địa chỉ không dùng được
+-        "media.open" => Ok(media_proxy::open(&s(a, "src"), opt_s(a, "sub").as_deref(), opt_s(a, "page").as_deref(), hls(a))
++        // Kênh truyền hình: «referer» (đúng như danh sách kênh ghi), «ua», «origin» gửi lên máy chủ; «flv» = luồng HTTP-FLV trực
++        // tiếp → HLS trực tiếp (AVPlayer iOS cũ)
++        "media.open" => Ok(media_proxy::open_ex(
++            &s(a, "src"),
++            opt_s(a, "sub").as_deref(),
++            hls(a),
++            media_proxy::Hdr::of(opt_s(a, "page").as_deref(), opt_s(a, "referer").as_deref(), opt_s(a, "ua").as_deref(), opt_s(a, "origin").as_deref()),
++            a.get("flv").and_then(|v| v.as_bool()).unwrap_or(false),
++        )
+             .map(|o| json!({ "url": o.url, "subtitle": o.subtitle, "token": o.token }))
+             .unwrap_or(Value::Null)),
+         "media.isPlaylist" => Ok(json!(media_proxy::is_playlist(&s(a, "src")))),

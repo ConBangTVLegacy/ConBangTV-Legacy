@@ -11,6 +11,8 @@
 #import "CBRowCell.h"
 #import "CBSettingsViewController.h"
 #import "CBSync.h"
+#import "CBIPTV.h"
+#import "CBTVViewController.h"
 #import "CBTheme.h"
 
 @interface CBHomeViewController () <UIActionSheetDelegate>
@@ -154,7 +156,9 @@
         b.titleLabel.font = font;
         [b setTitle:t forState:UIControlStateNormal];
         BOOL star = [t hasPrefix:@"★"] || [t hasPrefix:@"☆"];
-        [b setTitleColor:star ? [CBTheme focus] : [CBTheme text] forState:UIControlStateNormal];
+        BOOL tv = [CBStr(_categories[i], @"kind") isEqualToString:@"tv"];
+        [b setTitleColor:star ? [CBTheme focus] : (tv ? [CBTheme brand] : [CBTheme text]) forState:UIControlStateNormal];
+        if (tv) b.titleLabel.font = [CBTheme bold:font.pointSize];
         [b setBackgroundImage:[CBTheme imageWithColor:[CBTheme surface]] forState:UIControlStateNormal];
         [b setBackgroundImage:[CBTheme imageWithColor:[CBTheme surface2]] forState:UIControlStateHighlighted];
         b.layer.cornerRadius = h / 2;
@@ -184,6 +188,10 @@
 
 - (void)openCategory:(NSDictionary *)cat {
     NSString *kind = CBStr(cat, @"kind");
+    if ([kind isEqualToString:@"tv"]) {
+        [self.navigationController pushViewController:[[CBTVViewController alloc] init] animated:YES];
+        return;
+    }
     if ([kind isEqualToString:@"follows"]) {
         [self.navigationController pushViewController:[[CBGridViewController alloc] initFollows] animated:YES];
         return;
@@ -292,6 +300,15 @@
     }
     if (_fresh.count) CBLog(@"Có tập mới: %lu phim theo dõi + tự động (lõi đưa %lu)", (unsigned long)fresh.count, (unsigned long)_fresh.count);
     if (fresh.count) [rows addObject:@{@"id": @"new-eps", @"title": @"Có tập mới", @"items": fresh, @"more": @"follows:"}];
+    // Kênh vừa xem (truyền hình): kênh còn trong danh sách đang chọn
+    NSMutableArray *tv = [NSMutableArray array];
+    if ([CBIPTV activeList]) {
+        for (NSDictionary *r in [CBIPTV recent]) {
+            NSDictionary *c = [CBIPTV channelForKey:CBStr(r, @"k")];
+            if (c) [tv addObject:c];
+        }
+    }
+    if (tv.count) [rows addObject:@{@"id": @"tv-recent", @"title": @"Kênh vừa xem", @"items": tv, @"more": @"tv:"}];
     // Xem tiếp: lịch sử (bấm là phát tiếp)
     NSMutableArray *cont = [NSMutableArray array];
     for (NSDictionary *h in [CBPrefs history]) {
@@ -455,6 +472,7 @@
 /// Danh mục (dải nút đầu trang, giống menu bản Windows): Điểm IMDb cao, Thể loại… / Quốc gia… (trang có bộ lọc), danh mục của trang
 - (NSArray *)menuWith:(id)cats {
     NSMutableArray *m = [NSMutableArray arrayWithObjects:@{@"title": @"☆ Theo dõi", @"kind": @"follows"},
+                                                         @{@"title": @"Truyền hình", @"kind": @"tv"},
                                                          @{@"title": @"★ Điểm IMDb cao", @"url": @"imdb:top"}, nil];
     if ([CBFilterViewController available]) {
         [m addObject:@{@"title": @"Thể loại…", @"kind": @"genres"}];
@@ -493,7 +511,9 @@
 }
 
 - (CGFloat)tableView:(UITableView *)tableView heightForRowAtIndexPath:(NSIndexPath *)ip {
-    if (ip.section < (NSInteger)[self allRows].count) return [CBRowCell height];
+    NSArray *rows = [self allRows];
+    if (ip.section < (NSInteger)rows.count && [CBStr(rows[ip.section], @"id") isEqualToString:@"tv-recent"]) return [CBTVRowCell height];
+    if (ip.section < (NSInteger)rows.count) return [CBRowCell height];
     if (_note && ip.row == 0) return MAX(60, [CBTheme heightOf:_note font:[CBTheme font:15] width:tableView.bounds.size.width - 40] + 30);
     return 44;
 }
@@ -533,6 +553,17 @@
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)ip {
     NSArray *rows = [self allRows];
+    if (ip.section < (NSInteger)rows.count && [CBStr(rows[ip.section], @"id") isEqualToString:@"tv-recent"]) {
+        CBTVRowCell *cell = [tableView dequeueReusableCellWithIdentifier:@"tv"];
+        if (!cell) cell = [[CBTVRowCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"tv"];
+        NSArray *channels = CBArr(rows[ip.section], @"items");
+        __weak CBHomeViewController *weakSelf = self;
+        cell.onSelect = ^(NSInteger i) {
+            if (i < (NSInteger)channels.count) [CBTVViewController playKey:CBStr(channels[i], @"k") from:weakSelf];
+        };
+        [cell setChannels:channels];
+        return cell;
+    }
     if (ip.section < (NSInteger)rows.count) {
         CBRowCell *cell = [tableView dequeueReusableCellWithIdentifier:@"row"];
         if (!cell) cell = [[CBRowCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"row"];
@@ -599,6 +630,10 @@
     NSArray *rows = [self allRows];
     if (b.tag >= (NSInteger)rows.count) return;
     NSDictionary *row = rows[b.tag];
+    if ([CBStr(row, @"more") isEqualToString:@"tv:"]) {
+        [self.navigationController pushViewController:[[CBTVViewController alloc] init] animated:YES];
+        return;
+    }
     if ([CBStr(row, @"more") isEqualToString:@"follows:"] || [CBStr(row, @"more") isEqualToString:@"history:"]) {
         BOOL follows = [CBStr(row, @"more") isEqualToString:@"follows:"];
         [self.navigationController pushViewController:follows ? [[CBGridViewController alloc] initFollows]

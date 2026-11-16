@@ -6,7 +6,10 @@
 #import "CBHomeViewController.h"
 #import "CBLog.h"
 #import "CBNavController.h"
+#import "CBJSON.h"
+#import "CBParental.h"
 #import "CBPrefs.h"
+#import "CBTVViewController.h"
 #import "CBProfilesViewController.h"
 #import "CBSync.h"
 #import "CBUpdate.h"
@@ -40,6 +43,14 @@
     self.window.rootViewController = self.nav;
     [self.window makeKeyAndVisible];
     dispatch_async(dispatch_get_main_queue(), ^{ [self gates]; });
+    // Mở app bằng thông báo «Nhắc tôi» của lịch phát sóng: phát kênh đó (sau màn miễn trừ / chọn người xem)
+    UILocalNotification *ln = launchOptions[UIApplicationLaunchOptionsLocalNotificationKey];
+    NSString *tvKey = CBIsStr(ln.userInfo[@"iptv"]) ? ln.userInfo[@"iptv"] : nil;
+    if (tvKey.length) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            if (!self.nav.presentedViewController) [CBTVViewController playKey:tvKey from:self.nav];
+        });
+    }
 #ifdef DEBUG
     [CBDebug start];
 #endif
@@ -63,6 +74,21 @@
     // Chọn xong: trang chủ tự tải lại ở viewWillAppear nếu người xem đổi (trước đây tải thêm một lần nữa ở đây)
     CBProfilesViewController *p = [[CBProfilesViewController alloc] init];
     [self.nav presentViewController:p animated:NO completion:nil];
+}
+
+/// Thông báo «Nhắc tôi» (lịch phát sóng): app đang mở thì hỏi; chạm thông báo khi app nằm nền thì phát luôn
+- (void)application:(UIApplication *)application didReceiveLocalNotification:(UILocalNotification *)n {
+    NSString *key = CBIsStr(n.userInfo[@"iptv"]) ? n.userInfo[@"iptv"] : nil;
+    if (!key.length) return;
+    CBLog(@"Truyền hình: thông báo nhắc %@ (%@)", key, n.alertBody);
+    if (application.applicationState == UIApplicationStateActive) {
+        NSString *title = CBIsStr(n.userInfo[@"title"]) ? n.userInfo[@"title"] : @"Sắp phát";   // «Bóng lăn» (nhắc trận đấu)
+        [[CBAlert title:title message:n.alertBody cancel:@"Để sau" others:@[@"Xem ngay"] done:^(CBAlert *a, NSInteger i) {
+            if (i != a.cancelButtonIndex) [CBTVViewController playKey:key from:self.nav];
+        }] show];
+    } else {
+        [CBTVViewController playKey:key from:self.nav];
+    }
 }
 
 - (void)applicationDidBecomeActive:(UIApplication *)application {

@@ -12,10 +12,11 @@ BIN = os.path.expanduser("~/theos/toolchain/linux/iphone/bin")
 
 
 def short_name(path):
-    # Cách ld đặt «tên ngắn» trong `nm -m`: libSystem.B.dylib → libSystem, Foundation.framework/Foundation → Foundation
+    # Cách ld đặt «tên ngắn» trong `nm -m`: libSystem.B.dylib → libSystem, libz.1.dylib → libz,
+    # Foundation.framework/Foundation → Foundation
     base = os.path.basename(path)
     base = re.sub(r"\.dylib$", "", base)
-    return re.sub(r"\.[A-Z]$", "", base)
+    return re.sub(r"\.([A-Z]|\d+)$", "", base)
 
 
 def main():

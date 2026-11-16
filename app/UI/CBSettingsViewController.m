@@ -10,6 +10,8 @@
 #import "CBProfilesViewController.h"
 #import "CBProxyViewController.h"
 #import "CBSyncViewController.h"
+#import "CBIPTV.h"
+#import "CBTVSettingsViewController.h"
 #import "CBUpdate.h"
 #import "CBTheme.h"
 
@@ -82,7 +84,7 @@ typedef NS_ENUM(NSInteger, CBSettingsAlert) {
         case CBSecSites: return 3 + _sites.count;  // tổng hợp, hồ sơ trẻ em, từng trang, «Đo tốc độ các trang»
         case CBSecPlayer: return 6;  // tự chuyển tập, bước tua, lấp đầy, xem riêng, server dự phòng KKPhim, đặt lại server
         case CBSecNet: return 3;
-        case CBSecData: return 3;    // đồng bộ, xoá lịch sử, xoá ảnh
+        case CBSecData: return 4;    // đồng bộ, xoá lịch sử, xoá ảnh, truyền hình
         case CBSecAbout: return 4;   // phiên bản, miễn trừ, liên hệ, tự kiểm tra bản mới
     }
     return 0;
@@ -221,6 +223,13 @@ typedef NS_ENUM(NSInteger, CBSettingsAlert) {
                 NSUInteger n = CBIsArr(peers) ? [peers count] : 0;
                 UITableViewCell *c = [self cell:tv text:@"Đồng bộ trong nhà"
                                           detail:n ? [NSString stringWithFormat:@"%lu máy", (unsigned long)n] : @"Chưa ghép"];
+                c.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+                return c;
+            }
+            if (ip.row == 3) {
+                NSUInteger n = [CBIPTV lists].count;
+                UITableViewCell *c = [self cell:tv text:@"Truyền hình (IPTV)"
+                                          detail:n ? [NSString stringWithFormat:@"%lu danh sách kênh", (unsigned long)n] : @"Chưa có kênh"];
                 c.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
                 return c;
             }
@@ -409,6 +418,8 @@ typedef NS_ENUM(NSInteger, CBSettingsAlert) {
         [self.navigationController pushViewController:[[CBProxyViewController alloc] init] animated:YES];
     } else if (ip.section == CBSecData && ip.row == 0) {
         [self.navigationController pushViewController:[[CBSyncViewController alloc] init] animated:YES];
+    } else if (ip.section == CBSecData && ip.row == 3) {
+        [self.navigationController pushViewController:[[CBTVSettingsViewController alloc] init] animated:YES];
     } else if (ip.section == CBSecData && ip.row == 1) {
         [[self ask:@"Xoá lịch sử xem?" message:@"Xoá danh sách «Xem tiếp» và chỗ đang xem của mọi tập (người xem hiện tại)."
                tag:CBAlertClear style:UIAlertViewStyleDefault ok:@"Xoá"] show];

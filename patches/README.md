@@ -17,3 +17,15 @@
   bỏ thuộc tính / phụ đề trong luồng iOS 6 không biết); danh sách chính có `?h=<chiều cao>` (app — mục «Chất lượng») thì
   chỉ giữ bản cao nhất không quá mức đó (+ rãnh tiếng riêng). Đã thử bằng ffmpeg với luồng thật (Coco: 432 khung hình + tiếng giải
   mã ra giống hệt bản fMP4 gốc; Dexter server 20 hình / tiếng tách riêng). 8 phép thử `fmp4_ts`, 2 phép thử `media_proxy`.
+- `0004-flv-live-hls-and-stream-headers.patch` — kênh truyền hình (IPTV) trên iOS cũ:
+  - **Tiêu đề riêng của luồng**: `media.open` nhận thêm `referer` (gửi đúng như danh sách kênh M3U ghi — `#EXTVLCOPT:http-referrer`,
+    `url|Referer=` — thay vì chỉ gốc trang), `ua` (`http-user-agent`: máy chủ thể thao chỉ trả cho trình phát nó quen) và
+    `origin`; mọi yêu cầu của phiên (danh sách phát, đoạn, khoá, tệp) đều gửi kèm (`media_proxy::Hdr`, `open_ex`).
+  - **HTTP-FLV trực tiếp → HLS trực tiếp** (`flv: true`): AVPlayer iOS 5 / 6 chỉ phát HLS dạng TS. Việc nền của phiên đọc luồng
+    FLV, đổi vỏ (`flv_hls.rs`, dùng chung bộ ghi TS của `fmp4_ts`: H.264 → Annex B + SPS / PPS trước khung khoá, AAC → ADTS),
+    cắt đoạn ~2 s ở khung khoá, giữ 8 đoạn trong bộ nhớ; cổng phát trả `w/live.m3u8` (6 đoạn mới nhất, chờ đủ 3 đoạn lần đầu)
+    và `w/<số>.ts`. Đứt thì nối lại, đoạn sau có `#EXT-X-DISCONTINUITY` (mốc thời gian lùi / nhảy cũng vậy); dừng khi phiên
+    đóng hoặc trình phát thôi hỏi 90 s. H.265 / AV1 trong FLV báo lỗi rõ (máy chỉ giải mã H.264).
+  - Đã thử: ffmpeg phát qua cổng một luồng FLV 720p (B-frame + AAC) nhả theo nhịp thời gian thật — máy chủ nhận đúng UA /
+    Referer, danh sách phát có sau ~4 s, 20 s lấy ra giải mã hết không lỗi. 4 phép thử `flv_hls`, thêm phép thử phiên FLV /
+    tiêu đề trong `media_proxy`.

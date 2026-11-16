@@ -18,6 +18,8 @@ ifneq ($(FINALPACKAGE),1)
 ConBangTV_FILES += $(wildcard Debug/*.m)
 endif
 ConBangTV_FRAMEWORKS = UIKit Foundation CoreGraphics QuartzCore AVFoundation CoreMedia MediaPlayer ImageIO Security
+# zlib: giải nén lịch phát sóng XMLTV .xml.gz (Core/CBIPTV.m)
+ConBangTV_LIBRARIES = z
 ConBangTV_CFLAGS = -fobjc-arc -Wno-deprecated-declarations -ICore -IUI -IDebug
 
 # Giải mã ảnh WebP (iOS 6 không có; ảnh bìa KKPhim / yanhh3d… là WebP): libwebp — tools/vendor-libwebp.sh → vendor/libwebp.

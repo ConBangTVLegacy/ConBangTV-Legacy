@@ -51,6 +51,7 @@ Cổng phát nội bộ 127.0.0.1 (media_proxy: bỏ quảng cáo, cắt PNG ng�
 | Proxy | Cài đặt → Mạng → Proxy: SOCKS5 (có đăng nhập) hoặc Shadowsocks (dán link `ss://`), DNS qua proxy, chỉ trang phim, thử kết nối; lõi lo hết (trang, video qua cổng phát nội bộ, ảnh tải qua lõi khi proxy cho cả app); proxy lỗi thì báo lỗi, không đi thẳng |
 | Giới hạn giờ xem | từng người xem: số phút mỗi ngày, giờ đi ngủ (tới 6 giờ sáng); hết giờ phim dừng, xem thêm cần mã PIN phụ huynh — cùng khoá với bản Windows / TV / iPad |
 | Đồng bộ trong nhà | ghép với tivi / Windows / iPad bằng mã 4 số (lõi `sync_service`, cổng 8791): lịch sử, chỗ xem, theo dõi, người xem, trang phim |
+| Truyền hình (IPTV) | chip «Truyền hình» + hàng «Kênh vừa xem» ở trang chủ, Cài đặt › Dữ liệu › Truyền hình. **App không kèm sẵn kênh**: người xem tự thêm danh sách M3U / M3U8 (`Core/CBIPTV.m` — #EXTINF tvg-id / tvg-name / tvg-logo / group-title / tvg-chno, #EXTGRP, #EXTVLCOPT `http-referrer` / `http-user-agent`, `url\|Referer=…&User-Agent=…`; kênh trùng tên trong nhóm gộp thành nhiều nguồn; đệm `Library/Caches/iptv`, tải lại sau 6 giờ). Lịch phát sóng XMLTV (địa chỉ trong đầu danh sách hoặc tự đặt; `.gz` giải nén ra đĩa, đọc dần bằng NSXMLParser — iPad 1 chỉ 256 MB), «Nhắc tôi» 5 phút trước giờ phát. Lưới kênh: nhóm, tìm / gõ số kênh, ★ yêu thích, chương trình đang phát + thanh tiến độ. Trình phát trực tiếp (`UI/CBLivePlayerViewController.m`): toàn màn hình, «☰ Kênh» mở bảng kênh, nút tự ẩn sau 6 s, vuốt lên / xuống đổi kênh, tạm dừng → «CHẬM m:ss» / «Về trực tiếp», nguồn lỗi tự sang nguồn sau, luồng máy không giải mã được (H.265 / AV1 / quá khổ) ghi «không phát được», giới hạn giờ xem. Referer / User-Agent riêng của nguồn gửi lên máy chủ qua lõi; **luồng HTTP-FLV** (.flv — kênh thể thao) lõi đổi sang HLS trực tiếp (bản vá 0004). **Danh sách thể thao** (giờ trận trong tên: «20:00 16/11 ⚽ A vs B (BLV …) [hls]»): mỗi BLV một kênh, bản HLS / FLV thành nhiều nguồn; dòng «● Đang đá» / «Sắp đá 20:00 · còn 25 phút» / «Đã xong», trận đang đá lên đầu; trận còn > 30 phút thì hỏi «Nhắc lúc bóng lăn / Vẫn mở»; trận sắp / đang đá mà chưa có hình (kể cả link giả «no-signal» của danh sách) thì chờ, tải lại danh sách và thử lại mỗi 20 s; danh sách có trận tải lại sau 30 phút |
 
 Bản thử (không `FINALPACKAGE=1`) có `Debug/CBDebug.m`: đọc lệnh từ `Documents/ConBangTV-cmd.txt` (`shot`, `film`, `play`, `search`,
 `settings`, `profiles`, `sync`, `syncpair`, `pick`, `scroll`, `wait`, `status`, `core`, `pref`, `notifyadd` / `notifycheck` /
@@ -58,8 +59,11 @@ Bản thử (không `FINALPACKAGE=1`) có `Debug/CBDebug.m`: đọc lệnh từ 
 thật của UIKit (`Debug/CBTouch.m`, toạ độ là điểm trong cửa sổ, hệ dọc), `orient <1–4>` giả xoay máy, `memwarn` giả thiếu bộ nhớ, `pull` giả kéo trang chủ
 để tải lại, `rawplay` / `rawmedia <url>` phát thử có khung hình + `rawstop`, `web <url> [referer]` / `webframe <url> <trang gốc>`
 mở trang trong UIWebView (kèm trang gốc — trang nhúng chặn yêu cầu không có), `wkinfo` / `js <biểu thức>` xem WebKit đang nạp
-và tính năng / thẻ `<video>` của trang, `browserpage` / `venetium` trang mà nút «Mở trong Venetium» sẽ mở / bấm nút đó…) để thử tự động qua SSH. Lệnh mới đừng đặt tên bắt đầu bằng «wait» (bị hiểu là
-lệnh chờ).
+và tính năng / thẻ `<video>` của trang, `browserpage` / `venetium` trang mà nút «Mở trong Venetium» sẽ mở / bấm nút đó; truyền
+hình: `tv`, `tvadd <url>`, `tvlists`, `tvuse <số>`, `tvrefresh`, `tvepg`, `tvepgurl`, `tvguide <ô>`, `tvgroup <số>`, `tvq <chữ>`,
+`tvplay <ô>`, `tvnext` / `tvprev` / `tvch <số>` / `tvpanel` / `tvpause` / `tvlive` / `tvsrc` / `tvclose`, `tvstatus`,
+`tvsettings`, `tvmatches [từ ô]` (trạng thái trận, nguồn HLS / FLV), `tvremind <ô>`…) để thử tự động qua SSH. Lệnh mới đừng đặt
+tên bắt đầu bằng «wait» (bị hiểu là lệnh chờ).
 
 ## Dựng (máy Linux, vd Ubuntu 22.04+)
 
@@ -159,6 +163,17 @@ sử, vuốt ngang hàng phim, kéo xuống để tải lại, cuộn tự tải
   mới), nhưng tweak tắt MediaSource cho mọi trang (phát video bằng VLC / trình phát gốc) → trình phát NguonC dùng HLS gốc và máy
   chủ đoạn phim của NguonC từ chối — không giúp xem NguonC. Venetium (Chromium, có MediaSource) xem được: mở trang phim NguonC,
   tắt «Chặn quảng cáo» cho trang rồi tải lại trang; quảng cáo trước phim có nút bỏ qua sau 1 giây.
+- **Truyền hình — AVPlayer iOS 5 / 6 chỉ phát HLS (TS) và tệp MP4**: luồng HTTP-FLV (phần lớn kênh thể thao) lõi đọc liên tục
+  rồi đổi vỏ sang HLS trực tiếp (`flv_hls.rs`, bản vá 0004 — chỉ đổi vỏ H.264 / AAC, không giải mã; iPad 1 phát 853×480 không
+  rớt khung); luồng TS liền / MKV / DASH vẫn chưa phát được (báo rõ, sang nguồn khác). Máy chủ thể thao đòi đúng User-Agent /
+  Referer mà danh sách ghi — lõi gửi theo từng phiên. Danh sách thể thao để link giả «no-signal» (ảnh 10 s + ENDLIST) cho trận
+  chưa có link: AVPlayer phát hết rồi app mở lại mãi → nhận ra (địa chỉ / danh sách phát ngắn có hồi kết) và coi như chưa có nguồn.
+- **Delegate của UIScrollView / UITableView trên iOS 5 / 6 là `assign`**: màn chủ đã giải phóng mà lưới còn vẽ lại thì gọi vào
+  vùng nhớ đã trả (văng khi bấm «home» lúc đang ở màn Truyền hình) → `CBCollectionView` giữ thêm tham chiếu yếu và gỡ delegate
+  khi chủ đã mất; các màn tự đặt delegate về nil khi giải phóng.
+- **Ô lưới «mồ côi»**: ô kênh gọi `layoutIfNeeded` (đo khung logo) khi lưới đang dựng ô → CALayer bố cục ngược lên lưới, dựng ô
+  lồng trong lần dựng đang chạy; lần ngoài ghi đè ô của lần trong → ô đó vẫn hiện mà không ai quản, đè ô thật (sau khi đổi danh
+  sách kênh vẫn thấy kênh của danh sách cũ) → `CBCollectionView` chặn dựng lồng (dựng lại tối đa thêm một lượt).
 - **UIAlertView iOS 6**: lúc hộp đang hiện, `keyWindow` là cửa sổ của hộp — mở màn mới (trình phát) từ cửa sổ của app
   (`delegate.window`) và trong `didDismissWithButtonIndex`, không thì màn mở ra không hiện.
 - **HLS fMP4** (dexter.pw: `#EXT-X-MAP` + đoạn `moof` / `mdat`): AVPlayer iOS 6 chỉ phát HLS dạng MPEG-TS (fMP4 có từ iOS 10) →
