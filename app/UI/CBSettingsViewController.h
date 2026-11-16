@@ -1,5 +1,5 @@
-#import <UIKit/UIKit.h>
+#import "CBGroupedTableViewController.h"
 
 /// Cài đặt: người xem, trang phim, phát video, mạng, lịch sử, thông tin.
-@interface CBSettingsViewController : UITableViewController
+@interface CBSettingsViewController : CBGroupedTableViewController
 @end

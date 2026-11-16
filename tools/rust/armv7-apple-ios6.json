@@ -3,7 +3,7 @@
   "arch": "arm",
   "archive-format": "darwin",
   "binary-format": "mach-o",
-  "cpu": "cortex-a9",
+  "cpu": "cortex-a8",
   "crt-objects-fallback": "false",
   "data-layout": "e-m:o-p:32:32-Fi8-f64:32:64-v64:32:64-v128:32:128-a:0:32-n32-S32",
   "debuginfo-kind": "dwarf-dsym",

@@ -3,7 +3,7 @@
 #   bash tools/build-release.sh           # dùng lõi đã dựng (target-core)
 #   bash tools/build-release.sh --core    # dựng lại lõi trước (tools/build-core.sh)
 # → app/packages/vn.conbangtv.legacy_<bản>_iphoneos-arm.deb (bản lấy từ app/control; nhớ đổi cả CFBundleShortVersionString
-#   trong app/Resources/Info.plist). Trước khi cài: tra ký hiệu trên máy iOS 6 bằng cbsymcheck (tools/symlist.py).
+#   trong app/Resources/Info.plist). Trước khi cài: tra ký hiệu trên máy iOS 5 và iOS 6 bằng cbsymcheck (tools/symlist.py).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 export THEOS="${THEOS:-$HOME/theos}"

@@ -12,6 +12,8 @@
     UIView *_bar;
     UILabel *_placeholder;
     double _progress;
+    NSString *_posterUrl;
+    BOOL _purged;  // ảnh đã bỏ lúc ô khuất (máy RAM thấp) — hiện lại thì nạp lại
 }
 
 + (CGFloat)defaultWidth {
@@ -24,6 +26,7 @@
 
 - (instancetype)initWithFrame:(CGRect)frame {
     if ((self = [super initWithFrame:frame])) {
+        [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(purge) name:CBImagesPurgeNotification object:nil];
         self.backgroundColor = [UIColor clearColor];
         // Nền xám + tên phim nằm dưới ảnh: ảnh tải xong tự che đi
         _placeholder = [[UILabel alloc] init];
@@ -87,8 +90,34 @@
     _badge.hidden = !badge;
     _placeholder.text = CBStr(item, @"title");
     _progress = CBNum(item, @"progress", -1);
-    [CBImages load:CBStr(item, @"poster") size:CGSizeMake(self.bounds.size.width, self.bounds.size.width * 1.5) into:_poster];
+    _posterUrl = CBStr(item, @"poster");
+    _purged = NO;
+    [self loadPoster];
     [self setNeedsLayout];
+}
+
+- (void)loadPoster {
+    [CBImages load:_posterUrl size:CGSizeMake(self.bounds.size.width, self.bounds.size.width * 1.5) into:_poster];
+}
+
+- (void)dealloc {
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
+}
+
+/// CBImages purgeOffscreen: ô đang khuất (màn dưới trình phát…) bỏ ảnh đã giải mã cho đỡ RAM
+- (void)purge {
+    if ((self.window && !self.hidden) || !_poster.image) return;  // ô ẩn = đang nằm kho chờ dùng lại của lưới
+    [CBImages cancel:_poster];
+    _poster.image = nil;
+    _purged = YES;
+}
+
+- (void)didMoveToWindow {
+    [super didMoveToWindow];
+    if (self.window && _purged) {
+        _purged = NO;
+        [self loadPoster];
+    }
 }
 
 - (void)prepareForReuse {

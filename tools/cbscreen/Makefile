@@ -1,5 +1,5 @@
 # Chụp toàn màn hình máy iOS 6 từ SSH (xem main.m) — dựng: make → .theos/obj/debug/cbscreen
-TARGET := iphone:clang:9.3:6.0
+TARGET := iphone:clang:9.3:5.0
 ARCHS = armv7
 include $(THEOS)/makefiles/common.mk
 TOOL_NAME = cbscreen

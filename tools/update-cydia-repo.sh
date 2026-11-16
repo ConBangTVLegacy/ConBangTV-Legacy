@@ -26,7 +26,7 @@ Version: 1.0
 Codename: ios6
 Architectures: iphoneos-arm
 Components: main
-Description: Côn Bằng TV cho iPhone / iPad iOS 6 đã jailbreak — https://conbangtvlegacy.github.io
+Description: Côn Bằng TV cho iPhone / iPad iOS 5 / iOS 6 đã jailbreak — https://conbangtvlegacy.github.io
 EOF
     echo "MD5Sum:"
     for f in Packages Packages.gz Packages.bz2; do echo " $(md5sum "$f" | cut -d' ' -f1) $(stat -c %s "$f") $f"; done

@@ -68,18 +68,6 @@
     return text;
 }
 
-- (void)tableView:(UITableView *)tableView willDisplayHeaderView:(UIView *)view forSection:(NSInteger)section {
-    if ([view isKindOfClass:[UITableViewHeaderFooterView class]]) {
-        UITableViewHeaderFooterView *h = (UITableViewHeaderFooterView *)view;
-        h.textLabel.textColor = [CBTheme dim];
-        h.textLabel.shadowColor = [UIColor clearColor];
-    }
-}
-
-- (void)tableView:(UITableView *)tableView willDisplayFooterView:(UIView *)view forSection:(NSInteger)section {
-    [self tableView:tableView willDisplayHeaderView:view forSection:section];
-}
-
 - (UITableViewCell *)tableView:(UITableView *)tv cellForRowAtIndexPath:(NSIndexPath *)ip {
     UITableViewCell *c = [tv dequeueReusableCellWithIdentifier:@"c"];
     if (!c) {

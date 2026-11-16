@@ -14,11 +14,11 @@ NSDictionary *CBItemFromFilm(NSDictionary *film) {
     return item;
 }
 
-@interface CBRowCell () <UICollectionViewDataSource, UICollectionViewDelegate, UICollectionViewDelegateFlowLayout>
+@interface CBRowCell () <CBCollectionViewDataSource, CBCollectionViewDelegate>
 @end
 
 @implementation CBRowCell {
-    UICollectionView *_cv;
+    CBCollectionView *_cv;
     NSArray *_items;
 }
 
@@ -30,12 +30,12 @@ NSDictionary *CBItemFromFilm(NSDictionary *film) {
     if ((self = [super initWithStyle:style reuseIdentifier:reuseIdentifier])) {
         self.backgroundColor = [CBTheme bg];
         self.selectionStyle = UITableViewCellSelectionStyleNone;
-        UICollectionViewFlowLayout *layout = [[UICollectionViewFlowLayout alloc] init];
-        layout.scrollDirection = UICollectionViewScrollDirectionHorizontal;
+        CBCollectionViewFlowLayout *layout = [[CBCollectionViewFlowLayout alloc] init];
+        layout.scrollDirection = CBCollectionViewScrollDirectionHorizontal;
         layout.itemSize = [CBPosterCell sizeForWidth:[CBPosterCell defaultWidth]];
         layout.minimumLineSpacing = 10;
         layout.sectionInset = UIEdgeInsetsMake(0, 12, 0, 12);
-        _cv = [[UICollectionView alloc] initWithFrame:self.contentView.bounds collectionViewLayout:layout];
+        _cv = [[CBCollectionView alloc] initWithFrame:self.contentView.bounds collectionViewLayout:layout];
         _cv.backgroundColor = [CBTheme bg];
         _cv.showsHorizontalScrollIndicator = NO;
         _cv.dataSource = self;
@@ -68,17 +68,17 @@ NSDictionary *CBItemFromFilm(NSDictionary *film) {
     if (ip && ip.item < (NSInteger)_items.count) self.onLongPress(_items[ip.item]);
 }
 
-- (NSInteger)collectionView:(UICollectionView *)cv numberOfItemsInSection:(NSInteger)section {
+- (NSInteger)collectionView:(CBCollectionView *)cv numberOfItemsInSection:(NSInteger)section {
     return _items.count;
 }
 
-- (UICollectionViewCell *)collectionView:(UICollectionView *)cv cellForItemAtIndexPath:(NSIndexPath *)ip {
+- (CBCollectionViewCell *)collectionView:(CBCollectionView *)cv cellForItemAtIndexPath:(NSIndexPath *)ip {
     CBPosterCell *cell = [cv dequeueReusableCellWithReuseIdentifier:@"poster" forIndexPath:ip];
     [cell setItem:_items[ip.item]];
     return cell;
 }
 
-- (void)collectionView:(UICollectionView *)cv didSelectItemAtIndexPath:(NSIndexPath *)ip {
+- (void)collectionView:(CBCollectionView *)cv didSelectItemAtIndexPath:(NSIndexPath *)ip {
     if (self.onSelect && ip.item < (NSInteger)_items.count) self.onSelect(_items[ip.item]);
 }
 

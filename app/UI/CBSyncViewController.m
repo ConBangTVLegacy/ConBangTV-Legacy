@@ -129,18 +129,6 @@ static BOOL CBTrue(id v) {
     }
 }
 
-- (void)tableView:(UITableView *)tableView willDisplayHeaderView:(UIView *)view forSection:(NSInteger)section {
-    if ([view isKindOfClass:[UITableViewHeaderFooterView class]]) {
-        UITableViewHeaderFooterView *h = (UITableViewHeaderFooterView *)view;
-        h.textLabel.textColor = [CBTheme dim];
-        h.textLabel.shadowColor = [UIColor clearColor];
-    }
-}
-
-- (void)tableView:(UITableView *)tableView willDisplayFooterView:(UIView *)view forSection:(NSInteger)section {
-    [self tableView:tableView willDisplayHeaderView:view forSection:section];
-}
-
 - (CGFloat)tableView:(UITableView *)tableView heightForRowAtIndexPath:(NSIndexPath *)ip {
     if (ip.section == CBSyncMe) return ip.row == 1 ? 64 : 58;
     if (ip.section == CBSyncPeers && ip.row < (NSInteger)_peers.count) return 58;

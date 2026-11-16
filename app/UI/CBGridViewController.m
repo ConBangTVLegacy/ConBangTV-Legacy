@@ -1,4 +1,5 @@
 #import "CBGridViewController.h"
+#import "CBCollectionView.h"
 #import "CBCore.h"
 #import "CBDetailViewController.h"
 #import "CBJSON.h"
@@ -9,7 +10,7 @@
 #import "CBRowCell.h"
 #import "CBTheme.h"
 
-@interface CBGridHeader : UICollectionReusableView
+@interface CBGridHeader : CBCollectionReusableView
 @property (nonatomic, strong) UILabel *label;
 @end
 
@@ -27,7 +28,7 @@
 }
 @end
 
-@interface CBGridViewController () <UICollectionViewDataSource, UICollectionViewDelegate, UICollectionViewDelegateFlowLayout,
+@interface CBGridViewController () <CBCollectionViewDataSource, CBCollectionViewDelegate,
                                     UISearchBarDelegate, UIActionSheetDelegate>
 @end
 
@@ -41,7 +42,7 @@
     BOOL _checking;      // đang kiểm tập mới của phim theo dõi
     NSDictionary *_longItem;
     NSInteger _token;
-    UICollectionView *_cv;
+    CBCollectionView *_cv;
     UISearchBar *_searchBar;
     UILabel *_message;
     UIActivityIndicatorView *_spinner;
@@ -199,17 +200,17 @@
 - (void)viewDidLoad {
     [super viewDidLoad];
     self.view.backgroundColor = [CBTheme bg];
-    UICollectionViewFlowLayout *layout = [[UICollectionViewFlowLayout alloc] init];
+    CBCollectionViewFlowLayout *layout = [[CBCollectionViewFlowLayout alloc] init];
     layout.minimumLineSpacing = 14;
     layout.minimumInteritemSpacing = 8;
-    _cv = [[UICollectionView alloc] initWithFrame:self.view.bounds collectionViewLayout:layout];
+    _cv = [[CBCollectionView alloc] initWithFrame:self.view.bounds collectionViewLayout:layout];
     _cv.backgroundColor = [CBTheme bg];
     _cv.alwaysBounceVertical = YES;
     _cv.dataSource = self;
     _cv.delegate = self;
     _cv.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     [_cv registerClass:[CBPosterCell class] forCellWithReuseIdentifier:@"poster"];
-    [_cv registerClass:[CBGridHeader class] forSupplementaryViewOfKind:UICollectionElementKindSectionHeader
+    [_cv registerClass:[CBGridHeader class] forSupplementaryViewOfKind:CBCollectionElementKindSectionHeader
                    withReuseIdentifier:@"head"];
     [self.view addSubview:_cv];
 
@@ -448,40 +449,40 @@ static NSString *CBFold(NSString *s) {
     return floor((w - 8 * (cols - 1)) / cols);
 }
 
-- (NSInteger)numberOfSectionsInCollectionView:(UICollectionView *)cv {
+- (NSInteger)numberOfSectionsInCollectionView:(CBCollectionView *)cv {
     return _sections.count;
 }
 
-- (NSInteger)collectionView:(UICollectionView *)cv numberOfItemsInSection:(NSInteger)section {
+- (NSInteger)collectionView:(CBCollectionView *)cv numberOfItemsInSection:(NSInteger)section {
     return CBArr(_sections[section], @"items").count;
 }
 
-- (CGSize)collectionView:(UICollectionView *)cv layout:(UICollectionViewLayout *)layout sizeForItemAtIndexPath:(NSIndexPath *)ip {
+- (CGSize)collectionView:(CBCollectionView *)cv layout:(CBCollectionViewFlowLayout *)layout sizeForItemAtIndexPath:(NSIndexPath *)ip {
     return [CBPosterCell sizeForWidth:[self cellWidth]];
 }
 
-- (UIEdgeInsets)collectionView:(UICollectionView *)cv layout:(UICollectionViewLayout *)layout insetForSectionAtIndex:(NSInteger)s {
+- (UIEdgeInsets)collectionView:(CBCollectionView *)cv layout:(CBCollectionViewFlowLayout *)layout insetForSectionAtIndex:(NSInteger)s {
     return UIEdgeInsetsMake(8, 12, 16, 12);
 }
 
-- (CGSize)collectionView:(UICollectionView *)cv layout:(UICollectionViewLayout *)layout referenceSizeForHeaderInSection:(NSInteger)s {
+- (CGSize)collectionView:(CBCollectionView *)cv layout:(CBCollectionViewFlowLayout *)layout referenceSizeForHeaderInSection:(NSInteger)s {
     return CBStr(_sections[s], @"title") ? CGSizeMake(cv.bounds.size.width, 36) : CGSizeZero;
 }
 
-- (UICollectionReusableView *)collectionView:(UICollectionView *)cv viewForSupplementaryElementOfKind:(NSString *)kind
+- (CBCollectionReusableView *)collectionView:(CBCollectionView *)cv viewForSupplementaryElementOfKind:(NSString *)kind
                                  atIndexPath:(NSIndexPath *)ip {
     CBGridHeader *h = [cv dequeueReusableSupplementaryViewOfKind:kind withReuseIdentifier:@"head" forIndexPath:ip];
     h.label.text = CBStr(_sections[ip.section], @"title");
     return h;
 }
 
-- (UICollectionViewCell *)collectionView:(UICollectionView *)cv cellForItemAtIndexPath:(NSIndexPath *)ip {
+- (CBCollectionViewCell *)collectionView:(CBCollectionView *)cv cellForItemAtIndexPath:(NSIndexPath *)ip {
     CBPosterCell *cell = [cv dequeueReusableCellWithReuseIdentifier:@"poster" forIndexPath:ip];
     [cell setItem:CBArr(_sections[ip.section], @"items")[ip.item]];
     return cell;
 }
 
-- (void)collectionView:(UICollectionView *)cv didSelectItemAtIndexPath:(NSIndexPath *)ip {
+- (void)collectionView:(CBCollectionView *)cv didSelectItemAtIndexPath:(NSIndexPath *)ip {
     NSDictionary *item = CBArr(_sections[ip.section], @"items")[ip.item];
     if ([CBStr(item, @"kind") isEqualToString:@"continue"]) {
         // Lịch sử: bấm là xem tiếp ngay (như «Xem tiếp» ở trang chủ)

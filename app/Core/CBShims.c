@@ -1,5 +1,6 @@
-// Hàm iOS 6 không có mà thư viện chuẩn Rust (rustc chỉ hỗ trợ từ iOS 10) gọi tới. Định nghĩa ngay trong app: ld gắn lời gọi
-// của Rust vào đây (tệp đối tượng của app được ưu tiên hơn thư viện hệ thống), nên dyld của iOS 6 không phải tìm.
+// Hàm iOS 5 / iOS 6 không có mà thư viện chuẩn Rust (rustc chỉ hỗ trợ từ iOS 10) gọi tới. Định nghĩa ngay trong app: ld gắn lời
+// gọi của Rust vào đây (tệp đối tượng của app được ưu tiên hơn thư viện hệ thống), nên dyld của iOS cũ không phải tìm.
+#include <dirent.h>
 #include <errno.h>
 #include <mach/mach_time.h>
 #include <math.h>
@@ -94,4 +95,15 @@ int fclonefileat(int srcfd, int dst_dirfd, const char *dst, uint32_t flags) {
 int32_t CCRandomGenerateBytes(void *bytes, size_t count) {
     arc4random_buf(bytes, count);
     return 0;  // kCCSuccess
+}
+
+// iOS 6+: dirfd là hàm của libSystem; iOS 5 chỉ có macro trong <dirent.h> (đọc thẳng trường __dd_fd của DIR — cấu trúc DIR
+// giống nhau trên iOS 5 / 6) → std::fs của Rust gọi hàm dirfd thì dyld iOS 5 không tìm thấy.
+#undef dirfd
+int dirfd(DIR *dirp) {
+    if (!dirp) {
+        errno = EINVAL;
+        return -1;
+    }
+    return dirp->__dd_fd;
 }

@@ -2,11 +2,14 @@
 //   cblaunch status            màn hình khoá? có mật khẩu? app nào đang ở trước
 //   cblaunch wake              bật sáng màn hình
 //   cblaunch launch <mã gói>   mở app (kèm yêu cầu mở khoá — máy không đặt mật khẩu)
+//   cblaunch unlock            iOS 5: bật sáng + mở khoá nhờ tools/cbwake (thư viện nạp vào SpringBoard) — iOS 5 không có hàm
+//                              mở khoá trong SpringBoardServices
 // Hàm của SpringBoardServices (API riêng) tra bằng dlsym lúc chạy: bản SDK 9.3 có những hàm iOS 6 không có, liên kết cứng thì
 // thiếu một hàm là dyld không cho chạy. Cần quyền com.apple.springboard.launchapplications (entitlements.plist).
 #include <CoreFoundation/CoreFoundation.h>
 #include <dlfcn.h>
 #include <mach/mach.h>
+#include <notify.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -86,7 +89,21 @@ int main(int argc, char **argv) {
     }
     if (argc >= 2 && !strcmp(argv[1], "status")) return status();
     if (argc >= 2 && !strcmp(argv[1], "wake")) return wake();
+    if (argc >= 2 && !strcmp(argv[1], "mem")) {
+        // Trang bộ nhớ (4 KB): máy cũ (iPad 1 — 256 MB) — xem phần «wired» (nhân, giải mã video, đồ hoạ) khi phát phim
+        vm_statistics_data_t vm;
+        mach_msg_type_number_t n = HOST_VM_INFO_COUNT;
+        if (host_statistics(mach_host_self(), HOST_VM_INFO, (host_info_t)&vm, &n) != KERN_SUCCESS) return 1;
+        printf("MB: trống %.0f, dùng %.0f, chờ %.0f, wired %.0f\n", vm.free_count * 4 / 1024.0, vm.active_count * 4 / 1024.0,
+               vm.inactive_count * 4 / 1024.0, vm.wire_count * 4 / 1024.0);
+        return 0;
+    }
+    if (argc >= 2 && !strcmp(argv[1], "unlock")) {
+        notify_post("vn.conbangtv.legacy.unlock");
+        printf("đã gửi vn.conbangtv.legacy.unlock (cần CBWake.dylib trong SpringBoard)\n");
+        return 0;
+    }
     if (argc >= 3 && !strcmp(argv[1], "launch")) return launch(argv[2]);
-    fprintf(stderr, "cách dùng: cblaunch status | wake | launch <mã gói>\n");
+    fprintf(stderr, "cách dùng: cblaunch status | wake | unlock | launch <mã gói>\n");
     return 2;
 }

@@ -16,6 +16,7 @@
 #import "CBProfilesViewController.h"
 #import "CBSettingsViewController.h"
 #import "CBSyncViewController.h"
+#import "CBTouch.h"
 #import "CBJSON.h"
 #import <AVFoundation/AVFoundation.h>
 #import <QuartzCore/QuartzCore.h>
@@ -423,6 +424,55 @@
         [player debugPlayedToEnd];
     } else if ([verb isEqualToString:@"sub"]) {
         [player loadSubtitles:arg];
+    } else if ([verb isEqualToString:@"touch"] || [verb isEqualToString:@"hold"]) {
+        // touch <x> <y> — chạm (điểm trong cửa sổ, hệ dọc); hold <x> <y> [giây] — nhấn giữ (mặc định 1 giây)
+        CGPoint p = CGPointMake([args[0] doubleValue], args.count > 1 ? [args[1] doubleValue] : 0);
+        if ([verb isEqualToString:@"touch"]) [CBTouch tapAt:p];
+        else [CBTouch holdAt:p seconds:args.count > 2 ? [args[2] doubleValue] : 1];
+    } else if ([verb isEqualToString:@"drag"]) {
+        // drag <x1> <y1> <x2> <y2> [giây] — vuốt (cuộn, kéo xuống để tải lại…)
+        if (args.count >= 4) {
+            [CBTouch dragFrom:CGPointMake([args[0] doubleValue], [args[1] doubleValue])
+                           to:CGPointMake([args[2] doubleValue], [args[3] doubleValue])
+                      seconds:args.count > 4 ? [args[4] doubleValue] : 0.5];
+        }
+    } else if ([verb isEqualToString:@"pull"]) {
+        // pull — giả kéo trang chủ xuống rồi thả (thử «kéo xuống để tải lại» tự vẽ của iOS 5; UIRefreshControl iOS 6 cần kéo thật)
+        UIViewController *root = nav.viewControllers.count ? nav.viewControllers[0] : nil;
+        [nav popToRootViewControllerAnimated:NO];
+        if ([root isKindOfClass:[UITableViewController class]]) {
+            UITableView *tv = ((UITableViewController *)root).tableView;
+            tv.contentOffset = CGPointMake(0, -80);
+            id<UIScrollViewDelegate> d = (id<UIScrollViewDelegate>)root;
+            if ([d respondsToSelector:@selector(scrollViewDidScroll:)]) [d scrollViewDidScroll:tv];
+            if ([d respondsToSelector:@selector(scrollViewDidEndDragging:willDecelerate:)]) {
+                [d scrollViewDidEndDragging:tv willDecelerate:NO];
+            }
+        }
+    } else if ([verb isEqualToString:@"rawstop"]) {
+        [self rawStop];
+    } else if ([verb isEqualToString:@"orient"]) {
+        // orient <1 dọc | 2 dọc ngược | 3 ngang phải | 4 ngang trái> — giả xoay máy (API riêng của UIDevice, chỉ để thử)
+        SEL s = NSSelectorFromString(@"setOrientation:animated:");
+        UIDevice *d = [UIDevice currentDevice];
+        if ([d respondsToSelector:s]) {
+            NSInteger o = [arg integerValue];
+            BOOL animated = YES;
+            NSInvocation *inv = [NSInvocation invocationWithMethodSignature:[d methodSignatureForSelector:s]];
+            inv.target = d;
+            inv.selector = s;
+            [inv setArgument:&o atIndex:2];
+            [inv setArgument:&animated atIndex:3];
+            [inv invoke];
+        }
+        CBLog(@"[gỡ lỗi] xoay %@ → thanh trạng thái %ld", arg, (long)[UIApplication sharedApplication].statusBarOrientation);
+    } else if ([verb isEqualToString:@"memwarn"]) {
+        // memwarn — giả cảnh báo thiếu bộ nhớ (iOS 5: các màn của app phải giữ view, xem CBCompat.m)
+        SEL s = NSSelectorFromString(@"_performMemoryWarning");
+        UIApplication *app = [UIApplication sharedApplication];
+        if ([app respondsToSelector:s]) ((void (*)(id, SEL))[app methodForSelector:s])(app, s);
+        UIViewController *root = nav.viewControllers.count ? nav.viewControllers[0] : nil;
+        CBLog(@"[gỡ lỗi] đã giả thiếu bộ nhớ — trang chủ còn view: %d", root.isViewLoaded);
     } else if ([verb isEqualToString:@"status"]) {
         CBLog(@"[trạng thái] %@", [CBImages debugStatus]);
         CBLog(@"[trạng thái] màn %@ | RAM %.1f MB%@", NSStringFromClass([[self top] class]), CBResidentMB(),
@@ -433,12 +483,26 @@
 }
 
 static AVPlayer *gRawPlayer;
+static AVPlayerLayer *gRawLayer;
+
++ (void)rawStop {
+    [gRawPlayer pause];
+    gRawPlayer = nil;
+    [gRawLayer removeFromSuperlayer];
+    gRawLayer = nil;
+}
 
 + (void)rawPlay:(NSString *)url {
-    [gRawPlayer pause];
+    [self rawStop];
     AVPlayerItem *item = [AVPlayerItem playerItemWithURL:[NSURL URLWithString:url]];
     gRawPlayer = [AVPlayer playerWithPlayerItem:item];
     [gRawPlayer play];
+    // Có khung hình (giải mã hình thật — so bộ nhớ với trình phát của app); «rawstop» để dừng
+    gRawLayer = [AVPlayerLayer playerLayerWithPlayer:gRawPlayer];
+    UIWindow *w = [UIApplication sharedApplication].keyWindow;
+    gRawLayer.frame = w.bounds;
+    gRawLayer.backgroundColor = [UIColor blackColor].CGColor;
+    [w.layer addSublayer:gRawLayer];
     CBLog(@"[raw] phát %@", url);
     for (int i = 1; i <= 10; i++) {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(i * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
@@ -454,7 +518,6 @@ static AVPlayer *gRawPlayer;
                   it.playbackLikelyToKeepUp ? @"đủ" : @"thiếu", e.domain, (long)e.code, u.domain, (long)u.code,
                   e.localizedFailureReason, a.URI, (double)a.numberOfBytesTransferred, (long)el.errorStatusCode, el.errorDomain,
                   el.errorComment);
-            if (i == 10) [gRawPlayer pause];
         });
     }
 }

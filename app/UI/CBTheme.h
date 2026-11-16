@@ -36,3 +36,7 @@
 /// thì mỗi nút rộng theo chữ, strip cuộn ngang
 + (void)layoutSegments:(UISegmentedControl *)seg inStrip:(UIScrollView *)strip frame:(CGRect)frame;
 @end
+
+/// Dấu «phát» đặt trước chữ nút: iOS 6 «▶︎» (kèm ký tự chọn kiểu chữ U+FE0E); iOS 5 không hiểu U+FE0E (hiện ô vuông) và vẽ ▶
+/// thành emoji xanh → «►»
+NSString *CBPlayIcon(void);

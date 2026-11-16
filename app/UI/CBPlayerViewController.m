@@ -1,11 +1,15 @@
 #import "CBPlayerViewController.h"
+#import "CBCollectionView.h"
 #import "CBCore.h"
+#import "CBImages.h"
 #import "CBJSON.h"
 #import "CBLog.h"
 #import "CBParental.h"
 #import "CBPrefs.h"
 #import "CBSync.h"
 #import "CBTheme.h"
+#import "CBCompat.h"
+#import <objc/message.h>
 #import "CBWaitPlayable.h"
 #import <AVFoundation/AVFoundation.h>
 #import <MediaPlayer/MediaPlayer.h>
@@ -71,9 +75,16 @@ static NSArray *CBParseSubtitles(NSString *text) {
     return cues;
 }
 
+/// iOS 5: xoay giao diện theo ý app (API riêng của UIDevice — như lệnh gỡ lỗi «orient», đã thử trên iPad 1 iOS 5.1.1)
+static void CBForceOrientation(UIInterfaceOrientation o) {
+    SEL s = NSSelectorFromString(@"setOrientation:animated:");
+    UIDevice *d = [UIDevice currentDevice];
+    if ([d respondsToSelector:s]) ((void (*)(id, SEL, NSInteger, BOOL))objc_msgSend)(d, s, (NSInteger)o, YES);
+}
+
 #pragma mark - Ô tập trong bảng chọn tập
 
-@interface CBPlayerEpCell : UICollectionViewCell
+@interface CBPlayerEpCell : CBCollectionViewCell
 @property (nonatomic, strong) UILabel *label;
 @end
 
@@ -100,8 +111,8 @@ static NSArray *CBParseSubtitles(NSString *text) {
 }
 @end
 
-@interface CBPlayerViewController () <UIGestureRecognizerDelegate, UICollectionViewDataSource,
-                                      UICollectionViewDelegate, UICollectionViewDelegateFlowLayout>
+@interface CBPlayerViewController () <UIGestureRecognizerDelegate, CBCollectionViewDataSource,
+                                      CBCollectionViewDelegate>
 @end
 
 @implementation CBPlayerViewController {
@@ -175,7 +186,7 @@ static NSArray *CBParseSubtitles(NSString *text) {
     UILabel *_titleLabel, *_timeLabel, *_durLabel, *_status, *_toast;
     UIButton *_episodesButton;   // «☰ Tập»: bảng chọn tập
     UIView *_epPanel;
-    UICollectionView *_epGrid;
+    CBCollectionView *_epGrid;
     UISegmentedControl *_epGroups;
     UIScrollView *_epGroupsStrip;
     NSInteger _panelGroup;      // bản đang xem trong bảng (chưa đổi bản đang phát cho tới khi chọn tập)
@@ -369,6 +380,13 @@ static NSArray *CBParseSubtitles(NSString *text) {
 - (void)viewDidAppear:(BOOL)animated {
     [super viewDidAppear:animated];
     _appeared = YES;
+    // Máy RAM thấp (iPad 1 — 256 MB): phát video chiếm ~65 MB bộ nhớ hệ thống → bỏ ảnh bìa của các màn bên dưới (hiện lại thì
+    // tự nạp lại), kẻo iOS tắt app giữa chừng
+    if ([CBImages lowRam]) [CBImages purgeOffscreen];
+    // iPhone iOS 5: chưa có preferredInterfaceOrientationForPresentation — mở lúc máy đang dọc thì tự xoay sang ngang
+    if (CBOldIOS() && ![CBTheme isPad] && UIInterfaceOrientationIsPortrait([UIApplication sharedApplication].statusBarOrientation)) {
+        CBForceOrientation(UIInterfaceOrientationLandscapeRight);
+    }
     if (_pendingBlock != CBLimitNone) {
         CBLimitBlock b = _pendingBlock;
         _pendingBlock = CBLimitNone;
@@ -381,6 +399,7 @@ static NSArray *CBParseSubtitles(NSString *text) {
 
 - (void)viewWillDisappear:(BOOL)animated {
     [super viewWillDisappear:animated];
+    if (CBOldIOS() && ![CBTheme isPad] && self.isBeingDismissed) CBForceOrientation(UIInterfaceOrientationPortrait);
     [[UIApplication sharedApplication] setStatusBarHidden:NO withAnimation:UIStatusBarAnimationFade];
     [UIApplication sharedApplication].idleTimerDisabled = NO;
     [[UIApplication sharedApplication] endReceivingRemoteControlEvents];
@@ -615,11 +634,11 @@ static NSArray *CBParseSubtitles(NSString *text) {
         [_epGroupsStrip addSubview:_epGroups];
         [_epPanel addSubview:_epGroupsStrip];
     }
-    UICollectionViewFlowLayout *layout = [[UICollectionViewFlowLayout alloc] init];
+    CBCollectionViewFlowLayout *layout = [[CBCollectionViewFlowLayout alloc] init];
     layout.minimumLineSpacing = 8;
     layout.minimumInteritemSpacing = 8;
     layout.sectionInset = UIEdgeInsetsMake(10, 12, 16, 12);
-    _epGrid = [[UICollectionView alloc] initWithFrame:CGRectZero collectionViewLayout:layout];
+    _epGrid = [[CBCollectionView alloc] initWithFrame:CGRectZero collectionViewLayout:layout];
     _epGrid.backgroundColor = [UIColor clearColor];
     _epGrid.dataSource = self;
     _epGrid.delegate = self;
@@ -673,21 +692,21 @@ static NSArray *CBParseSubtitles(NSString *text) {
 - (void)scrollPanelToCurrent {
     if (_panelGroup != _groupIndex || _index >= (NSInteger)[self panelEpisodes].count) return;
     [_epGrid layoutIfNeeded];
-    [_epGrid scrollToItemAtIndexPath:[NSIndexPath indexPathForItem:_index inSection:0]
-                    atScrollPosition:UICollectionViewScrollPositionCenteredVertically animated:NO];
+    [_epGrid scrollToItemAtIndexPath:[NSIndexPath indexPathForRow:_index inSection:0]
+                    atScrollPosition:CBCollectionViewScrollPositionCenteredVertically animated:NO];
 }
 
-- (NSInteger)collectionView:(UICollectionView *)cv numberOfItemsInSection:(NSInteger)section {
+- (NSInteger)collectionView:(CBCollectionView *)cv numberOfItemsInSection:(NSInteger)section {
     return [self panelEpisodes].count;
 }
 
-- (CGSize)collectionView:(UICollectionView *)cv layout:(UICollectionViewLayout *)l sizeForItemAtIndexPath:(NSIndexPath *)ip {
+- (CGSize)collectionView:(CBCollectionView *)cv layout:(CBCollectionViewFlowLayout *)l sizeForItemAtIndexPath:(NSIndexPath *)ip {
     CGFloat w = cv.bounds.size.width - 24;
     NSInteger cols = MAX(4, (NSInteger)floor((w + 8) / ([CBTheme isPad] ? 96 : 76)));
     return CGSizeMake(floor((w - 8 * (cols - 1)) / cols), 40);
 }
 
-- (UICollectionViewCell *)collectionView:(UICollectionView *)cv cellForItemAtIndexPath:(NSIndexPath *)ip {
+- (CBCollectionViewCell *)collectionView:(CBCollectionView *)cv cellForItemAtIndexPath:(NSIndexPath *)ip {
     CBPlayerEpCell *cell = [cv dequeueReusableCellWithReuseIdentifier:@"ep" forIndexPath:ip];
     NSDictionary *ep = [self panelEpisodes][ip.item];
     BOOL current = _panelGroup == _groupIndex && ip.item == _index;
@@ -698,7 +717,7 @@ static NSArray *CBParseSubtitles(NSString *text) {
     return cell;
 }
 
-- (void)collectionView:(UICollectionView *)cv didSelectItemAtIndexPath:(NSIndexPath *)ip {
+- (void)collectionView:(CBCollectionView *)cv didSelectItemAtIndexPath:(NSIndexPath *)ip {
     [self selectEpisode:ip.item];
 }
 
@@ -2029,8 +2048,10 @@ static NSArray *CBParseLevels(NSString *text) {
     // Rãnh AVPlayer đang có (luồng tiếng tách riêng — dexter.pw server 20 — thì phải có cả «soun»); bản đang phát theo BANDWIDTH
     NSMutableArray *tracks = [NSMutableArray array];
     for (AVPlayerItemTrack *t in _item.tracks) [tracks addObject:[NSString stringWithFormat:@"%@%@", t.assetTrack.mediaType ?: @"?", t.enabled ? @"" : @"(tắt)"]];
-    return [NSString stringWithFormat:@"%@ | %@ / %@ | rate %.2f (chọn %.2f) | server %@ | đệm %@ | bitrate %.0f kbps (bản %.0f kbps, %@) | rãnh %@ | khựng %ld | phụ đề %@%@ | RAM %.0f MB",
+    CGSize px = _item.presentationSize;
+    return [NSString stringWithFormat:@"%@ | %@ / %@ | rate %.2f (chọn %.2f) | hình %.0fx%.0f, rớt %ld khung | server %@ | đệm %@ | bitrate %.0f kbps (bản %.0f kbps, %@) | rãnh %@ | khựng %ld | phụ đề %@%@ | RAM %.0f MB",
             _titleLabel.text, [CBTheme time:now], [CBTheme time:CBDuration(_item)], _player.rate, _speed,
+            px.width, px.height, (long)ev.numberOfDroppedVideoFrames,
             CBStr(_servers.count > _serverIdx ? _servers[_serverIdx] : nil, @"label"),
             _item.playbackLikelyToKeepUp ? @"đủ" : @"thiếu", ev.observedBitrate / 1000, ev.indicatedBitrate / 1000,
             _levels.count >= 2 ? [self qualityText] : @"một bản",

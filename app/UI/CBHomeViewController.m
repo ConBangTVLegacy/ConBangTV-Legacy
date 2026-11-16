@@ -29,6 +29,11 @@
     NSString *_contFirst, *_freshFirst;  // phim đầu hàng «Xem tiếp» / «Có tập mới» lần dựng trước
     NSArray *_fresh;       // «fresh» của lõi: phim đang xem dở có tập mới ở bất kỳ nguồn nào [{c: thẻ, k: tên chuẩn, e: tập}]
     long long _loadedAt;   // lần tải trang chủ gần nhất (ms) — quay lại app sau 20 phút thì tải lại
+    // iOS 5 (chưa có UIRefreshControl): «kéo xuống để tải lại» tự vẽ phía trên bảng
+    UIView *_pull;
+    UILabel *_pullLabel;
+    UIActivityIndicatorView *_pullSpin;
+    BOOL _pullLoading;
 }
 
 - (instancetype)init {
@@ -43,9 +48,13 @@
     [super viewDidLoad];
     self.tableView.backgroundColor = [CBTheme bg];
     self.tableView.separatorStyle = UITableViewCellSeparatorStyleNone;
-    self.refreshControl = [[UIRefreshControl alloc] init];
-    self.refreshControl.tintColor = [CBTheme dim];
-    [self.refreshControl addTarget:self action:@selector(reload) forControlEvents:UIControlEventValueChanged];
+    if (NSClassFromString(@"UIRefreshControl")) {
+        self.refreshControl = [[UIRefreshControl alloc] init];
+        self.refreshControl.tintColor = [CBTheme dim];
+        [self.refreshControl addTarget:self action:@selector(reload) forControlEvents:UIControlEventValueChanged];
+    } else {
+        [self buildPull];  // iOS 5: chưa có UIRefreshControl
+    }
     // Đồng bộ vừa gộp dữ liệu của máy khác: vẽ lại «Có tập mới» / «Xem tiếp» (người xem có thể đã đổi)
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(syncDataChanged) name:CBSyncDataChanged object:nil];
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(appActive)
@@ -74,6 +83,58 @@
     _chips.autoresizingMask = UIViewAutoresizingFlexibleWidth;
     [self reload];
 }
+
+#pragma mark - Kéo xuống để tải lại (iOS 5)
+
+- (void)buildPull {
+    CGFloat w = self.tableView.bounds.size.width;
+    _pull = [[UIView alloc] initWithFrame:CGRectMake(0, -60, w, 60)];
+    _pull.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    _pull.backgroundColor = [UIColor clearColor];
+    _pullLabel = [[UILabel alloc] initWithFrame:_pull.bounds];
+    _pullLabel.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    _pullLabel.backgroundColor = [UIColor clearColor];
+    _pullLabel.textColor = [CBTheme dim];
+    _pullLabel.font = [CBTheme font:13];
+    _pullLabel.textAlignment = NSTextAlignmentCenter;
+    _pullLabel.text = @"↓ Kéo xuống để tải lại";
+    [_pull addSubview:_pullLabel];
+    _pullSpin = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleWhite];
+    _pullSpin.hidesWhenStopped = YES;
+    _pullSpin.center = CGPointMake(w / 2 - 80, 30);
+    _pullSpin.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin | UIViewAutoresizingFlexibleRightMargin;
+    [_pull addSubview:_pullSpin];
+    [self.tableView addSubview:_pull];
+}
+
+- (void)scrollViewDidScroll:(UIScrollView *)sv {
+    if (!_pull || _pullLoading) return;
+    _pullLabel.text = sv.contentOffset.y < -65 ? @"↑ Thả ra để tải lại" : @"↓ Kéo xuống để tải lại";
+}
+
+- (void)scrollViewDidEndDragging:(UIScrollView *)sv willDecelerate:(BOOL)decelerate {
+    if (!_pull || _pullLoading || sv.contentOffset.y >= -65) return;
+    _pullLoading = YES;
+    _pullLabel.text = @"Đang tải lại…";
+    [_pullSpin startAnimating];
+    [UIView animateWithDuration:0.2 animations:^{ sv.contentInset = UIEdgeInsetsMake(60, 0, 0, 0); }];
+    [self reload];
+}
+
+/// Tải trang chủ xong (được / lỗi): tắt vòng xoay của UIRefreshControl (iOS 6) hoặc phần kéo tự vẽ (iOS 5)
+- (void)endRefresh {
+    if (!_pull) {
+        [self.refreshControl endRefreshing];
+        return;
+    }
+    if (!_pullLoading) return;
+    _pullLoading = NO;
+    [_pullSpin stopAnimating];
+    _pullLabel.text = @"↓ Kéo xuống để tải lại";
+    [UIView animateWithDuration:0.25 animations:^{ self.tableView.contentInset = UIEdgeInsetsZero; }];
+}
+
+#pragma mark - Danh mục
 
 /// Dải nút danh mục ở đầu trang chủ (★ Điểm IMDb cao, Thể loại, Quốc gia, danh mục của trang) — trước đây nằm tận cuối trang
 - (void)buildChips {
@@ -289,7 +350,7 @@
             if (t != self->_token) return;
             CBLog(@"Trang chủ tổng hợp: %lld ms, %lu hàng%@", CBNowMs() - t0, (unsigned long)CBArr(ok, @"rows").count,
                   CBBool(ok, @"pending", NO) ? @" (còn nguồn chậm)" : @"");
-            [self.refreshControl endRefreshing];
+            [self endRefresh];
             if (CBIsDict(ok)) {
                 [self applySnapshot:ok];
                 if (CBBool(ok, @"pending", NO)) [self late:CBVal(ok, @"handle") token:t tries:3];
@@ -301,7 +362,7 @@
         NSString *base = [CBPrefs baseUrl];
         [CBCore call:@"site.homeOf" args:@{@"baseUrl": base} done:^(id ok, NSString *err) {
             if (t != self->_token) return;
-            [self.refreshControl endRefreshing];
+            [self endRefresh];
             if (!CBIsDict(ok)) {
                 [self finishWithError:err token:t];
                 return;
@@ -336,7 +397,7 @@
 
 - (void)finishWithError:(NSString *)err token:(NSInteger)t {
     if (t != _token) return;
-    [self.refreshControl endRefreshing];
+    [self endRefresh];
     if (!_feedRows.count) _note = [NSString stringWithFormat:@"Không tải được trang chủ.\n%@\nKéo xuống để thử lại.", err ?: @""];
     else [CBTheme toast:[NSString stringWithFormat:@"Không làm mới được trang chủ: %@", err ?: @"lỗi mạng"]];
     [self.tableView reloadData];

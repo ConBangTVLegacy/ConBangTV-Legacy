@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Cài bộ dựng cho bản iOS 6 trên máy Ubuntu (x86_64): Theos + toolchain iOS của L1ghtmann (clang 11, ld64-609) + SDK iPhoneOS 9.3
+# Cài bộ dựng cho bản iOS 5 / 6 trên máy Ubuntu (x86_64): Theos + toolchain iOS của L1ghtmann (clang 11, ld64-609) + SDK iPhoneOS 9.3
 # (bản SDK cuối còn armv7) từ theos/sdks, rồi vá SDK cho ld64 mới. Chạy lại nhiều lần không sao (bước đã xong thì bỏ qua).
 #   bash tools/setup-theos.sh          # cài vào ~/theos
 set -euo pipefail
@@ -114,6 +114,33 @@ open(fnd_path, "w").write(fnd[:end + 1] + extra + fnd[end + 1:])
 open(cfn_path, "w").write(cfn)
 print("chuyển sang Foundation: %d symbols, %d objc-classes, %d objc-ivars"
       % (len(moved["symbols"]), len(moved["objc-classes"]), len(moved["objc-ivars"])))
+EOF
+fi
+
+# Vá 4 (cho iOS 5): lớp NSObject nằm trong libobjc từ iOS 6; iOS 5 để nó ở CoreFoundation (Foundation tái xuất) — tệp dựng gắn
+# NSObject vào libobjc thì dyld iOS 5 báo «Symbol not found: _OBJC_CLASS_$_NSObject» (đã tra trên iPad 1 iOS 5.1.1). SDK thật của
+# Apple xử lý bằng ký hiệu $ld$hide / $ld$add theo bản iOS; ở đây chuyển hẳn NSObject sang Foundation.tbd: iOS 5 và iOS 6 đều
+# tìm thấy NSObject qua Foundation (đã tra trên iPad 1 iOS 5.1.1 và iPad mini 1 iOS 6.1.3).
+LIBOBJC="$SDK/usr/lib/libobjc.tbd"
+if ! grep -q "cbtv-legacy-patch-nsobject" "$FOUNDATION"; then
+    cp -n "$LIBOBJC" "$LIBOBJC.orig"
+    python3 - "$LIBOBJC" "$FOUNDATION" <<'EOF'
+import sys
+objc_path, fnd_path = sys.argv[1], sys.argv[2]
+objc = open(objc_path).read()
+old = "objc-classes:       [ _NSObject, _Object,"
+if old not in objc:
+    sys.exit("không thấy dòng objc-classes có _NSObject trong " + objc_path)
+open(objc_path, "w").write(objc.replace(old, "objc-classes:       [ _Object,", 1))
+fnd = open(fnd_path).read()
+end = fnd.rstrip().rfind("\n...")
+if end < 0:
+    sys.exit("không thấy dòng kết thúc «...» trong " + fnd_path)
+extra = ("  # cbtv-legacy-patch-nsobject: NSObject gắn vào Foundation (iOS 5 không có NSObject trong libobjc)\n"
+         "  - archs:              [ armv7, armv7s, arm64, i386, x86_64 ]\n"
+         "    objc-classes:       [ _NSObject ]\n")
+open(fnd_path, "w").write(fnd[:end + 1] + extra + fnd[end + 1:])
+print("NSObject: libobjc → Foundation")
 EOF
 fi
 

@@ -1,12 +1,12 @@
-# Côn Bằng TV cho iOS 6 (iPhone / iPad đã jailbreak) — Theos trên Linux, SDK 9.3, armv7 (chạy được A5 trở lên).
+# Côn Bằng TV cho iOS 5 / 6 (iPhone / iPad đã jailbreak) — Theos trên Linux, SDK 9.3, armv7 (chạy được A4 trở lên: iPad 1, iPhone 4).
 #   make package                    bản thử (có công cụ gỡ lỗi Debug/, -DDEBUG)
 #   make package FINALPACKAGE=1     bản phát hành
 # Cần lõi Rust đã dựng: tools/build-core.sh → CORE_LIB_DIR/libconbang_core.a
-TARGET := iphone:clang:9.3:6.0
+TARGET := iphone:clang:9.3:5.0
 ARCHS = armv7
 INSTALL_TARGET_PROCESSES = ConBangTV
 
-# dpkg của iOS 6 chỉ đọc .deb nén gzip; nhân iOS 6 chỉ hiểu chữ ký SHA-1
+# dpkg của iOS 5 / 6 chỉ đọc .deb nén gzip; nhân iOS 5 / 6 chỉ hiểu chữ ký SHA-1
 THEOS_PLATFORM_DEB_COMPRESSION_TYPE = gzip
 TARGET_CODESIGN_FLAGS = -S -Hsha1
 

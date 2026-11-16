@@ -1,4 +1,5 @@
 #import "CBDetailViewController.h"
+#import "CBCollectionView.h"
 #import "CBCore.h"
 #import "CBImages.h"
 #import "CBJSON.h"
@@ -10,7 +11,7 @@
 
 #pragma mark - Ô tập
 
-@interface CBEpCell : UICollectionViewCell
+@interface CBEpCell : CBCollectionViewCell
 @property (nonatomic, strong) UILabel *label;
 - (void)setTitle:(NSString *)title watched:(BOOL)watched current:(BOOL)current;
 @end
@@ -49,14 +50,14 @@
 }
 @end
 
-@interface CBHostView : UICollectionReusableView
+@interface CBHostView : CBCollectionReusableView
 @end
 @implementation CBHostView
 @end
 
 #pragma mark - Trang phim
 
-@interface CBDetailViewController () <UICollectionViewDataSource, UICollectionViewDelegate, UICollectionViewDelegateFlowLayout,
+@interface CBDetailViewController () <CBCollectionViewDataSource, CBCollectionViewDelegate,
                                       UIActionSheetDelegate>
 @end
 
@@ -67,7 +68,7 @@
     NSSet *_watched;
     NSDictionary *_hist;
     NSString *_error;
-    UICollectionView *_cv;
+    CBCollectionView *_cv;
     // Phần đầu (một bản, đặt vào ô phụ đầu lưới)
     UIView *_header;
     UIImageView *_poster;
@@ -99,18 +100,18 @@
 - (void)viewDidLoad {
     [super viewDidLoad];
     self.view.backgroundColor = [CBTheme bg];
-    UICollectionViewFlowLayout *layout = [[UICollectionViewFlowLayout alloc] init];
+    CBCollectionViewFlowLayout *layout = [[CBCollectionViewFlowLayout alloc] init];
     layout.minimumLineSpacing = 8;
     layout.minimumInteritemSpacing = 8;
-    _cv = [[UICollectionView alloc] initWithFrame:self.view.bounds collectionViewLayout:layout];
+    _cv = [[CBCollectionView alloc] initWithFrame:self.view.bounds collectionViewLayout:layout];
     _cv.backgroundColor = [CBTheme bg];
     _cv.alwaysBounceVertical = YES;
     _cv.dataSource = self;
     _cv.delegate = self;
     _cv.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     [_cv registerClass:[CBEpCell class] forCellWithReuseIdentifier:@"ep"];
-    [_cv registerClass:[CBHostView class] forSupplementaryViewOfKind:UICollectionElementKindSectionHeader withReuseIdentifier:@"h"];
-    [_cv registerClass:[CBHostView class] forSupplementaryViewOfKind:UICollectionElementKindSectionFooter withReuseIdentifier:@"f"];
+    [_cv registerClass:[CBHostView class] forSupplementaryViewOfKind:CBCollectionElementKindSectionHeader withReuseIdentifier:@"h"];
+    [_cv registerClass:[CBHostView class] forSupplementaryViewOfKind:CBCollectionElementKindSectionFooter withReuseIdentifier:@"f"];
     [self.view addSubview:_cv];
     [self buildHeader];
 
@@ -217,7 +218,7 @@
     _countLabel = [self label:[CBTheme bold:16] color:[CBTheme text]];
     _messageLabel = [self label:[CBTheme font:15] color:[CBTheme dim]];
     _messageLabel.textAlignment = NSTextAlignmentCenter;
-    _playButton = [CBTheme button:@"▶︎ Xem" primary:YES];
+    _playButton = [CBTheme button:[CBPlayIcon() stringByAppendingString:@" Xem"] primary:YES];
     [_playButton addTarget:self action:@selector(playTapped) forControlEvents:UIControlEventTouchUpInside];
     [_header addSubview:_playButton];
     _followButton = [CBTheme button:@"Theo dõi" primary:NO];
@@ -270,9 +271,9 @@
     // Nút Xem: xem tiếp tập trong lịch sử, hoặc tập đầu của bản (mùa) đang chọn. Phim chia mùa ghi kèm mùa.
     BOOL seasons = CBDetailSeasons(_detail);
     NSString *histEp = CBStr(_hist, @"epTitle") ? CBDetailEpisodeLabel(_detail, CBStr(_hist, @"epUrl"), CBStr(_hist, @"epTitle")) : nil;
-    NSString *play = histEp ? [NSString stringWithFormat:@"▶︎ Xem tiếp: %@", histEp] : (eps.count > 1 ? @"▶︎ Xem từ tập đầu" : @"▶︎ Xem");
+    NSString *play = histEp ? [NSString stringWithFormat:@"%@ Xem tiếp: %@", CBPlayIcon(), histEp] : [CBPlayIcon() stringByAppendingString:eps.count > 1 ? @" Xem từ tập đầu" : @" Xem"];
     if (!histEp && seasons && _group < (NSInteger)groups.count) {
-        play = [NSString stringWithFormat:@"▶︎ Xem %@", CBStr(groups[_group], @"name") ?: @"từ tập đầu"];
+        play = [NSString stringWithFormat:@"%@ Xem %@", CBPlayIcon(), CBStr(groups[_group], @"name") ?: @"từ tập đầu"];
     }
     [_playButton setTitle:play forState:UIControlStateNormal];
     _playButton.enabled = _detail && (eps.count || histEp);
@@ -365,30 +366,30 @@
     return CGSizeMake(floor((w - 8 * (cols - 1)) / cols), 40);
 }
 
-- (NSInteger)collectionView:(UICollectionView *)cv numberOfItemsInSection:(NSInteger)section {
+- (NSInteger)collectionView:(CBCollectionView *)cv numberOfItemsInSection:(NSInteger)section {
     return [self episodes].count;
 }
 
-- (CGSize)collectionView:(UICollectionView *)cv layout:(UICollectionViewLayout *)l sizeForItemAtIndexPath:(NSIndexPath *)ip {
+- (CGSize)collectionView:(CBCollectionView *)cv layout:(CBCollectionViewFlowLayout *)l sizeForItemAtIndexPath:(NSIndexPath *)ip {
     return [self epSize];
 }
 
-- (UIEdgeInsets)collectionView:(UICollectionView *)cv layout:(UICollectionViewLayout *)l insetForSectionAtIndex:(NSInteger)s {
+- (UIEdgeInsets)collectionView:(CBCollectionView *)cv layout:(CBCollectionViewFlowLayout *)l insetForSectionAtIndex:(NSInteger)s {
     return UIEdgeInsetsMake(0, 12, 12, 12);
 }
 
-- (CGSize)collectionView:(UICollectionView *)cv layout:(UICollectionViewLayout *)l referenceSizeForHeaderInSection:(NSInteger)s {
+- (CGSize)collectionView:(CBCollectionView *)cv layout:(CBCollectionViewFlowLayout *)l referenceSizeForHeaderInSection:(NSInteger)s {
     return CGSizeMake(cv.bounds.size.width, _headerHeight);
 }
 
-- (CGSize)collectionView:(UICollectionView *)cv layout:(UICollectionViewLayout *)l referenceSizeForFooterInSection:(NSInteger)s {
+- (CGSize)collectionView:(CBCollectionView *)cv layout:(CBCollectionViewFlowLayout *)l referenceSizeForFooterInSection:(NSInteger)s {
     CGFloat h = [self layoutFooter:cv.bounds.size.width];
     return h > 0 ? CGSizeMake(cv.bounds.size.width, h) : CGSizeZero;
 }
 
-- (UICollectionReusableView *)collectionView:(UICollectionView *)cv viewForSupplementaryElementOfKind:(NSString *)kind
+- (CBCollectionReusableView *)collectionView:(CBCollectionView *)cv viewForSupplementaryElementOfKind:(NSString *)kind
                                  atIndexPath:(NSIndexPath *)ip {
-    BOOL head = [kind isEqualToString:UICollectionElementKindSectionHeader];
+    BOOL head = [kind isEqualToString:CBCollectionElementKindSectionHeader];
     CBHostView *v = [cv dequeueReusableSupplementaryViewOfKind:kind withReuseIdentifier:head ? @"h" : @"f" forIndexPath:ip];
     UIView *content = head ? _header : _footer;
     if (content.superview != v) {
@@ -399,7 +400,7 @@
     return v;
 }
 
-- (UICollectionViewCell *)collectionView:(UICollectionView *)cv cellForItemAtIndexPath:(NSIndexPath *)ip {
+- (CBCollectionViewCell *)collectionView:(CBCollectionView *)cv cellForItemAtIndexPath:(NSIndexPath *)ip {
     CBEpCell *cell = [cv dequeueReusableCellWithReuseIdentifier:@"ep" forIndexPath:ip];
     NSDictionary *ep = [self episodes][ip.item];
     NSString *url = CBStr(ep, @"url") ?: @"";
@@ -407,7 +408,7 @@
     return cell;
 }
 
-- (void)collectionView:(UICollectionView *)cv didSelectItemAtIndexPath:(NSIndexPath *)ip {
+- (void)collectionView:(CBCollectionView *)cv didSelectItemAtIndexPath:(NSIndexPath *)ip {
     NSDictionary *ep = [self episodes][ip.item];
     [self playEpisode:CBStr(ep, @"url") resume:NO];
 }

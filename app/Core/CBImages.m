@@ -1,4 +1,5 @@
 #import "CBImages.h"
+#import <malloc/malloc.h>
 #import "CBPrefs.h"
 #import "CBCore.h"
 #import "CBLog.h"
@@ -13,6 +14,17 @@ static const NSInteger kMaxActive = 4;
 
 @class CBImageJob;
 static NSCache *gMemory;
+NSString *const CBImagesPurgeNotification = @"CBImagesPurgeNotification";
+static NSMutableDictionary *gWants;  // url → [CBImageWant]: ô nào đang chờ ảnh (yếu — ô đã huỷ thì thôi)
+static long gSkipped;
+
+/// Một ô chờ ảnh. Ô đã bị huỷ (màn đã đóng) hoặc đã đổi sang ảnh khác (cuộn qua, tái dùng) thì ảnh đang xếp hàng bỏ luôn,
+/// không tải — máy chậm (iPad 1) vuốt nhanh qua một danh sách dài từng dồn ~80 ảnh, màn mở sau phải chờ cả phút.
+@interface CBImageWant : NSObject
+@property (nonatomic, weak) UIImageView *view;
+@end
+@implementation CBImageWant
+@end
 static NSMutableArray *gQueue;      // việc chờ (mới nhất ở cuối — ô vừa hiện lên tải trước)
 static NSMutableDictionary *gActive;  // url → CBImageJob đang tải
 static NSString *gDiskDir;
@@ -93,6 +105,24 @@ static BOOL CBIsWebP(NSData *data) {
     return data.length > 12 && !memcmp(b, "RIFF", 4) && !memcmp(b + 8, "WEBP", 4);
 }
 
+/// Hàng giải mã ảnh: mỗi nhân CPU một hàng tuần tự (tối đa 2), ưu tiên thấp. Trước đây mỗi ảnh một việc trên hàng đồng thời của GCD:
+/// iPad 1 (A4 một nhân) lúc mở app giải mã vài chục ảnh WebP cùng lúc — luồng chính không kịp chạy, iOS tắt app (quá 20 giây
+/// chưa mở xong, 0x8badf00d), vuốt nhanh thì RAM app vọt lên ~100 MB.
+static dispatch_queue_t CBDecodeQueue(void) {
+    static dispatch_queue_t lanes[2];
+    static int count;
+    static unsigned next;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        count = (int)MAX(1u, MIN(2u, [NSProcessInfo processInfo].activeProcessorCount));
+        for (int i = 0; i < count; i++) {
+            lanes[i] = dispatch_queue_create("vn.conbangtv.images.decode", NULL);
+            dispatch_set_target_queue(lanes[i], dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW, 0));
+        }
+    });
+    return lanes[(next++) % count];  // chỉ gọi trên luồng chính
+}
+
 /// Giải mã ảnh thu nhỏ: cạnh dài tối đa maxPx điểm ảnh (không giải mã cả ảnh 1000 px vào RAM)
 static UIImage *CBDecode(NSData *data, CGFloat maxPx) {
     if (CBIsWebP(data)) return CBDecodeWebP(data, maxPx);
@@ -139,7 +169,7 @@ static UIImage *CBDecode(NSData *data, CGFloat maxPx) {
         // Ảnh đã giải mã: 12 MB chỉ giữ ~30 ảnh bìa — cuộn qua lại là ảnh tải / mờ dần lại. Máy 1 GB RAM (iPhone 5) giữ nhiều hơn;
         // iPad mini 1 chỉ có 512 MB
         BOOL bigRam = [NSProcessInfo processInfo].physicalMemory >= 900ull * 1024 * 1024;
-        gMemory.totalCostLimit = (bigRam ? 28 : 16) * 1024 * 1024;
+        gMemory.totalCostLimit = (bigRam ? 28 : [self lowRam] ? 8 : 16) * 1024 * 1024;  // iPad 1: 256 MB
         // Trang lỗi TLS đã biết từ lần trước: khỏi chờ lỗi (lần đầu mất tới 15–20 giây) mỗi lần mở app
         NSArray *known = [[NSUserDefaults standardUserDefaults] arrayForKey:@"CBCoreImageHosts"];
         gCoreHosts = [NSMutableSet setWithArray:[known isKindOfClass:[NSArray class]] ? known : @[]];
@@ -149,7 +179,7 @@ static UIImage *CBDecode(NSData *data, CGFloat maxPx) {
         gDiskDir = [(dirs.count ? dirs[0] : NSTemporaryDirectory()) stringByAppendingPathComponent:@"img"];
         [[NSFileManager defaultManager] createDirectoryAtPath:gDiskDir withIntermediateDirectories:YES attributes:nil error:NULL];
         [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidReceiveMemoryWarningNotification object:nil
-                                                           queue:nil usingBlock:^(NSNotification *n) { [gMemory removeAllObjects]; }];
+                                                           queue:nil usingBlock:^(NSNotification *n) { [self purgeOffscreen]; }];
     });
 }
 
@@ -193,12 +223,23 @@ static UIImage *CBDecode(NSData *data, CGFloat maxPx) {
 }
 
 + (NSString *)debugStatus {
-    return [NSString stringWithFormat:@"ảnh: đang tải %lu, chờ %lu, xong %ld, hỏng %ld", (unsigned long)gActive.count,
-            (unsigned long)gQueue.count, (long)gDone, (long)gFailed];
+    return [NSString stringWithFormat:@"ảnh: đang tải %lu, chờ %lu, xong %ld, hỏng %ld, bỏ (ô không còn cần) %ld",
+            (unsigned long)gActive.count, (unsigned long)gQueue.count, (long)gDone, (long)gFailed, gSkipped];
 }
 
 + (void)clearMemory {
     [gMemory removeAllObjects];
+}
+
++ (BOOL)lowRam {
+    return [NSProcessInfo processInfo].physicalMemory < 300ull * 1024 * 1024;
+}
+
++ (void)purgeOffscreen {
+    [gMemory removeAllObjects];
+    [[NSNotificationCenter defaultCenter] postNotificationName:CBImagesPurgeNotification object:nil];
+    // Trả các trang nhớ đã giải phóng (của malloc — cả lõi Rust) về cho iOS: jetsam tính theo trang còn giữ, không theo phần đang dùng
+    malloc_zone_pressure_relief(NULL, 0);
 }
 
 + (unsigned long long)diskBytes {
@@ -254,7 +295,11 @@ static UIImage *CBDecode(NSData *data, CGFloat maxPx) {
         }
     };
     NSString *file = [gDiskDir stringByAppendingPathComponent:CBMd5(url)];
-    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+    dispatch_async(CBDecodeQueue(), ^{
+        // Tới lượt mà ô đã đổi ảnh / màn đã đóng (vuốt nhanh qua danh sách dài): bỏ, khỏi giải mã — màn đang xem không phải chờ
+        UIImageView *still = weakIv;
+        if (!still || ![objc_getAssociatedObject(still, kUrlKey) isEqualToString:url]) return;
+        still = nil;
         NSData *data = [NSData dataWithContentsOfFile:file];
         UIImage *img = data ? CBDecode(data, maxPx) : nil;
         dispatch_async(dispatch_get_main_queue(), ^{
@@ -266,7 +311,7 @@ static UIImage *CBDecode(NSData *data, CGFloat maxPx) {
                 if (v && [objc_getAssociatedObject(v, kUrlKey) isEqualToString:url]) v.image = img;
                 return;
             }
-            [self enqueue:url maxPx:maxPx file:file deliver:deliver];
+            [self enqueue:url maxPx:maxPx file:file deliver:deliver view:weakIv];
         });
     });
 }
@@ -279,8 +324,14 @@ static UIImage *CBDecode(NSData *data, CGFloat maxPx) {
 
 static NSMutableDictionary *gWaiters;  // url → mảng khối deliver
 
-+ (void)enqueue:(NSString *)url maxPx:(CGFloat)maxPx file:(NSString *)file deliver:(void (^)(UIImage *))deliver {
++ (void)enqueue:(NSString *)url maxPx:(CGFloat)maxPx file:(NSString *)file deliver:(void (^)(UIImage *))deliver
+           view:(UIImageView *)view {
     if (!gWaiters) gWaiters = [NSMutableDictionary dictionary];
+    if (!gWants) gWants = [NSMutableDictionary dictionary];
+    CBImageWant *want = [[CBImageWant alloc] init];
+    want.view = view;
+    if (!gWants[url]) gWants[url] = [NSMutableArray array];
+    [gWants[url] addObject:want];
     NSMutableArray *w = gWaiters[url];
     if (w) {
         [w addObject:[deliver copy]];
@@ -314,22 +365,24 @@ static NSMutableDictionary *gWaiters;  // url → mảng khối deliver
     }];
 }
 
-/// iOS 6 tải ảnh lỗi: lỗi TLS / chứng chỉ (máy cũ thiếu bộ mã / gốc mới) hay hết thời gian chờ (bắt tay TLS treo) → thử bằng lõi
+/// iOS tải ảnh lỗi: lỗi TLS / chứng chỉ (máy cũ thiếu bộ mã / gốc mới), hết thời gian chờ (bắt tay TLS treo), không tìm / không
+/// nối được máy chủ (DNS nhà mạng chặn — lõi hỏi DNS mã hoá, có vượt chặn) → thử bằng lõi
 + (BOOL)shouldRetryViaCore:(NSError *)error {
     if (![error.domain isEqualToString:NSURLErrorDomain]) return NO;
     NSInteger c = error.code;
     return c == NSURLErrorTimedOut || c == NSURLErrorUserCancelledAuthentication || c == NSURLErrorCancelled ||
+           c == NSURLErrorCannotFindHost || c == NSURLErrorCannotConnectToHost ||
            (c <= NSURLErrorSecureConnectionFailed && c >= NSURLErrorClientCertificateRequired);
 }
 
 + (void)retryViaCore:(CBImageJob *)job error:(NSError *)error {
     NSString *host = [NSURL URLWithString:job.url].host;
     // Cả trang đó tải qua lõi từ giờ (khỏi chờ lỗi từng ảnh — bắt tay TLS treo thì mỗi ảnh mất 15 giây mới báo hết giờ).
-    // Lỗi TLS thì nhớ sang lần mở app sau; hết thời gian chờ (có thể chỉ do mạng chập chờn) thì chỉ trong lần này
+    // Lỗi TLS / DNS thì nhớ sang lần mở app sau; hết thời gian chờ (có thể chỉ do mạng chập chờn) thì chỉ trong lần này
     if (host && ![gCoreHosts containsObject:host]) {
         [gCoreHosts addObject:host];
         BOOL tls = error.code != NSURLErrorTimedOut;
-        CBLog(@"Ảnh của %@: iOS 6 %@ — tải qua lõi", host, tls ? @"không kết nối TLS được" : @"chờ quá lâu");
+        CBLog(@"Ảnh của %@: iOS %@ — tải qua lõi", host, tls ? @"không kết nối được (TLS / DNS)" : @"chờ quá lâu");
         if (tls) {
             NSMutableArray *keep = [[[NSUserDefaults standardUserDefaults] arrayForKey:@"CBCoreImageHosts"] ?: @[] mutableCopy];
             if (![keep containsObject:host]) [keep addObject:host];
@@ -340,11 +393,26 @@ static NSMutableDictionary *gWaiters;  // url → mảng khối deliver
     [self fetchViaCore:job];
 }
 
+/// Còn ô nào đang hiện / chờ đúng ảnh này?
++ (BOOL)wanted:(NSString *)url {
+    for (CBImageWant *w in gWants[url]) {
+        UIImageView *v = w.view;
+        if (v && [objc_getAssociatedObject(v, kUrlKey) isEqualToString:url]) return YES;
+    }
+    return NO;
+}
+
 + (void)pump {
     BOOL viaCore = gQueue.count ? [self viaCore] : NO;
     while (gActive.count < kMaxActive && gQueue.count) {
         CBImageJob *job = gQueue.lastObject;
         [gQueue removeLastObject];
+        if (![self wanted:job.url]) {
+            [gWaiters removeObjectForKey:job.url];
+            [gWants removeObjectForKey:job.url];
+            gSkipped++;
+            continue;
+        }
         gActive[job.url] = job;
         NSString *host = gCoreHosts.count ? [NSURL URLWithString:job.url].host : nil;
         if (viaCore || (host && [gCoreHosts containsObject:host])) {
@@ -367,6 +435,8 @@ static NSMutableDictionary *gWaiters;  // url → mảng khối deliver
 
 + (void)finish:(CBImageJob *)job data:(NSData *)data {
     [gActive removeObjectForKey:job.url];
+    BOOL wanted = [self wanted:job.url];
+    [gWants removeObjectForKey:job.url];
     job.conn = nil;
     NSArray *waiters = gWaiters[job.url] ?: @[];
     [gWaiters removeObjectForKey:job.url];
@@ -377,8 +447,11 @@ static NSMutableDictionary *gWaiters;  // url → mảng khối deliver
         gFailed++;
         CBLog(@"Ảnh hỏng (HTTP %ld): %@", (long)job.status, url);
     }
-    if (data.length) {
-        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+    if (data.length && !wanted) {
+        // Tải xong mà không còn ô nào cần (đã cuộn qua): chỉ lưu đĩa, không giải mã — lần sau cần thì đọc từ đĩa
+        dispatch_async(CBDecodeQueue(), ^{ [data writeToFile:file atomically:YES]; });
+    } else if (data.length) {
+        dispatch_async(CBDecodeQueue(), ^{
             UIImage *img = CBDecode(data, maxPx);
             if (img) [data writeToFile:file atomically:YES];
             if (!img) {

@@ -1,5 +1,5 @@
 # Thử mạng bằng NSURLConnection của iOS (xem main.m) — dựng: make → .theos/obj/debug/nettest
-TARGET := iphone:clang:9.3:6.0
+TARGET := iphone:clang:9.3:5.0
 ARCHS = armv7
 include $(THEOS)/makefiles/common.mk
 TOOL_NAME = nettest

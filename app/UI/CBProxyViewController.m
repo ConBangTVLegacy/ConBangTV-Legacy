@@ -117,18 +117,6 @@ static void CBSetSecret(NSString *name, NSString *value) {
     }
 }
 
-- (void)tableView:(UITableView *)tableView willDisplayHeaderView:(UIView *)view forSection:(NSInteger)section {
-    if ([view isKindOfClass:[UITableViewHeaderFooterView class]]) {
-        UITableViewHeaderFooterView *h = (UITableViewHeaderFooterView *)view;
-        h.textLabel.textColor = [CBTheme dim];
-        h.textLabel.shadowColor = [UIColor clearColor];
-    }
-}
-
-- (void)tableView:(UITableView *)tableView willDisplayFooterView:(UIView *)view forSection:(NSInteger)section {
-    [self tableView:tableView willDisplayHeaderView:view forSection:section];
-}
-
 - (UITableViewCell *)cell:(UITableView *)tv text:(NSString *)text detail:(NSString *)detail {
     UITableViewCell *c = [tv dequeueReusableCellWithIdentifier:@"c"];
     if (!c) {

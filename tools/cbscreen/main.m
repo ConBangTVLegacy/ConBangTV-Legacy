@@ -77,6 +77,18 @@ int main(int argc, char **argv) {
     CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
     CGContextRef ctx = CGBitmapContextCreate(px, w, h, 8, stride, cs, kCGBitmapByteOrder32Little | kCGImageAlphaNoneSkipFirst);
     CGImageRef img = CGBitmapContextCreateImage(ctx);
+    // «cw»: xoay 90° theo chiều kim đồng hồ — iPad 1 iOS 5 trả khung hình nằm ngang (chụp 1024 768 cw → ảnh dọc 768×1024)
+    if (argc > 4 && !strcmp(argv[4], "cw")) {
+        CGContextRef rc = CGBitmapContextCreate(NULL, h, w, 8, 0, cs, kCGBitmapByteOrder32Little | kCGImageAlphaNoneSkipFirst);
+        CGContextTranslateCTM(rc, 0, w);
+        CGContextRotateCTM(rc, -M_PI_2);
+        CGContextDrawImage(rc, CGRectMake(0, 0, w, h), img);
+        CGImageRelease(img);
+        img = CGBitmapContextCreateImage(rc);
+        int t = w;
+        w = h;
+        h = t;
+    }
     CFURLRef url = CFURLCreateFromFileSystemRepresentation(NULL, (const UInt8 *)out, strlen(out), false);
     CGImageDestinationRef dst = CGImageDestinationCreateWithURL(url, CFSTR("public.png"), 1, NULL);
     CGImageDestinationAddImage(dst, img, NULL);

@@ -1,5 +1,5 @@
 # Công cụ mở app từ SSH trên máy iOS 6 jailbreak — dựng: `make` → .theos/obj/debug/cblaunch, chép vào /usr/bin của máy.
-TARGET := iphone:clang:9.3:6.0
+TARGET := iphone:clang:9.3:5.0
 ARCHS = armv7
 
 include $(THEOS)/makefiles/common.mk

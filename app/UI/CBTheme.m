@@ -1,4 +1,5 @@
 #import "CBTheme.h"
+#import "CBCompat.h"
 #import "CBPrefs.h"
 #import "CBJSON.h"
 
@@ -173,3 +174,7 @@ static UILabel *gToast;
 }
 
 @end
+
+NSString *CBPlayIcon(void) {
+    return CBOldIOS() ? @"►" : @"▶︎";
+}

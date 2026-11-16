@@ -1,4 +1,5 @@
 #import "CBAppDelegate.h"
+#import "CBCompat.h"
 #import "CBCore.h"
 #import "CBDisclaimer.h"
 #import "CBDisclaimerViewController.h"
@@ -22,10 +23,10 @@
 
 - (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)launchOptions {
     NSString *version = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleShortVersionString"];
-    CBLog(@"=== Côn Bằng TV Legacy %@ (iOS 6) — %@ iOS %@, RAM %.0f MB", version, CBDeviceModel(),
+    CBLog(@"=== Côn Bằng TV Legacy %@ (dựng cho iOS 5 / 6%@) — %@ iOS %@, RAM %.0f MB", version, CBOldIOS() ? @", đang chạy kiểu iOS 5" : @"", CBDeviceModel(),
           [UIDevice currentDevice].systemVersion, [NSProcessInfo processInfo].physicalMemory / 1048576.0);
     [CBCore start];
-    [CBCore sync:@"app.setVersion" args:@{@"version": [@"ios6-" stringByAppendingString:version ?: @"0"]}];
+    [CBCore sync:@"app.setVersion" args:@{@"version": [(CBOldIOS() ? @"ios5-" : @"ios6-") stringByAppendingString:version ?: @"0"]}];
     [[AVAudioSession sharedInstance] setCategory:AVAudioSessionCategoryPlayback error:NULL];
     [CBTheme apply];
     [CBSync start];

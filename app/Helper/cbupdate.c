@@ -267,9 +267,20 @@ int main(int argc, char **argv) {
         }
     }
     int launched;
-    if (rc == 0) {
+    // iOS 5: khởi động lại SpringBoard xong máy về màn khoá (kể cả không đặt mật khẩu) — mở lại app không được (SpringBoardServices
+    // báo lỗi 3, đã thử trên iPad 1 iOS 5.1.1) → chỉ mở lại app; biểu tượng mới hiện ở lần khởi động lại SpringBoard sau
+    int oldIOS = kCFCoreFoundationVersionNumber < 793.0;  // 793.00 = iOS 6.0
+    if (rc == 0 && !oldIOS) {
         // Cài xong: khởi động lại SpringBoard để nhận biểu tượng / tên mới (postinst đã xoá bộ đệm biểu tượng), rồi mở lại app
         launched = respringAndRelaunch();
+    } else if (rc == 0) {
+        logf_("iOS 5: không khởi động lại SpringBoard, chỉ mở lại app%s", "");
+        sleep(1);
+        launched = -1;
+        for (int i = 0; i < 10 && launched != 0; i++) {
+            launched = launchApp();
+            if (launched != 0) sleep(2);
+        }
     } else {
         // Cài lỗi: bản cũ vẫn nguyên, chỉ mở lại app
         sleep(1);

@@ -1,19 +1,20 @@
-# Côn Bằng TV Legacy — bản iOS 6
+# Côn Bằng TV Legacy — bản iOS 5 / iOS 6
 
 **Trang giới thiệu, cách cài:** <https://conbangtvlegacy.github.io> · **Tải bản mới nhất:** [GitHub Releases](https://github.com/ConBangTVLegacy/ConBangTV-Legacy/releases/latest)
 
 
-Bản Côn Bằng TV cho máy iOS 6 đã jailbreak (máy thử: **iPhone 5 iOS 6.1.4**, **iPad mini 1** — chưa thử). App gốc và lõi chung ở repo
+Bản Côn Bằng TV cho máy iOS 5 / iOS 6 đã jailbreak — một gói `.deb` chạy cả hai (máy thử: **iPhone 5 iOS 6.1.4**,
+**iPad mini 1 iOS 6.1.3**, **iPad 1 iOS 5.1.1** — xem mục «Bản iOS 5»). App gốc và lõi chung ở repo
 [repo chính](https://github.com/conbangtv/ChimToTV); bản iPad hiện tại (Swift / SwiftUI / WKWebView, iOS 15+) không
-chạy được trên iOS 6 nên bản này viết riêng.
+chạy được trên iOS cũ nên bản này viết riêng.
 
 ## Kiến trúc (đã chứng minh chạy trên iPhone 5 — 14/11/2026)
 
 ```
-UIKit + Objective-C (vỏ app, armv7, iOS 6.0)
+UIKit + Objective-C (vỏ app, armv7, dựng cho iOS 5.0 — chạy cả iOS 5 và 6)
   │  JSON qua 4 hàm C: cbtv_init / cbtv_call / cbtv_call_sync / cbtv_free   (như bản Windows)
   ▼
-Lõi Rust chung của repo chính (linux/core + linux/ffi) dựng cho armv7 iOS 6 → libconbang_core.a
+Lõi Rust chung của repo chính (linux/core + linux/ffi) dựng cho armv7 Cortex-A8 (A4 trở lên) → libconbang_core.a
   │  đọc trang / API phim, cài đặt, mạng (rustls + gốc Mozilla đóng kèm, DNS mã hoá, vượt chặn, proxy), đồng bộ…
   ▼
 Cổng phát nội bộ 127.0.0.1 (media_proxy: bỏ quảng cáo, cắt PNG ngụy trang…) ──► AVPlayer (giải mã phần cứng 1080p)
@@ -25,13 +26,14 @@ Cổng phát nội bộ 127.0.0.1 (media_proxy: bỏ quảng cáo, cắt PNG ng�
 | --- | --- |
 | `spike/01-player/` | App thử (Theos): bài kiểm mạng / TLS, phát AVPlayer, gọi lõi Rust; chạy tự động qua SSH — xem README trong đó |
 | `spike/02-rust/` | Thử Rust tối thiểu (std + tokio + reqwest) — bước đệm, nay dùng lõi thật |
-| `tools/setup-theos.sh` | Cài Theos + toolchain (clang 11, ld64-609) + SDK iPhoneOS 9.3 vào `~/theos`, **vá SDK** cho iOS 6 |
+| `tools/setup-theos.sh` | Cài Theos + toolchain (clang 11, ld64-609) + SDK iPhoneOS 9.3 vào `~/theos`, **vá SDK** cho iOS 5 / 6 |
 | `tools/build-core.sh` | Dựng lõi chung: clone repo chính vào `upstream/`, áp `patches/*.patch`, dựng `conbang-ffi` thành thư viện tĩnh |
 | `tools/rust/` | Target `armv7-apple-ios6.json`, `cargo-ios6.sh` (cargo nightly + build-std), `vendor-ring.sh` (vá ring) |
-| `tools/cblaunch/` | Mở app / đánh thức / mở khoá máy từ SSH (SpringBoardServices) |
-| `tools/cbscreen/` | Chụp toàn màn hình máy (cả màn hình chính / màn khoá) ra PNG, nhấn nút Home giả — từ SSH (`cbscreen <tệp.png> [rộng cao]`, `cbscreen home`) |
+| `tools/cblaunch/` | Mở app / đánh thức / mở khoá máy từ SSH (SpringBoardServices); `cblaunch unlock` mở khoá iOS 5 nhờ `cbwake`, `cblaunch mem` in bộ nhớ máy (trống / wired) |
+| `tools/cbwake/` | Công cụ thử, chỉ cài trên máy thử: thư viện nạp vào SpringBoard (MobileSubstrate) — nhận thông báo `vn.conbangtv.legacy.unlock` thì bật sáng + mở khoá (iOS 5 không có hàm mở khoá trong SpringBoardServices) |
+| `tools/cbscreen/` | Chụp toàn màn hình máy (cả màn hình chính / màn khoá) ra PNG, nhấn nút Home giả — từ SSH (`cbscreen <tệp.png> [rộng cao [cw]]`, `cbscreen home`; iPad 1 iOS 5: `cbscreen x.png 1024 768 cw` — khung hình nằm ngang, `cw` xoay lại) |
 | `design/` | Nguồn logo / biểu tượng (SVG trong `icon.html`: vòng ensō vàng + ấn 鵬 nổi khối 3D trên đĩa kính tròn trong suốt); `node design/render.mjs ios a` xuất `Icon*.png` + `Default*.png` vào `app/Resources`, `web a <thư mục>` xuất logo cho trang giới thiệu / nguồn Cydia |
-| `tools/symcheck/`, `tools/symlist.py` | Tra trên máy iOS 6 mọi ký hiệu tệp chạy cần — bắt lỗi «dyld: Symbol not found» trước khi chạy |
+| `tools/symcheck/`, `tools/symlist.py` | Tra trên máy iOS 5 / 6 mọi ký hiệu tệp chạy cần — bắt lỗi «dyld: Symbol not found» trước khi chạy |
 | `patches/` | Bản vá tạm cho lõi chung (3 bản vá đầu đã vào repo chính 14/11/2026; còn `0001` đồng bộ, `0002` mở lại cổng nội bộ, `0003` đổi fMP4 → MPEG-TS — xem README trong đó) |
 | `app/` | **App thật — Côn Bằng TV Legacy** (`vn.conbangtv.legacy`; tên dưới biểu tượng: «Côn Bằng TV») — các màn ở mục «App» dưới đây |
 
@@ -52,7 +54,9 @@ Cổng phát nội bộ 127.0.0.1 (media_proxy: bỏ quảng cáo, cắt PNG ng�
 
 Bản thử (không `FINALPACKAGE=1`) có `Debug/CBDebug.m`: đọc lệnh từ `Documents/ConBangTV-cmd.txt` (`shot`, `film`, `play`, `search`,
 `settings`, `profiles`, `sync`, `syncpair`, `pick`, `scroll`, `wait`, `status`, `core`, `pref`, `notifyadd` / `notifycheck` /
-`notifylist` / `notifydel` — «Báo khi xem được»…) để thử tự động qua SSH. Lệnh mới đừng đặt tên bắt đầu bằng «wait» (bị hiểu là
+`notifylist` / `notifydel` — «Báo khi xem được», `touch <x> <y>` / `hold <x> <y> [giây]` / `drag <x1> <y1> <x2> <y2> [giây]` — chạm / nhấn giữ / vuốt giả đi qua đường xử lý chạm
+thật của UIKit (`Debug/CBTouch.m`, toạ độ là điểm trong cửa sổ, hệ dọc), `orient <1–4>` giả xoay máy, `memwarn` giả thiếu bộ nhớ, `pull` giả kéo trang chủ
+để tải lại, `rawplay` / `rawmedia <url>` phát thử có khung hình + `rawstop`…) để thử tự động qua SSH. Lệnh mới đừng đặt tên bắt đầu bằng «wait» (bị hiểu là
 lệnh chờ).
 
 ## Dựng (máy Linux, vd Ubuntu 22.04+)
@@ -101,6 +105,42 @@ Phát hành bản mới:
    đẩy repo trang lên. Trang `depiction.html` / `index.html` phải chạy trên Safari iOS 6 (không biến CSS, grid, flex gap, fetch).
 
 Máy đang chạy bản cũ hơn 0.4.0 (chưa có `cbupdate`) cài bản mới một lần bằng Cydia (thêm nguồn ở trên) hoặc `dpkg -i`.
+
+## Bản iOS 5 (iPad 1 iOS 5.1.1 — 16/11/2026)
+
+Cùng một gói `.deb` với iOS 6: app dựng cho iOS 5.0 (`TARGET := iphone:clang:9.3:5.0`, `MinimumOSVersion` 5.0, `Depends:
+firmware (>= 5.0)`); phần của iOS 6 thì hỏi lúc chạy, thiếu thì dùng bản tự làm. Lõi Rust dựng cho Cortex-A8 (A4 — iPad 1,
+iPhone 4 / 3GS) — vẫn chạy tốt trên A5 / A6.
+
+| Bẫy của iOS 5 | Cách xử lý |
+| --- | --- |
+| Tệp chạy dựng cho iOS 6 dùng lệnh nạp `LC_MAIN` → iOS 5 lỗi ngay khi mở | Dựng cho iOS 5.0: ld64 tự dùng `LC_UNIXTHREAD` + `crt1.3.1.o` (SDK 9.3 có sẵn) |
+| Lớp `NSObject` ở libobjc từ iOS 6; iOS 5 để ở CoreFoundation / Foundation → «Symbol not found: _OBJC_CLASS_$_NSObject» | `setup-theos.sh` vá 4: NSObject gắn vào Foundation.tbd (iOS 5 và 6 đều tìm thấy qua Foundation) |
+| `dirfd` là macro trên iOS 5 (hàm từ iOS 6) — std::fs của Rust gọi hàm | `Core/CBShims.c` tự định nghĩa `dirfd` |
+| `a[i]` / `d[k]` (subscripting) cần `objectAtIndexedSubscript:`… (iOS 6); Xcode bù bằng libarclite, bộ dựng Linux không có | `Core/CBCompat.m`: thêm hàm lúc nạp app nếu iOS thiếu (cả `NSIndexPath.item`, `UILabel.minimumScaleFactor` → `minimumFontSize`, `AVPlayerItem.canPlaySlowForward`) |
+| `UICollectionView` chỉ có từ iOS 6 (lưới phim, hàng ngang, lưới tập, bảng tập trong trình phát) | `UI/CBCollectionView.m`: lưới tự viết, cùng tên hàm / hàm uỷ quyền, dùng chung cho mọi bản iOS |
+| `UIRefreshControl` (iOS 6) | Trang chủ iOS 5: «kéo xuống để tải lại» tự vẽ |
+| `tableView:willDisplayHeaderView:` (iOS 6) không gọi → chữ đầu mục bảng nhóm có bóng trắng trên nền tối | `UI/CBGroupedTableViewController.m`: iOS 5 tự vẽ nhãn (gắn hàm lúc chạy, iOS 6 giữ nhãn hệ thống) |
+| Xoay màn hình: iOS 5 hỏi `shouldAutorotateToInterfaceOrientation:` | `CBCompat.m` cho màn nào khai `supportedInterfaceOrientations` thì iOS 5 theo đúng mặt nạ đó; `CBNavController` tự trả lời |
+| Thiếu bộ nhớ: iOS 5 gỡ view của màn đang khuất (`viewDidUnload`) — màn dựng lại sẽ tải lại / đăng ký thông báo hai lần | `CBCompat.m`: các màn của app giữ view (như iOS 6) |
+| iPad 1 chỉ 256 MB: phát video chiếm ~65 MB bộ nhớ «wired» của hệ thống (phát thẳng hay qua cổng nội bộ đều vậy) — đã bị iOS tắt app (jetsam) sau ~3 phút khi app còn giữ ảnh bìa | Máy RAM < 300 MB: mở trình phát thì bỏ ảnh bìa của các màn bên dưới (`CBImages purgeOffscreen`, hiện lại thì tự nạp từ đĩa), bộ đệm ảnh 8 MB; có cảnh báo bộ nhớ cũng bỏ |
+| `▶` (U+25B6) thành emoji xanh, ký tự chọn kiểu U+FE0E hiện ô vuông | `CBPlayIcon()`: iOS 5 dùng «►» |
+| Khởi động lại SpringBoard xong iOS 5 về màn khoá (kể cả không đặt mật khẩu) → không mở lại app được (SpringBoardServices báo lỗi 3) | `cbupdate` trên iOS 5 không respring, chỉ mở lại app (biểu tượng mới hiện ở lần respring sau) |
+| Ảnh bìa vài trang: NSURLConnection lỗi -1003 / -1004 (DNS nhà mạng chặn) | `CBImages` chuyển sang tải qua lõi (DNS mã hoá, vượt chặn) — áp dụng cả iOS 6 |
+| A4 một nhân: mở app giải mã vài chục ảnh WebP cùng lúc (mỗi ảnh một việc trên hàng đồng thời GCD) → luồng chính không kịp chạy, iOS tắt app «quá 20 giây chưa mở xong» (0x8badf00d); vuốt nhanh danh sách dài thì RAM app vọt ~100 MB và ảnh của màn mở sau phải chờ cả phút | `CBImages`: giải mã trên hàng tuần tự ưu tiên thấp (mỗi nhân một hàng, tối đa 2); ảnh đang xếp hàng mà ô đã đổi ảnh / màn đã đóng thì bỏ, ảnh tải xong không ai cần thì chỉ lưu đĩa — mở app còn ~1,9 giây, vuốt nhanh 8 trang RAM ~26 MB (áp dụng cả iOS 6) |
+| Công cụ thử: không mở khoá được từ SSH; ảnh chụp màn hình nằm ngang; chép đè tệp chạy bằng scp → «Killed: 9» | `cbwake` + `cblaunch unlock`; `cbscreen … 1024 768 cw`; chép ra tệp tạm rồi `mv` |
+
+Lõi cũng nhận `app.setVersion` = `ios5-<bản>` trên iOS 5 (Cài đặt → Phiên bản: «lõi ios5-…»).
+
+Đã thử trên iPad 1 (A4, 256 MB, bản thử 16/11): mọi màn (trang chủ tổng hợp, ★ IMDb, tìm kiếm 7 trang, trang phim — Conan 1203
+tập, Cài đặt, Người xem, Đồng bộ — thấy tivi TX3 trong mạng, xoay ngang, giả thiếu bộ nhớ), trình phát (KKPhim HLS, dexter.pw
+fMP4 → TS kèm phụ đề 1700 câu, bảng chọn tập, menu «⋯», ép 720p / 1080p của dexter.pw — phát liên tục, rớt 4 khung), phát 6
+phút liền không bị tắt (RAM app 14–30 MB), OTA bằng `cbupdate` (đóng → cài → mở lại app sau ~7 giây). Chạm thật (lệnh `touch` / `hold` /
+`drag`, 16/11): ô phim trong hàng ngang và lưới, ô tập, bảng tập trong trình phát, nút trong phần đầu lưới, nhấn giữ ở lưới lịch
+sử, vuốt ngang hàng phim, kéo xuống để tải lại, cuộn tự tải trang sau — trên cả iPad 1 (iOS 5) và iPhone 5 (iOS 6). Thử lại trên iPhone 5 iOS
+6.1.4: trang chủ, lưới, trang phim, bảng tập, menu «⋯», Cài đặt, Đồng bộ như cũ, kéo xuống để tải lại (UIRefreshControl), OTA
+(respring rồi tự mở lại app sau ~14 giây); tra ký hiệu bản phát hành: iOS 6 đủ, iOS 5 chỉ thiếu hai lớp iOS
+6 đã rẽ nhánh (`UIRefreshControl`, `UITableViewHeaderFooterView` — gắn yếu, không dùng trên iOS 5).
 
 ## Bẫy của iOS 6 đã gặp (và cách xử lý)
 
