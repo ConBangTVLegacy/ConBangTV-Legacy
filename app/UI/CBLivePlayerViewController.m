@@ -54,6 +54,17 @@ static void CBLiveForceOrientation(UIInterfaceOrientation o) {
     NSInteger _token, _ticks;
     BOOL _closed, _started, _appeared, _retriedReset, _baseSet;
     BOOL _listChecked;   // kênh thường hỏng hết nguồn: đã tải lại danh sách tìm link mới (một lần mỗi lần mở / mỗi lần phát được)
+    NSMutableDictionary *_sniffed;   // địa chỉ → kết quả media.sniff (+ at), dùng lại 10 phút
+    long long _playAt;      // lúc đưa luồng cho AVPlayer (canh «quá lâu chưa lên hình»)
+    NSString *_liveHint;    // gợi ý của lõi khi máy không lên hình (# cb-hint: — vd hình PAFF)
+    // Đài radio: thẻ logo / tên đài / bài đang phát thay cho hình (luồng tiếng liền qua r/… của lõi, hoặc HLS chỉ có tiếng)
+    BOOL _radio;
+    NSString *_radioToken;   // phiên radio của lõi (media.radioInfo — tên bài ICY); nil = HLS chỉ có tiếng
+    NSString *_radioTitle, *_radioDesc;
+    UIView *_radioCard;
+    UIImageView *_radioLogo;
+    UILabel *_radioIcon, *_radioName, *_radioSong, *_radioInfo;
+    NSString *_radioLogoUrl;
     long long _startedAt;
     NSInteger _reopens;   // số lần luồng tự dừng rồi mở lại (cùng nguồn)
     double _baseBehind;   // độ trễ tự nhiên sau mép trực tiếp lúc vừa phát (AVPlayer phát sau mép ~3 đoạn)
@@ -117,6 +128,30 @@ static void CBLiveForceOrientation(UIInterfaceOrientation o) {
     _video.backgroundColor = [UIColor blackColor];
     [(AVPlayerLayer *)_video.layer setVideoGravity:[CBPrefs videoFill] ? AVLayerVideoGravityResizeAspectFill : AVLayerVideoGravityResizeAspect];
     [self.view addSubview:_video];
+
+    // Thẻ radio nằm trong khung hình (không nhận chạm: chạm / vuốt vẫn tới khung hình — hiện nút, đổi kênh)
+    _radioCard = [[UIView alloc] init];
+    _radioCard.userInteractionEnabled = NO;
+    _radioCard.hidden = YES;
+    _radioLogo = [[UIImageView alloc] init];
+    _radioLogo.contentMode = UIViewContentModeScaleAspectFit;
+    _radioLogo.backgroundColor = CBRGB(0x1A1D22);
+    _radioLogo.layer.cornerRadius = 12;
+    _radioLogo.clipsToBounds = YES;
+    _radioIcon = [self label:[UIFont systemFontOfSize:pad ? 72 : 48]];
+    _radioIcon.text = @"📻";
+    _radioIcon.textAlignment = NSTextAlignmentCenter;
+    _radioName = [self label:[CBTheme bold:pad ? 24 : 18]];
+    _radioName.textAlignment = NSTextAlignmentCenter;
+    _radioSong = [self label:[CBTheme bold:pad ? 18 : 15]];
+    _radioSong.textColor = [CBTheme brand];
+    _radioSong.textAlignment = NSTextAlignmentCenter;
+    _radioSong.numberOfLines = 2;
+    _radioInfo = [self label:[CBTheme font:13]];
+    _radioInfo.textColor = [CBTheme dim];
+    _radioInfo.textAlignment = NSTextAlignmentCenter;
+    for (UIView *v in @[_radioLogo, _radioIcon, _radioName, _radioSong, _radioInfo]) [_radioCard addSubview:v];
+    [_video addSubview:_radioCard];
 
     UIColor *shade = [UIColor colorWithWhite:0 alpha:0.62];
     _top = [[UIView alloc] init];
@@ -195,6 +230,10 @@ static void CBLiveForceOrientation(UIInterfaceOrientation o) {
     [_video addGestureRecognizer:down];
 
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(guideChanged) name:CBIPTVChangedNotification object:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(enteredBackground)
+                                                 name:UIApplicationDidEnterBackgroundNotification object:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(enteringForeground)
+                                                 name:UIApplicationWillEnterForegroundNotification object:nil];
     _tick = [NSTimer scheduledTimerWithTimeInterval:1 target:self selector:@selector(tick) userInfo:nil repeats:YES];
     [self setControlsVisible:YES];
     [self openSource];
@@ -203,7 +242,7 @@ static void CBLiveForceOrientation(UIInterfaceOrientation o) {
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
     [[UIApplication sharedApplication] setStatusBarHidden:YES withAnimation:UIStatusBarAnimationFade];
-    [UIApplication sharedApplication].idleTimerDisabled = YES;
+    [UIApplication sharedApplication].idleTimerDisabled = !_radio;   // radio: máy tự tắt màn hình, nghe tiếp khi khoá máy
 }
 
 - (void)viewDidAppear:(BOOL)animated {
@@ -320,6 +359,25 @@ static void CBLiveForceOrientation(UIInterfaceOrientation o) {
     BOOL both = !_retryButton.hidden && !_skipButton.hidden;
     _retryButton.frame = CGRectMake(both ? cw / 2 - rw - 6 : (cw - rw) / 2, ry, rw, 44);
     _skipButton.frame = CGRectMake(both ? cw / 2 + 6 : (cw - rw) / 2, ry, rw, 44);
+
+    // Thẻ radio: giữa khoảng trống giữa hai thanh nút (ẩn khi đang báo trạng thái — đang mở / lỗi)
+    _radioCard.hidden = !_radio || !_status.hidden;
+    if (!_radioCard.hidden) {
+        CGFloat ch = h - topH - bh, tw = MIN(cw - 32, pad ? 620 : 440);
+        CGFloat songH = _radioSong.text.length ? MIN(ceil(_radioSong.font.lineHeight * 2) + 2,
+                                                     [CBTheme heightOf:_radioSong.text font:_radioSong.font width:tw] + 2) : 0;
+        CGFloat textH = (pad ? 30 : 24) + (songH ? songH + 6 : 0) + 20;
+        CGFloat L = MAX(48, MIN(pad ? 180 : 112, ch - textH - 28));
+        CGFloat y = MAX(8, (ch - L - 12 - textH) / 2);
+        _radioCard.frame = CGRectMake(0, topH, cw, ch);
+        _radioLogo.frame = _radioIcon.frame = CGRectMake((cw - L) / 2, y, L, L);
+        y += L + 12;
+        _radioName.frame = CGRectMake((cw - tw) / 2, y, tw, pad ? 30 : 24);
+        y += _radioName.frame.size.height;
+        _radioSong.frame = CGRectMake((cw - tw) / 2, y + (songH ? 6 : 0), tw, songH);
+        y += songH ? songH + 6 : 0;
+        _radioInfo.frame = CGRectMake((cw - tw) / 2, y + 2, tw, 18);
+    }
 }
 
 - (void)layoutFill {
@@ -334,6 +392,84 @@ static void CBLiveForceOrientation(UIInterfaceOrientation o) {
     _fill.frame = CGRectMake(0, 0, _track.bounds.size.width * f, 4);
 }
 
+#pragma mark - Radio
+
+/// Radio nghe tiếp khi ra màn hình chính / khoá máy: iOS dừng AVPlayer còn gắn lớp hình khi app vào nền (QA1668) — tách trình
+/// phát khỏi lớp hình; vào lại thì gắn lại. Kênh có hình thì để iOS dừng như cũ.
+- (void)enteredBackground {
+    if (_radio && _player) {
+        [(AVPlayerLayer *)_video.layer setPlayer:nil];
+        CBLog(@"Truyền hình: app vào nền — %@ nghe tiếp", CBStr([self channel], @"n"));
+    }
+}
+
+- (void)enteringForeground {
+    if (_player && [(AVPlayerLayer *)_video.layer player] != _player) [(AVPlayerLayer *)_video.layer setPlayer:_player];
+}
+
+/// Bật / tắt kiểu đài radio: thẻ đài thay cho hình, nút luôn hiện, máy được tự tắt màn hình (nghe tiếp khi khoá máy — app có
+/// UIBackgroundModes audio)
+- (void)setRadio:(BOOL)on {
+    if (_radio != on) {
+        _radio = on;
+        [UIApplication sharedApplication].idleTimerDisabled = !on;
+        [self setControlsVisible:YES];
+    }
+    if (on) [self updateRadioCard];
+    [self.view setNeedsLayout];
+}
+
+- (void)updateRadioCard {
+    NSDictionary *c = [self channel];
+    _radioName.text = CBStr(c, @"n");
+    NSDictionary *p = [CBIPTV nowFor:c at:[[NSDate date] timeIntervalSince1970]];
+    _radioSong.text = _radioTitle.length ? [@"♪ " stringByAppendingString:_radioTitle] : (p ? CBStr(p, @"t") : nil);
+    _radioInfo.text = _radioDesc ? [@"📻 Radio · " stringByAppendingString:_radioDesc] : @"📻 Radio";
+    NSString *logo = CBStr(c, @"logo");
+    if (!(logo == _radioLogoUrl || [logo isEqualToString:_radioLogoUrl])) {
+        _radioLogoUrl = logo;
+        _radioLogo.image = nil;
+        CGFloat L = [CBTheme isPad] ? 180 : 112;
+        if (logo) [CBImages load:logo size:CGSizeMake(L, L) into:_radioLogo];
+    }
+    _radioLogo.hidden = !logo;
+    _radioIcon.hidden = logo != nil;
+    [self.view setNeedsLayout];
+}
+
+/// Mỗi giây khi đang phát: luồng radio của lõi → hỏi tên bài (ICY) mỗi 4 giây; HLS → nhận ra luồng chỉ có tiếng (đài HLS như
+/// VOV) sau 2,5 giây, hoặc có hình trở lại thì thôi kiểu radio
+- (void)radioTick {
+    if (!_started) return;
+    if (_radioToken) {
+        if (_ticks % 4) return;
+        id r = [CBCore sync:@"media.radioInfo" args:@{@"token": _radioToken}];
+        NSString *title = CBStr(r, @"title");
+        NSString *codec = [CBStr(r, @"codec") uppercaseString] ?: @"MP3";
+        double br = CBNum(r, @"br", 0);
+        NSString *desc = br > 0 ? [NSString stringWithFormat:@"%@ · %.0f kbps", codec, br] : codec;
+        BOOL changed = !(title == _radioTitle || [title isEqualToString:_radioTitle]) || ![desc isEqualToString:_radioDesc];
+        if (changed) {
+            if (title && ![title isEqualToString:_radioTitle]) CBLog(@"Truyền hình: %@ đang phát «%@»", CBStr([self channel], @"n"), title);
+            _radioTitle = title;
+            _radioDesc = desc;
+            [self updateRadioCard];
+            [self updateNowPlaying];
+        }
+        return;
+    }
+    BOOL video = _item.presentationSize.width > 0;
+    for (AVPlayerItemTrack *tr in _item.tracks) {
+        if ([tr.assetTrack.mediaType isEqualToString:AVMediaTypeVideo]) video = YES;
+    }
+    BOOL want = !video && ([CBIPTV isRadio:[self channel]] || CBNowMs() - _startedAt > 4000);
+    if (want != _radio) {
+        CBLog(@"Truyền hình: %@ %@", CBStr([self channel], @"n"), want ? @"chỉ có tiếng — hiện kiểu đài radio" : @"có hình — thôi kiểu radio");
+        [self setRadio:want];
+        [self updateNowPlaying];
+    }
+}
+
 - (void)setControlsVisible:(BOOL)visible {
     [_hideTimer invalidate];
     _hideTimer = nil;
@@ -342,14 +478,14 @@ static void CBLiveForceOrientation(UIInterfaceOrientation o) {
         self->_top.alpha = visible ? 1 : 0;
         self->_bottom.alpha = visible ? 1 : 0;
     }];
-    if (visible && _started) {
+    if (visible && _started && !_radio) {
         _hideTimer = [NSTimer scheduledTimerWithTimeInterval:6 target:self selector:@selector(autoHide) userInfo:nil repeats:NO];
     }
 }
 
-/// Không chạm 6 giây khi đang phát: ẩn thanh nút và cả bảng kênh (hình toàn màn hình)
+/// Không chạm 6 giây khi đang phát: ẩn thanh nút và cả bảng kênh (hình toàn màn hình). Radio: không có hình để xem — giữ nút.
 - (void)autoHide {
-    if (!_started || _player.rate <= 0) return;
+    if (!_started || _player.rate <= 0 || _radio) return;
     if (_panelOpen) [self toggleChannels];
     [self setControlsVisible:NO];
 }
@@ -393,6 +529,7 @@ static void CBLiveForceOrientation(UIInterfaceOrientation o) {
     _status.hidden = YES;
     _retryButton.hidden = YES;
     _skipButton.hidden = YES;
+    [self.view setNeedsLayout];   // thẻ radio ẩn khi đang báo trạng thái
 }
 
 - (void)playChannelAt:(NSInteger)index {
@@ -491,6 +628,20 @@ static void CBLiveForceOrientation(UIInterfaceOrientation o) {
 }
 
 - (void)updateBadge {
+    if (_radioToken) {
+        // Luồng tiếng liền của đài: không có khung xem lùi — tạm dừng rồi phát là mở lại từ đầu luồng (đúng giờ phát)
+        NSString *text = !_started ? @"CHƯA PHÁT" : (_player.rate > 0 ? @"● TRỰC TIẾP" : @"TẠM DỪNG");
+        if (![_badge.text isEqualToString:text]) {
+            _badge.text = text;
+            [self.view setNeedsLayout];
+        }
+        _badge.backgroundColor = _started && _player.rate > 0 ? CBRGB(0xD93A3F) : CBRGB(0x5A6068);
+        if (!_liveButton.hidden) {
+            _liveButton.hidden = YES;
+            [self.view setNeedsLayout];
+        }
+        return;
+    }
     double delay = _started && _baseSet ? [self behindLive] - _baseBehind : 0;
     BOOL behind = _started && (delay > 8 || _player.rate == 0);
     NSString *text = behind ? (delay > 8 ? [NSString stringWithFormat:@"CHẬM %@", [CBTheme time:delay]] : @"TẠM DỪNG")
@@ -513,9 +664,16 @@ static void CBLiveForceOrientation(UIInterfaceOrientation o) {
     _started = NO;
     _baseBehind = 0;
     _baseSet = NO;
+    _radioToken = nil;
+    _radioTitle = nil;
+    _radioDesc = nil;
+    _playAt = 0;
+    _liveHint = nil;
+    NSDictionary *c = [self channel];
+    // Danh sách ghi là đài radio: hiện thẻ đài ngay lúc mở (đài không ghi thì nhận ra khi phát — luồng tiếng / HLS không hình)
+    [self setRadio:[CBIPTV isRadio:c]];
     [self updateLabels];
     [_panel reloadData];
-    NSDictionary *c = [self channel];
     NSArray *urls = CBArr(c, @"urls");
     NSString *name = CBStr(c, @"n") ?: @"kênh";
     if (_source >= (NSInteger)urls.count) {
@@ -541,29 +699,124 @@ static void CBLiveForceOrientation(UIInterfaceOrientation o) {
         [self sourceFailed:[CBIPTV badReason:url] permanent:YES token:t];
         return;
     }
-    BOOL file = [path hasSuffix:@".mp4"] || [path hasSuffix:@".m4v"] || [path hasSuffix:@".mov"] || [path hasSuffix:@".mp3"];
-    // HTTP-FLV trực tiếp: lõi đổi sang HLS trực tiếp (bản vá 0004)
-    BOOL flv = [path hasSuffix:@".flv"];
-    BOOL ts = [path hasSuffix:@".ts"] || [path hasSuffix:@".mkv"];
-    // Biến BOOL riêng: @(a && b) là số 1 (kiểu int) → JSON 1, lõi đọc cờ bool thành false → coi là tệp MP4 — hỏng mọi link không
-    // đuôi .m3u8 (link chuyển tiếp «…/?id=vtv6», .php…)
-    BOOL hls = !file && !ts && !flv;
-    NSMutableDictionary *args = [@{@"src": url, @"hls": @(hls), @"flv": @(flv)} mutableCopy];
+    NSString *ext = path.pathExtension;
+    NSString *kind = [@[@"mp4", @"m4v", @"mov"] containsObject:ext] ? @"mp4"
+                   : [ext isEqualToString:@"flv"] ? @"flv"
+                   : [ext isEqualToString:@"ts"] ? @"ts"
+                   : [ext isEqualToString:@"mkv"] ? @"mkv"
+                   : [ext isEqualToString:@"m3u8"] ? @"hls" : nil;
+    if (kind) [self openURL:url kind:kind codec:nil token:t];
+    else [self sniffThenOpen:url token:t];
+}
+
+/// Link không rõ loại theo đuôi — đài radio (luồng MP3 / AAC liền: «…/radio_128», .mp3, .aac; danh sách .pls / .m3u của đài),
+/// link chuyển tiếp («…/?id=vtv6»), .php…: lõi đọc vài KB đầu (`media.sniff`) rồi mở đúng kiểu. Nhớ kết quả 10 phút (mở lại
+/// khi luồng đứt, đổi kênh qua lại khỏi hỏi lại).
+- (void)sniffThenOpen:(NSString *)url token:(NSInteger)t {
+    NSDictionary *cached = _sniffed[url];
+    if (cached && CBNowMs() - (long long)CBNum(cached, @"at", 0) < 600000) {
+        [self openSniffed:cached url:url token:t];
+        return;
+    }
+    NSMutableDictionary *args = [@{@"src": url} mutableCopy];
+    [args addEntriesFromDictionary:[CBIPTV headersFor:[self channel] url:url]];
+    long long t0 = CBNowMs();
+    __weak CBLivePlayerViewController *weakSelf = self;
+    [CBCore call:@"media.sniff" args:args done:^(id ok, NSString *err) {
+        CBLivePlayerViewController *s = weakSelf;
+        if (!s || t != s->_token || s->_closed) return;
+        NSString *kind = CBStr(ok, @"kind");
+        CBLog(@"Truyền hình: nhận dạng %@ → %@%@ (HTTP %.0f, %lld ms)%@", url, kind ?: @"lỗi",
+              CBStr(ok, @"codec") ? [@" " stringByAppendingString:CBStr(ok, @"codec")] : @"", CBNum(ok, @"status", 0), CBNowMs() - t0,
+              CBStr(ok, @"error") || err ? [NSString stringWithFormat:@" — %@", CBStr(ok, @"error") ?: err] : @"");
+        if (!kind) {
+            [s sourceFailed:@"Máy chủ của kênh không trả lời." permanent:NO token:t];
+            return;
+        }
+        NSMutableDictionary *r = [ok mutableCopy];
+        r[@"at"] = @(CBNowMs());
+        if ([@[@"hls", @"audio", @"flv", @"mp4", @"ts"] containsObject:kind]) {
+            if (!s->_sniffed) s->_sniffed = [NSMutableDictionary dictionary];
+            s->_sniffed[url] = r;
+        }
+        [s openSniffed:r url:url token:t];
+    }];
+}
+
+- (void)openSniffed:(NSDictionary *)r url:(NSString *)url token:(NSInteger)t {
+    NSString *kind = CBStr(r, @"kind") ?: @"unknown";
+    // Danh sách .pls / .m3u của đài: mở địa chỉ luồng ghi bên trong; còn lại giữ link gốc (link chuyển tiếp đổi token mỗi lần)
+    NSString *target = CBStr(r, @"url") ?: url;
+    if ([@[@"hls", @"audio", @"flv", @"mp4", @"ts"] containsObject:kind]) {
+        [self openURL:target kind:kind codec:CBStr(r, @"codec") token:t];
+        return;
+    }
+    if ([kind isEqualToString:@"unknown"]) {
+        // Không đọc ra loại: thử như HLS (cách cũ)
+        [self openURL:url kind:@"hls" codec:nil token:t];
+        return;
+    }
+    NSString *why;
+    BOOL hard = NO;
+    if ([kind isEqualToString:@"ogg"]) {
+        why = @"Đài phát định dạng Ogg (Vorbis / Opus) — iOS 5 / 6 không giải mã được.";
+        hard = YES;
+        [CBIPTV markBad:url reason:why];
+    } else if ([kind isEqualToString:@"http"]) {
+        why = [NSString stringWithFormat:@"Link không còn phát (máy chủ trả lỗi HTTP %.0f).", CBNum(r, @"status", 0)];
+    } else if ([kind isEqualToString:@"html"]) {
+        why = @"Link dẫn tới một trang web, không phải luồng phát.";
+    } else if ([kind isEqualToString:@"playlist"]) {
+        why = @"Danh sách của đài không ghi địa chỉ luồng nào dùng được.";
+    } else {
+        why = @"Máy chủ của kênh không trả lời.";
+    }
+    [self sourceFailed:why permanent:hard token:t];
+}
+
+/// Mở một nguồn đã biết loại: hls | flv (lõi đổi sang HLS trực tiếp — bản vá 0004) | ts (MPEG-TS liền, lõi cắt thành HLS trực
+/// tiếp — bản vá 0007) | mp4 (tệp) | mkv (không phát được) | audio (đài radio — luồng tiếng liền qua `r/…` của lõi, bản vá 0006)
+- (void)openURL:(NSString *)url kind:(NSString *)kind codec:(NSString *)codec token:(NSInteger)t {
+    NSDictionary *c = [self channel];
+    NSString *name = CBStr(c, @"n") ?: @"kênh";
+    BOOL file = [kind isEqualToString:@"mp4"], flv = [kind isEqualToString:@"flv"], audio = [kind isEqualToString:@"audio"];
+    BOOL tsLive = [kind isEqualToString:@"ts"];
+    BOOL live = flv || tsLive;   // luồng liền lõi cắt thành HLS trực tiếp (w/live.m3u8)
+    if ([kind isEqualToString:@"mkv"]) {
+        // MKV: AVPlayer của iOS 5 / 6 chỉ phát HLS và tệp MP4 — báo ngay, sang nguồn khác (thường có bản HLS)
+        NSString *why = @"Luồng MKV — iOS 5 / 6 chỉ phát luồng HLS (.m3u8).";
+        [CBIPTV markBad:url reason:why];
+        [self sourceFailed:why permanent:YES token:t];
+        return;
+    }
     // Referer gửi đúng như danh sách kênh ghi; User-Agent riêng của nguồn (máy chủ thể thao hay đòi)
+    NSMutableDictionary *args = [@{@"src": url} mutableCopy];
     [args addEntriesFromDictionary:[CBIPTV headersFor:c url:url]];
-    id opened = [CBCore sync:@"media.open" args:args];
+    id opened;
+    if (audio) {
+        if (codec) args[@"codec"] = codec;
+        opened = [CBCore sync:@"media.openRadio" args:args];
+    } else {
+        // Biến BOOL riêng: @(a && b) là số 1 (kiểu int) → JSON 1, lõi đọc cờ bool thành false → coi là tệp MP4 — hỏng mọi link
+        // không đuôi .m3u8 (link chuyển tiếp «…/?id=vtv6», .php…)
+        BOOL hls = !file && !live;
+        args[@"hls"] = @(hls);
+        args[@"flv"] = @(flv);
+        if (tsLive) args[@"ts"] = @YES;
+        opened = [CBCore sync:@"media.open" args:args];
+    }
     NSString *local = CBStr(opened, @"url");
     if (!local) {
         [self sourceFailed:@"Địa chỉ kênh không dùng được." permanent:NO token:t];
         return;
     }
-    CBLog(@"Truyền hình: %@ (nguồn %ld/%lu) %@ qua %@", name, (long)_source + 1, (unsigned long)urls.count, url, local);
-    if (ts) {
-        // Luồng TS liền / MKV: AVPlayer của iOS 5 / 6 chỉ phát HLS và tệp MP4 — báo ngay, sang nguồn khác (thường có bản HLS)
-        NSString *kind = [path hasSuffix:@".mkv"] ? @"MKV" : @"TS liền";
-        NSString *why = [NSString stringWithFormat:@"Luồng %@ — iOS 5 / 6 chỉ phát luồng HLS (.m3u8).", kind];
-        [CBIPTV markBad:url reason:why];
-        [self sourceFailed:why permanent:YES token:t];
+    CBLog(@"Truyền hình: %@ (nguồn %ld/%lu) %@ qua %@", name, (long)_source + 1, (unsigned long)CBArr(c, @"urls").count, url, local);
+    if (audio) {
+        // Đài radio: luồng tiếng liền (như Icecast) — AVPlayer phát thẳng, không có danh sách phát để kiểm trước
+        _radioToken = CBStr(opened, @"token");
+        _radioDesc = [codec isEqualToString:@"aac"] ? @"AAC" : @"MP3";
+        [self setRadio:YES];
+        [self play:local];
         return;
     }
     if (file) {
@@ -571,10 +824,10 @@ static void CBLiveForceOrientation(UIInterfaceOrientation o) {
         return;
     }
     // Đọc danh sách chính qua cổng nội bộ trước khi đưa cho AVPlayer: bản nào cũng quá sức máy thì báo ngay
-    // (FLV: lõi chờ đủ vài đoạn — tối đa 25 s — mới trả danh sách phát)
-    if (flv) [self showLoading:[NSString stringWithFormat:@"Đang mở %@ (luồng FLV)…", name]];
+    // (FLV / TS liền: lõi chờ đủ vài đoạn — tối đa 25 s — mới trả danh sách phát)
+    if (live) [self showLoading:[NSString stringWithFormat:@"Đang mở %@ (luồng %@)…", name, flv ? @"FLV" : @"TS"]];
     NSURLRequest *req = [NSURLRequest requestWithURL:[NSURL URLWithString:local] cachePolicy:NSURLRequestReloadIgnoringLocalCacheData
-                                     timeoutInterval:flv ? 40 : 25];
+                                     timeoutInterval:live ? 40 : 25];
     __weak CBLivePlayerViewController *weakSelf = self;
     [NSURLConnection sendAsynchronousRequest:req queue:[NSOperationQueue mainQueue]
                            completionHandler:^(NSURLResponse *resp, NSData *data, NSError *err) {
@@ -583,12 +836,12 @@ static void CBLiveForceOrientation(UIInterfaceOrientation o) {
         NSInteger code = [resp isKindOfClass:[NSHTTPURLResponse class]] ? [(NSHTTPURLResponse *)resp statusCode] : 0;
         NSString *text = data ? [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] : nil;
         if (code != 200 || [text rangeOfString:@"#EXTM3U"].location == NSNotFound) {
-            if (flv && code == 502) {
-                // Lõi báo lý do trong thân trả lời: mã hình máy không giải mã được / không phải FLV → hỏng hẳn; còn lại (404 lúc
-                // chưa tới giờ phát, đứt mạng) thì thử lại được
+            if (live && code == 502) {
+                // Lõi báo lý do trong thân trả lời: mã hình máy không giải mã được / không phải FLV / TS → hỏng hẳn; còn lại (404
+                // lúc chưa tới giờ phát, đứt mạng, máy chủ giới hạn số kết nối) thì thử lại được
                 NSString *r = text.length ? text : @"Máy chủ của kênh không trả hình.";
                 BOOL hard = [r rangeOfString:@"H.265"].location != NSNotFound || [r rangeOfString:@"mã hình"].location != NSNotFound ||
-                            [r rangeOfString:@"không phải luồng FLV"].location != NSNotFound;
+                            [r rangeOfString:@"không phải luồng"].location != NSNotFound;
                 NSString *why = [[[r substringToIndex:1] uppercaseString] stringByAppendingString:[r substringFromIndex:1]];
                 if (hard) [CBIPTV markBad:url reason:why];
                 [s sourceFailed:why permanent:hard token:t];
@@ -608,6 +861,19 @@ static void CBLiveForceOrientation(UIInterfaceOrientation o) {
         if ([CBIPTV isPlaceholderPlaylist:text]) {
             [s sourceFailed:@"Kênh đang phát hình chờ (đoạn phim ngắn), chưa có luồng trực tiếp." permanent:NO token:t];
             return;
+        }
+        // Lõi ghi chú về luồng (vd kênh TS tiếng MP2: đã bỏ tiếng, phát hình không tiếng) — dòng chú thích «# cb-note: …»; gợi ý
+        // khi máy không lên hình («# cb-hint: …», vd hình xen kẽ dạng trường PAFF) — dùng khi canh giờ báo lỗi
+        NSRange nr = [text rangeOfString:@"# cb-note: "];
+        if (nr.location != NSNotFound) {
+            NSString *note = [[[text substringFromIndex:NSMaxRange(nr)] componentsSeparatedByString:@"\n"] firstObject];
+            CBLog(@"Truyền hình: %@ — %@", name, note);
+            [CBTheme toast:note];
+        }
+        NSRange hr = [text rangeOfString:@"# cb-hint: "];
+        if (hr.location != NSNotFound) {
+            s->_liveHint = [[[text substringFromIndex:NSMaxRange(hr)] componentsSeparatedByString:@"\n"] firstObject];
+            CBLog(@"Truyền hình: %@ — gợi ý: %@", name, s->_liveHint);
         }
         [s play:local];
     }];
@@ -734,6 +1000,7 @@ static void CBLiveForceOrientation(UIInterfaceOrientation o) {
 
 - (void)play:(NSString *)url {
     [self teardownPlayer];
+    _playAt = CBNowMs();
     _item = [AVPlayerItem playerItemWithURL:[NSURL URLWithString:url]];
     _player = [AVPlayer playerWithPlayerItem:_item];
     [(AVPlayerLayer *)_video.layer setPlayer:_player];
@@ -838,7 +1105,9 @@ static void CBLiveForceOrientation(UIInterfaceOrientation o) {
 }
 
 - (void)togglePlay {
-    if (!_player) {
+    // Chưa có trình phát (lỗi / đã dừng), hoặc đài radio đang tạm dừng: mở lại — radio nghe tiếp đúng giờ phát, không phát
+    // phần đệm cũ
+    if (!_player || (_radioToken && _player.rate <= 0)) {
         [self openSource];
         return;
     }
@@ -880,6 +1149,19 @@ static void CBLiveForceOrientation(UIInterfaceOrientation o) {
         _baseBehind = [self behindLive];
     }
     [self updateBadge];
+    [self radioTick];
+    // Đưa luồng cho AVPlayer mà mãi chưa sẵn sàng (không báo lỗi, chỉ «đệm thiếu»): máy không giải mã được — vd hình xen kẽ
+    // dạng trường (PAFF) của đài phát sóng trên iPad 1 — báo rõ thay vì quay mãi; có gợi ý của lõi thì ghi nhớ «không phát được»
+    long long waited = _playAt && _item && !_started ? CBNowMs() - _playAt : 0;
+    if (waited > (_liveHint ? 20000 : 35000)) {
+        _playAt = 0;
+        NSString *why = _liveHint ? [_liveHint stringByReplacingOccurrencesOfString:@"có thể không nhận." withString:@"không nhận — máy này không phát được kênh này."]
+                                  : @"Quá lâu chưa lên hình — máy không giải mã được luồng này, hoặc mạng quá chậm.";
+        CBLog(@"Truyền hình: %@ — %.0f s chưa lên hình (%@)", CBStr([self channel], @"n"), waited / 1000.0, _liveHint ?: @"không rõ lý do");
+        if (_liveHint) [CBIPTV markBad:_srcUrl reason:why];
+        [self sourceFailed:why permanent:_liveHint != nil token:_token];
+        return;
+    }
     if (_ticks % 15 == 0) {
         [self updateProgramme];
         [self.view setNeedsLayout];
@@ -946,7 +1228,9 @@ static void CBLiveForceOrientation(UIInterfaceOrientation o) {
     NSString *bad = [CBIPTV channelBadReason:c], *match = [CBIPTV matchLine:c at:now];
     BOOL live = [CBIPTV matchState:c at:now] == CBMatchLive;
     cell.detailTextLabel.textColor = bad ? CBRGB(0xF0B44C) : (live ? CBRGB(0xFF6166) : [CBTheme dim]);
-    cell.detailTextLabel.text = bad ? @"Máy này không phát được" : (p ? CBStr(p, @"t") : (match ?: (CBStr(c, @"g") ?: @"")));
+    NSString *g = CBStr(c, @"g") ?: @"";
+    if ([CBIPTV isRadio:c]) g = [@"📻 " stringByAppendingString:g];
+    cell.detailTextLabel.text = bad ? @"Máy này không phát được" : (p ? CBStr(p, @"t") : (match ?: g));
     return cell;
 }
 
@@ -977,8 +1261,12 @@ static void CBLiveForceOrientation(UIInterfaceOrientation o) {
     NSDictionary *c = [self channel];
     NSDictionary *p = [CBIPTV nowFor:c at:[[NSDate date] timeIntervalSince1970]];
     NSMutableDictionary *info = [NSMutableDictionary dictionary];
-    info[MPMediaItemPropertyTitle] = p ? CBStr(p, @"t") : (CBStr(c, @"n") ?: @"");
-    info[MPMediaItemPropertyArtist] = [NSString stringWithFormat:@"%@ · trực tiếp", CBStr(c, @"n") ?: @"Truyền hình"];
+    // Radio: màn khoá hiện bài đang phát (tên bài ICY của đài) + logo đài
+    info[MPMediaItemPropertyTitle] = _radioTitle.length ? _radioTitle : (p ? CBStr(p, @"t") : (CBStr(c, @"n") ?: @""));
+    info[MPMediaItemPropertyArtist] = [NSString stringWithFormat:@"%@ · %@", CBStr(c, @"n") ?: @"Truyền hình", _radio ? @"radio" : @"trực tiếp"];
+    if (_radio && _radioLogo.image && !_radioLogo.hidden) {
+        info[MPMediaItemPropertyArtwork] = [[MPMediaItemArtwork alloc] initWithImage:_radioLogo.image];
+    }
     [MPNowPlayingInfoCenter defaultCenter].nowPlayingInfo = info;
 }
 
@@ -986,7 +1274,9 @@ static void CBLiveForceOrientation(UIInterfaceOrientation o) {
     if (event.type != UIEventTypeRemoteControl) return;
     switch (event.subtype) {
         case UIEventSubtypeRemoteControlTogglePlayPause: [self togglePlay]; break;
-        case UIEventSubtypeRemoteControlPlay: [_player play]; break;
+        case UIEventSubtypeRemoteControlPlay:
+            if (_player.rate <= 0) [self togglePlay];
+            break;
         case UIEventSubtypeRemoteControlPause: [_player pause]; break;
         case UIEventSubtypeRemoteControlNextTrack: [self nextChannel]; break;
         case UIEventSubtypeRemoteControlPreviousTrack: [self previousChannel]; break;
@@ -998,11 +1288,13 @@ static void CBLiveForceOrientation(UIInterfaceOrientation o) {
     AVPlayerItemAccessLogEvent *ev = _item.accessLog.events.lastObject;
     CGSize px = _item.presentationSize;
     NSDictionary *c = [self channel];
-    return [NSString stringWithFormat:@"kênh %@ (%ld/%lu) nguồn %ld/%lu | %@ | rate %.2f | hình %.0fx%.0f, rớt %ld khung | đệm %@ | bitrate %.0f kbps | sau mép trực tiếp %.0f s (gốc %.0f s) | khựng %ld | RAM %.0f MB",
+    return [NSString stringWithFormat:@"kênh %@ (%ld/%lu) nguồn %ld/%lu | %@ | rate %.2f | hình %.0fx%.0f, rớt %ld khung | đệm %@ | bitrate %.0f kbps | sau mép trực tiếp %.0f s (gốc %.0f s) | khựng %ld | RAM %.0f MB%@",
             CBStr(c, @"n"), (long)_index + 1, (unsigned long)_channels.count, (long)_source + 1, (unsigned long)CBArr(c, @"urls").count,
             _status.hidden ? @"đang phát" : [_status.text stringByReplacingOccurrencesOfString:@"\n" withString:@" "], _player.rate,
             px.width, px.height, (long)ev.numberOfDroppedVideoFrames, _item.playbackLikelyToKeepUp ? @"đủ" : @"thiếu",
-            ev.observedBitrate / 1000, [self behindLive], _baseBehind, (long)ev.numberOfStalls, CBResidentMB()];
+            ev.observedBitrate / 1000, [self behindLive], _baseBehind, (long)ev.numberOfStalls, CBResidentMB(),
+            _radio ? [NSString stringWithFormat:@" | radio %@%@ «%@»", _radioToken ? @"luồng tiếng" : @"HLS", _radioDesc ? [@" " stringByAppendingString:_radioDesc] : @"",
+                      _radioTitle ?: @""] : @""];
 }
 
 @end

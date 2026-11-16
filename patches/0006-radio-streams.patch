@@ -1,0 +1,803 @@
+diff --git a/linux/core/src/lib.rs b/linux/core/src/lib.rs
+index 6049e72..d68feb5 100644
+--- a/linux/core/src/lib.rs
++++ b/linux/core/src/lib.rs
+@@ -34,6 +34,7 @@ pub mod disclaimer;
+ pub mod media_proxy;
+ pub mod fmp4_ts;
+ pub mod flv_hls;
++pub mod radio;
+ pub mod web_fetch;
+ 
+ pub use models::*;
+diff --git a/linux/core/src/media_proxy.rs b/linux/core/src/media_proxy.rs
+index 48e8268..96c9136 100644
+--- a/linux/core/src/media_proxy.rs
++++ b/linux/core/src/media_proxy.rs
+@@ -51,6 +51,8 @@ struct Session {
+     links: Links,
+     /// Luồng FLV trực tiếp đang đổi sang HLS (w/…)
+     live: Option<Arc<crate::flv_hls::Live>>,
++    /// Đài radio (r/…): tên đài / bài đang phát
++    radio: Option<Arc<crate::radio::Info>>,
+ }
+ 
+ /// Tiêu đề riêng của phiên gửi lên máy chủ gốc.
+@@ -274,14 +276,20 @@ pub fn open_ex(src: &str, subtitle: Option<&str>, hls: bool, hd: Hdr, flv: bool)
+         local(&prefix, if hls || is_playlist(src) { 'p' } else { 'f' }, src, &mut links)
+     };
+     let subtitle = subtitle.filter(|s| s.starts_with("http")).map(|s| local(&prefix, 't', s, &mut links));
++    add_session(Session { token: token.clone(), hd, inline, links, live, radio: None });
++    Some(Opened { url, subtitle, token })
++}
++
++/// Thêm phiên. Mỗi lúc chỉ một trình phát: phiên mới (đổi kênh / nguồn) thì dừng luồng FLV của phiên cũ ngay, khỏi tải nền tới
++/// 90 s.
++fn add_session(s: Session) {
+     let mut ss = SESSIONS.lock().unwrap();
+-    // Mỗi lúc chỉ một trình phát: phiên mới (đổi kênh / nguồn) thì dừng luồng FLV của phiên cũ ngay, khỏi tải nền tới 90 s
+-    for s in ss.iter() {
+-        if let Some(l) = &s.live {
++    for o in ss.iter() {
++        if let Some(l) = &o.live {
+             l.close();
+         }
+     }
+-    ss.push(Session { token: token.clone(), hd, inline, links, live });
++    ss.push(s);
+     let n = ss.len();
+     if n > KEEP_SESSIONS {
+         for old in ss.drain(..n - KEEP_SESSIONS) {
+@@ -290,7 +298,219 @@ pub fn open_ex(src: &str, subtitle: Option<&str>, hls: bool, hd: Hdr, flv: bool)
+             }
+         }
+     }
+-    Some(Opened { url, subtitle, token })
++}
++
++// ---- Đài radio (luồng MP3 / AAC liền của Icecast / Shoutcast) ----
++
++/// Mở phiên phát một đài: địa chỉ `r/<n>.mp3|aac`. Mỗi lần trình phát mở địa chỉ đó là một kết nối tới đài (xin kèm tên bài
++/// hát), trả luồng tiếng liền — không độ dài, không Range, như chính Icecast — đã bỏ khối ICY. `codec` theo `media.sniff`.
++pub fn open_radio(src: &str, hd: Hdr, codec: Option<&str>) -> Option<Opened> {
++    let u = url::Url::parse(src).ok()?;
++    if u.scheme() != "http" && u.scheme() != "https" {
++        return None;
++    }
++    let port = start();
++    let token = format!("{:032x}", rand::random::<u128>());
++    let ext = if codec == Some("aac") { "aac" } else { "mp3" };
++    let mut links = Links::default();
++    let id = links.id(src);
++    let url = format!("http://127.0.0.1:{port}/{token}/r/{id}.{ext}");
++    let info = Arc::new(crate::radio::Info::new(ext));
++    add_session(Session { token: token.clone(), hd, inline: Vec::new(), links, live: None, radio: Some(info) });
++    Some(Opened { url, subtitle: None, token })
++}
++
++/// Tên đài / bài đang phát của phiên radio (None = không có phiên đó hoặc không phải radio).
++pub fn radio_info(token: &str) -> Option<crate::radio::InfoData> {
++    let ss = SESSIONS.lock().unwrap();
++    ss.iter().find(|s| s.token == token).and_then(|s| s.radio.as_ref().map(|r| r.get()))
++}
++
++/// Kết quả `media.sniff`.
++#[derive(Debug, Clone, PartialEq, serde::Serialize)]
++pub struct Sniffed {
++    /// hls | audio | flv | ts | mp4 | ogg | html | playlist | http (mã lỗi HTTP) | error (mạng) | unknown
++    pub kind: String,
++    /// "mp3" | "aac" (kind = audio)
++    #[serde(skip_serializing_if = "Option::is_none")]
++    pub codec: Option<String>,
++    pub status: u16,
++    /// Địa chỉ nên mở: link gốc (giữ nguyên — link chuyển hướng có token đổi mỗi lần), hoặc địa chỉ luồng ghi trong danh sách
++    /// .pls / .m3u của đài
++    pub url: String,
++    #[serde(skip_serializing_if = "Option::is_none")]
++    pub ct: Option<String>,
++    /// Tên đài (icy-name), kbps (icy-br)
++    #[serde(skip_serializing_if = "Option::is_none")]
++    pub name: Option<String>,
++    #[serde(skip_serializing_if = "Option::is_none")]
++    pub br: Option<u32>,
++    #[serde(skip_serializing_if = "Option::is_none")]
++    pub error: Option<String>,
++}
++
++impl Sniffed {
++    fn error(url: &str, e: String) -> Sniffed {
++        Sniffed { kind: "error".into(), codec: None, status: 0, url: url.into(), ct: None, name: None, br: None, error: Some(e) }
++    }
++}
++
++/// Đọc vài KB đầu của một link (theo chuyển hướng) để biết loại luồng — link kênh hay không có đuôi, không đoán theo đuôi được
++/// (xem `radio::classify`). Danh sách .pls / .m3u của đài thì đọc tiếp địa chỉ bên trong (tối đa 2 lớp). Quá 15 giây → error.
++pub async fn sniff(src: &str, hd: &Hdr) -> Sniffed {
++    let mut url = src.to_string();
++    let mut last = None;
++    for _ in 0..3 {
++        let (s, target) = match tokio::time::timeout(Duration::from_secs(15), sniff_once(&url, hd)).await {
++            Ok(r) => r,
++            Err(_) => (Sniffed::error(&url, "máy chủ không trả lời (quá 15 giây)".into()), None),
++        };
++        match target {
++            Some(t) if s.kind == "playlist" => {
++                url = t;
++                last = Some(s);
++            }
++            _ => return s,
++        }
++    }
++    last.unwrap_or_else(|| Sniffed::error(src, "danh sách lồng nhau quá sâu".into()))
++}
++
++fn header_text(resp: &reqwest::Response, k: &str) -> Option<String> {
++    let v = resp.headers().get(k)?;
++    let s = crate::radio::text(v.as_bytes()).trim().to_string();
++    (!s.is_empty()).then_some(s)
++}
++
++/// icy-br: «128», «128000», «128,128»
++fn icy_br(resp: &reqwest::Response) -> Option<u32> {
++    let b: u32 = header_text(resp, "icy-br")?.split(',').next()?.trim().parse().ok()?;
++    Some(if b >= 1000 { b / 1000 } else { b })
++}
++
++async fn sniff_once(url: &str, hd: &Hdr) -> (Sniffed, Option<String>) {
++    let mut rb = crate::http::client().get(url).header("Accept", "*/*").timeout(Duration::from_secs(20));
++    if let Some(r) = &hd.referer {
++        rb = rb.header("Referer", r);
++    }
++    if let Some(u) = &hd.ua {
++        rb = rb.header("User-Agent", u);
++    }
++    if let Some(o) = &hd.origin {
++        rb = rb.header("Origin", o);
++    }
++    let mut resp = match rb.send().await {
++        Ok(r) => r,
++        Err(e) => return (Sniffed::error(url, e.to_string()), None),
++    };
++    let status = resp.status().as_u16();
++    let final_url = resp.url().clone();
++    let ct = header_text(&resp, "content-type");
++    let (name, br) = (header_text(&resp, "icy-name"), icy_br(&resp));
++    let mut head = Vec::new();
++    while head.len() < 4096 {
++        match chunk(&mut resp).await {
++            Ok(Some(c)) => head.extend_from_slice(&c),
++            _ => break,
++        }
++    }
++    drop(resp);
++    let (kind, codec) = if status >= 400 { ("http", None) } else { crate::radio::classify(&head, ct.as_deref()) };
++    let target = if kind == "playlist" {
++        crate::radio::playlist_target(&crate::http::text(&head, ct.as_deref()), Some(&final_url))
++    } else {
++        None
++    };
++    crate::log::d("media", &format!("nhận dạng luồng: {kind}{} (HTTP {status}, {}): {}", codec.map(|c| format!(" {c}")).unwrap_or_default(),
++        ct.as_deref().unwrap_or("không ghi loại"), short(url)));
++    (Sniffed { kind: kind.into(), codec: codec.map(Into::into), status, url: url.to_string(), ct, name, br, error: None }, target)
++}
++
++/// Tải luồng của đài, xin kèm tên bài (`Icy-MetaData: 1`); lỗi kết nối / 5xx thì thử lại.
++async fn fetch_radio(url: &str, hd: &Hdr) -> Result<reqwest::Response, String> {
++    let mut last = String::new();
++    for attempt in 0..3u32 {
++        if attempt > 0 {
++            tokio::time::sleep(Duration::from_millis(500 << attempt)).await;
++        }
++        let mut rb = crate::http::client()
++            .get(url)
++            .header("Accept", "*/*")
++            .header("Icy-MetaData", "1")
++            .timeout(Duration::from_secs(6 * 3600));
++        if let Some(r) = &hd.referer {
++            rb = rb.header("Referer", r);
++        }
++        if let Some(u) = &hd.ua {
++            rb = rb.header("User-Agent", u);
++        }
++        if let Some(o) = &hd.origin {
++            rb = rb.header("Origin", o);
++        }
++        match rb.send().await {
++            Ok(resp) if resp.status().is_server_error() || resp.status().as_u16() == 429 => last = format!("HTTP {}", resp.status().as_u16()),
++            Ok(resp) => return Ok(resp),
++            Err(e) => last = e.to_string(),
++        }
++    }
++    Err(last)
++}
++
++/// r/<n>.mp3: luồng tiếng của đài (đã bỏ khối ICY), giữ tên bài vào `info`. Đài ngắt thì đóng kết nối — trình phát báo hết
++/// luồng, app mở lại.
++async fn radio_stream<W: AsyncWrite + Unpin>(url: &str, hd: &Hdr, info: &crate::radio::Info, w: &mut W, head_only: bool) -> bool {
++    let mut resp = match fetch_radio(url, hd).await {
++        Ok(r) => r,
++        Err(e) => {
++            crate::log::d("media", &format!("đài radio lỗi ({e}): {}", short(url)));
++            return reply(w, 502, "text/plain", b"", head_only).await;
++        }
++    };
++    let code = resp.status().as_u16();
++    if code >= 400 {
++        crate::log::d("media", &format!("đài radio HTTP {code}: {}", short(url)));
++        return reply(w, 502, "text/plain", b"", head_only).await;
++    }
++    let metaint: usize = header_text(&resp, "icy-metaint").and_then(|v| v.parse().ok()).unwrap_or(0);
++    let ct = header_text(&resp, "content-type").map(|c| c.to_ascii_lowercase()).filter(|c| c.starts_with("audio/"));
++    let codec = ct.as_deref().map(|c| if c.contains("aac") { "aac" } else { "mp3" });
++    info.set_station(header_text(&resp, "icy-name"), icy_br(&resp), codec);
++    let ct = ct.unwrap_or_else(|| if info.get().codec.as_deref() == Some("aac") { "audio/aac".into() } else { "audio/mpeg".into() });
++    crate::log::d("media", &format!("đài radio: {ct}, metaint {metaint}{}: {}", if head_only { " (HEAD)" } else { "" }, short(url)));
++    if write_head(w, 200, &[("Content-Type", ct), ("Cache-Control", "no-cache".to_string())], false).await.is_err() {
++        return false;
++    }
++    if head_only {
++        let _ = w.flush().await;
++        return false;
++    }
++    let mut strip = crate::radio::IcyStrip::new(metaint);
++    let mut out = Vec::with_capacity(32 * 1024);
++    loop {
++        match chunk(&mut resp).await {
++            Ok(Some(c)) => {
++                out.clear();
++                if let Some(t) = strip.feed(&c, &mut out) {
++                    if t != info.get().title {
++                        crate::log::d("media", &format!("đài radio: đang phát «{}»", t.as_deref().unwrap_or("")));
++                    }
++                    info.set_title(t);
++                }
++                if !out.is_empty() && (w.write_all(&out).await.is_err() || w.flush().await.is_err()) {
++                    return false;
++                }
++            }
++            Ok(None) => {
++                crate::log::d("media", &format!("đài radio ngắt luồng: {}", short(url)));
++                break;
++            }
++            Err(e) => {
++                crate::log::d("media", &format!("đài radio đứt ({e}): {}", short(url)));
++                break;
++            }
++        }
++    }
++    false
+ }
+ 
+ /// Bản thử (cổng gỡ lỗi): làm cổng treo — nhận yêu cầu mà không trả lời — để thử đường tự chuyển sang WebView khi mpv treo.
+@@ -756,9 +976,10 @@ async fn reply<W: AsyncWrite + Unpin>(w: &mut W, code: u16, ct: &str, body: &[u8
+     w.flush().await.is_ok()
+ }
+ 
+-fn session(token: &str) -> Option<(Hdr, Vec<String>, Option<Arc<crate::flv_hls::Live>>)> {
++#[allow(clippy::type_complexity)]
++fn session(token: &str) -> Option<(Hdr, Vec<String>, Option<Arc<crate::flv_hls::Live>>, Option<Arc<crate::radio::Info>>)> {
+     let ss = SESSIONS.lock().unwrap();
+-    ss.iter().find(|s| s.token == token).map(|s| (s.hd.clone(), s.inline.clone(), s.live.clone()))
++    ss.iter().find(|s| s.token == token).map(|s| (s.hd.clone(), s.inline.clone(), s.live.clone(), s.radio.clone()))
+ }
+ 
+ /// Dùng bảng địa chỉ của phiên (viết lại danh sách phát / tra số thứ tự).
+@@ -825,7 +1046,7 @@ async fn handle<W: AsyncWrite + Unpin>(req: &Request, w: &mut W) -> bool {
+     let path = req.path.split('?').next().unwrap_or("");
+     let mut it = path.trim_start_matches('/').splitn(3, '/');
+     let (token, kind, name) = (it.next().unwrap_or(""), it.next().unwrap_or(""), it.next().unwrap_or(""));
+-    let Some((hd, inline, live)) = session(token) else {
++    let Some((hd, inline, live, radio)) = session(token) else {
+         return reply(w, 404, "text/plain", b"", head_only).await;
+     };
+     let prefix = format!("http://127.0.0.1:{}/{token}", start());
+@@ -882,6 +1103,10 @@ async fn handle<W: AsyncWrite + Unpin>(req: &Request, w: &mut W) -> bool {
+     let Some(url) = id_of(name).and_then(|id| with_links(token, |l| l.get(id).cloned()).flatten()) else {
+         return reply(w, 404, "text/plain", b"", head_only).await;
+     };
++    if kind == "r" {
++        let Some(info) = radio else { return reply(w, 404, "text/plain", b"", head_only).await };
++        return radio_stream(&url, hd, &info, w, head_only).await;
++    }
+     match kind {
+         "p" => {
+             let r = async {
+@@ -1409,7 +1634,7 @@ mod tests {
+         assert_eq!(Hdr::of(Some("https://site.vn/x"), Some("  "), Some("a\r\nX: y"), None), Hdr { referer: Some("https://site.vn/".into()), ua: None, origin: None });
+         let l = open_ex("http://cdn.invalid/live/a.flv", None, false, hd.clone(), true).unwrap();
+         assert!(l.url.ends_with("/w/live.m3u8"));
+-        let (h, _, live) = session(&l.token).unwrap();
++        let (h, _, live, _) = session(&l.token).unwrap();
+         assert_eq!(h.ua.as_deref(), Some("VLC/3.0"));
+         live.expect("phiên FLV").close();
+     }
+diff --git a/linux/core/src/radio.rs b/linux/core/src/radio.rs
+new file mode 100644
+index 0000000..541e25c
+--- /dev/null
++++ b/linux/core/src/radio.rs
+@@ -0,0 +1,444 @@
++//! Đài phát thanh (radio) trong danh sách kênh IPTV — phần không cần mạng của cổng phát nội bộ (media_proxy):
++//! - `classify` / `playlist_target`: đọc vài KB đầu của một link để biết loại luồng (HLS, MP3 / AAC liền của Icecast /
++//!   Shoutcast, FLV, MPEG-TS, MP4, Ogg, trang web) — link kênh hay không có đuôi (`…/radio_128`, `…/?id=vtv6`), không đoán
++//!   theo đuôi được; danh sách `.pls` / `.m3u` của đài (một dòng địa chỉ luồng thật) thì lấy địa chỉ trong đó.
++//! - `IcyStrip`: luồng xin kèm thông tin bài hát (`Icy-MetaData: 1`) có khối ICY chen giữa phần tiếng, mỗi `icy-metaint` byte
++//!   — bỏ khối đó trước khi đưa cho trình phát, giữ tên bài (`StreamTitle='…'`).
++//! - `Info`: tên đài / bài đang phát / tốc độ của một phiên, app hỏi bằng `media.radioInfo`.
++
++use std::sync::Mutex;
++
++/// Thông tin đài của một phiên phát (cập nhật khi trình phát đang nghe).
++#[derive(Debug, Default)]
++pub struct Info {
++    data: Mutex<InfoData>,
++}
++
++#[derive(Debug, Default, Clone, PartialEq, serde::Serialize)]
++pub struct InfoData {
++    /// Bài đang phát (StreamTitle), None = đài không gửi
++    #[serde(skip_serializing_if = "Option::is_none")]
++    pub title: Option<String>,
++    /// Tên đài (icy-name)
++    #[serde(skip_serializing_if = "Option::is_none")]
++    pub name: Option<String>,
++    /// kbps (icy-br)
++    #[serde(skip_serializing_if = "Option::is_none")]
++    pub br: Option<u32>,
++    /// "mp3" | "aac"
++    #[serde(skip_serializing_if = "Option::is_none")]
++    pub codec: Option<String>,
++}
++
++impl Info {
++    pub fn new(codec: &str) -> Info {
++        Info { data: Mutex::new(InfoData { codec: Some(codec.to_string()), ..Default::default() }) }
++    }
++    pub fn get(&self) -> InfoData {
++        self.data.lock().unwrap().clone()
++    }
++    pub fn set_title(&self, t: Option<String>) {
++        self.data.lock().unwrap().title = t;
++    }
++    pub fn set_station(&self, name: Option<String>, br: Option<u32>, codec: Option<&str>) {
++        let mut d = self.data.lock().unwrap();
++        if name.is_some() {
++            d.name = name;
++        }
++        if br.is_some() {
++            d.br = br;
++        }
++        if let Some(c) = codec {
++            d.codec = Some(c.to_string());
++        }
++    }
++}
++
++/// Bỏ khối thông tin ICY khỏi luồng tiếng. `metaint` = 0: luồng không có khối nào (đài không gửi `icy-metaint`).
++pub struct IcyStrip {
++    metaint: usize,
++    until_meta: usize,
++    meta_left: Option<usize>,
++    meta: Vec<u8>,
++}
++
++impl IcyStrip {
++    pub fn new(metaint: usize) -> IcyStrip {
++        IcyStrip { metaint, until_meta: metaint, meta_left: None, meta: Vec::new() }
++    }
++
++    /// Đẩy một khúc của luồng: phần tiếng nối vào `out`; trả `Some(tên bài)` khi vừa đọc xong một khối có StreamTitle
++    /// (`Some(None)` = khối ghi tên bài trống).
++    pub fn feed(&mut self, mut data: &[u8], out: &mut Vec<u8>) -> Option<Option<String>> {
++        if self.metaint == 0 {
++            out.extend_from_slice(data);
++            return None;
++        }
++        let mut title = None;
++        while !data.is_empty() {
++            match self.meta_left {
++                None if self.until_meta > 0 => {
++                    let n = self.until_meta.min(data.len());
++                    out.extend_from_slice(&data[..n]);
++                    self.until_meta -= n;
++                    data = &data[n..];
++                }
++                None => {
++                    // Byte độ dài: khối dài len × 16 byte (0 = không có khối)
++                    let len = data[0] as usize * 16;
++                    data = &data[1..];
++                    if len == 0 {
++                        self.until_meta = self.metaint;
++                    } else {
++                        self.meta.clear();
++                        self.meta_left = Some(len);
++                    }
++                }
++                Some(left) => {
++                    let n = left.min(data.len());
++                    self.meta.extend_from_slice(&data[..n]);
++                    data = &data[n..];
++                    if n < left {
++                        self.meta_left = Some(left - n);
++                    } else {
++                        self.meta_left = None;
++                        self.until_meta = self.metaint;
++                        if let Some(t) = stream_title(&self.meta) {
++                            title = Some(t);
++                        }
++                    }
++                }
++            }
++        }
++        title
++    }
++}
++
++fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
++    hay.windows(needle.len()).position(|w| w == needle)
++}
++
++/// `StreamTitle='Ca sĩ - Bài';StreamUrl='…';` (đệm \0) → `Some(Some("Ca sĩ - Bài"))`; khối không có StreamTitle → None;
++/// StreamTitle trống → `Some(None)`.
++pub fn stream_title(meta: &[u8]) -> Option<Option<String>> {
++    let end = meta.iter().position(|&b| b == 0).unwrap_or(meta.len());
++    let m = &meta[..end];
++    const KEY: &[u8] = b"StreamTitle='";
++    let start = find(m, KEY)? + KEY.len();
++    let rest = &m[start..];
++    let stop = find(rest, b"';").or_else(|| rest.iter().rposition(|&b| b == b'\'')).unwrap_or(rest.len());
++    let t = text(&rest[..stop]);
++    let t = t.trim();
++    Some((!t.is_empty() && t != "-").then(|| t.to_string()))
++}
++
++/// Chữ của đài (tên bài, icy-name): UTF-8; không phải UTF-8 thì đài Nga / Đông Âu hay gửi Windows-1251 — chữ Kirin là byte
++/// cao nên đa số chữ cái là byte cao; tiếng Tây (Latin-1) chỉ lác đác chữ có dấu.
++pub fn text(b: &[u8]) -> String {
++    if let Ok(s) = std::str::from_utf8(b) {
++        return s.to_string();
++    }
++    let high = b.iter().filter(|&&c| c >= 0xC0 || c == 0xA8 || c == 0xB8).count();
++    let ascii = b.iter().filter(|c| c.is_ascii_alphabetic()).count();
++    let enc = if high * 2 >= high + ascii { encoding_rs::WINDOWS_1251 } else { encoding_rs::WINDOWS_1252 };
++    enc.decode_without_bom_handling(b).0.into_owned()
++}
++
++// ---- Nhận dạng luồng ----
++
++/// Độ dài khung MPEG audio (MP3 / MP2) từ 4 byte đầu khung; None = không phải đầu khung hợp lệ.
++fn mpeg_frame_len(h: &[u8]) -> Option<usize> {
++    if h.len() < 4 || h[0] != 0xFF || h[1] & 0xE0 != 0xE0 {
++        return None;
++    }
++    let version = (h[1] >> 3) & 3; // 0 = MPEG 2.5, 2 = MPEG 2, 3 = MPEG 1
++    let layer = (h[1] >> 1) & 3; // 1 = Layer III, 2 = II, 3 = I
++    let br_idx = (h[2] >> 4) as usize;
++    let sr_idx = ((h[2] >> 2) & 3) as usize;
++    if version == 1 || layer == 0 || br_idx == 0 || br_idx == 15 || sr_idx == 3 {
++        return None;
++    }
++    let padding = ((h[2] >> 1) & 1) as usize;
++    const BR_V1_L3: [usize; 15] = [0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320];
++    const BR_V1_L2: [usize; 15] = [0, 32, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384];
++    const BR_V1_L1: [usize; 15] = [0, 32, 64, 96, 128, 160, 192, 224, 256, 288, 320, 352, 384, 416, 448];
++    const BR_V2_L1: [usize; 15] = [0, 32, 48, 56, 64, 80, 96, 112, 128, 144, 160, 176, 192, 224, 256];
++    const BR_V2_L23: [usize; 15] = [0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160];
++    const SR: [[usize; 3]; 3] = [[11025, 12000, 8000], [22050, 24000, 16000], [44100, 48000, 32000]];
++    let v1 = version == 3;
++    let br = 1000
++        * match (v1, layer) {
++            (true, 1) => BR_V1_L3[br_idx],
++            (true, 2) => BR_V1_L2[br_idx],
++            (true, _) => BR_V1_L1[br_idx],
++            (false, 3) => BR_V2_L1[br_idx],
++            (false, _) => BR_V2_L23[br_idx],
++        };
++    let sr = SR[match version {
++        0 => 0,
++        2 => 1,
++        _ => 2,
++    }][sr_idx];
++    Some(match layer {
++        3 => (12 * br / sr + padding) * 4,
++        1 if !v1 => 72 * br / sr + padding,
++        _ => 144 * br / sr + padding,
++    })
++}
++
++/// Độ dài khung AAC ADTS từ 7 byte đầu khung.
++fn adts_frame_len(h: &[u8]) -> Option<usize> {
++    if h.len() < 7 || h[0] != 0xFF || h[1] & 0xF6 != 0xF0 {
++        return None;
++    }
++    let len = ((h[3] as usize & 3) << 11) | ((h[4] as usize) << 3) | (h[5] as usize >> 5);
++    (len >= 7).then_some(len)
++}
++
++/// Tìm hai khung liền nhau cùng loại trong `b` (luồng tiếng có thể bắt đầu giữa khung): Some("mp3" | "aac").
++fn audio_frames(b: &[u8]) -> Option<&'static str> {
++    for i in 0..b.len().saturating_sub(8) {
++        if b[i] != 0xFF {
++            continue;
++        }
++        if let Some(n) = adts_frame_len(&b[i..]) {
++            if i + n + 7 <= b.len() && adts_frame_len(&b[i + n..]).is_some() {
++                return Some("aac");
++            }
++        }
++        if let Some(n) = mpeg_frame_len(&b[i..]) {
++            if i + n + 4 <= b.len() && mpeg_frame_len(&b[i + n..]).is_some() {
++                return Some("mp3");
++            }
++        }
++    }
++    None
++}
++
++/// Bỏ thẻ ID3v2 ở đầu (MP3 / AAC đóng gói).
++fn skip_id3(b: &[u8]) -> &[u8] {
++    if b.len() >= 10 && &b[..3] == b"ID3" {
++        let size = (b[6] as usize & 0x7F) << 21 | (b[7] as usize & 0x7F) << 14 | (b[8] as usize & 0x7F) << 7 | (b[9] as usize & 0x7F);
++        return &b[(10 + size).min(b.len())..];
++    }
++    b
++}
++
++/// Loại luồng từ vài KB đầu + Content-Type: ("hls" | "playlist" | "audio" | "flv" | "ts" | "mp4" | "ogg" | "html" | "unknown",
++/// mã tiếng "mp3" | "aac" khi là "audio").
++pub fn classify(head: &[u8], ct: Option<&str>) -> (&'static str, Option<&'static str>) {
++    let ct = ct.map(|c| c.split(';').next().unwrap_or("").trim().to_ascii_lowercase()).unwrap_or_default();
++    let text_start = {
++        let mut t = head;
++        if t.starts_with(&[0xEF, 0xBB, 0xBF]) {
++            t = &t[3..];
++        }
++        let skip = t.iter().take_while(|c| c.is_ascii_whitespace()).count();
++        &t[skip..]
++    };
++    if text_start.starts_with(b"#EXTM3U") {
++        let s = String::from_utf8_lossy(text_start);
++        let hls = ["#EXT-X-TARGETDURATION", "#EXT-X-STREAM-INF", "#EXT-X-MEDIA-SEQUENCE", "#EXT-X-VERSION", "#EXT-X-MEDIA:"]
++            .iter()
++            .any(|k| s.contains(k));
++        return (if hls { "hls" } else { "playlist" }, None);
++    }
++    if text_start.len() >= 10 && text_start[..10].eq_ignore_ascii_case(b"[playlist]") {
++        return ("playlist", None);
++    }
++    if head.starts_with(b"FLV") {
++        return ("flv", None);
++    }
++    if head.starts_with(b"OggS") {
++        return ("ogg", None);
++    }
++    if head.len() >= 8 && &head[4..8] == b"ftyp" {
++        return ("mp4", None);
++    }
++    if head.first() == Some(&0x47) && (head.len() < 189 || head[188] == 0x47) && head.len() >= 188 {
++        return ("ts", None);
++    }
++    let body = skip_id3(head);
++    if let Some(codec) = audio_frames(body) {
++        return ("audio", Some(codec));
++    }
++    match ct.as_str() {
++        "application/vnd.apple.mpegurl" | "application/x-mpegurl" | "audio/x-mpegurl" | "audio/mpegurl" => {
++            // Danh sách .m3u của đài (vài dòng địa chỉ) cũng hay mang loại này
++            if text_start.starts_with(b"http") {
++                ("playlist", None)
++            } else {
++                ("hls", None)
++            }
++        }
++        "audio/x-scpls" | "audio/scpls" => ("playlist", None),
++        "audio/mpeg" | "audio/mp3" | "audio/mpeg3" | "audio/x-mpeg" => ("audio", Some("mp3")),
++        "audio/aac" | "audio/aacp" | "audio/x-aac" | "audio/x-aacp" => ("audio", Some("aac")),
++        "application/ogg" | "audio/ogg" | "audio/opus" | "audio/vorbis" => ("ogg", None),
++        "video/x-flv" => ("flv", None),
++        "video/mp2t" => ("ts", None),
++        "video/mp4" | "audio/mp4" | "video/quicktime" => ("mp4", None),
++        c if c.starts_with("text/html") || text_start.starts_with(b"<") => ("html", None),
++        _ if text_start.starts_with(b"http") => ("playlist", None),
++        _ => ("unknown", None),
++    }
++}
++
++/// Địa chỉ luồng thật trong danh sách của đài: `.pls` (`File1=…`) hoặc `.m3u` thường (dòng không bắt đầu bằng #).
++pub fn playlist_target(text: &str, base: Option<&url::Url>) -> Option<String> {
++    let resolve = |s: &str| -> Option<String> {
++        let s = s.trim();
++        let u = match base {
++            Some(b) => b.join(s).ok()?,
++            None => url::Url::parse(s).ok()?,
++        };
++        matches!(u.scheme(), "http" | "https").then(|| u.to_string())
++    };
++    let is_pls = text.trim_start().get(..10).is_some_and(|h| h.eq_ignore_ascii_case("[playlist]"));
++    if is_pls {
++        return text
++            .lines()
++            .map(str::trim)
++            .filter_map(|l| {
++                let (k, v) = l.split_once('=')?;
++                (k.len() > 4 && k[..4].eq_ignore_ascii_case("file")).then_some(v)
++            })
++            .find_map(resolve);
++    }
++    text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')).find_map(resolve)
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    fn icy_stream(metaint: usize, blocks: &[(&[u8], Option<&str>)]) -> Vec<u8> {
++        let mut v = Vec::new();
++        for (audio, meta) in blocks {
++            assert_eq!(audio.len(), metaint);
++            v.extend_from_slice(audio);
++            match meta {
++                None => v.push(0),
++                Some(m) => {
++                    let mut b = m.as_bytes().to_vec();
++                    while b.len() % 16 != 0 {
++                        b.push(0);
++                    }
++                    v.push((b.len() / 16) as u8);
++                    v.extend_from_slice(&b);
++                }
++            }
++        }
++        v
++    }
++
++    #[test]
++    fn icy_strip_any_chunking() {
++        let a1 = [1u8; 16];
++        let a2 = [2u8; 16];
++        let a3 = [3u8; 16];
++        let s = icy_stream(
++            16,
++            &[(&a1, Some("StreamTitle='Ca sĩ - Bài hát';StreamUrl='';")), (&a2, None), (&a3, Some("StreamTitle='';"))],
++        );
++        for step in [1, 2, 5, 7, 16, 17, 33, 1000] {
++            let mut st = IcyStrip::new(16);
++            let mut out = Vec::new();
++            let mut titles = Vec::new();
++            for c in s.chunks(step) {
++                if let Some(t) = st.feed(c, &mut out) {
++                    titles.push(t);
++                }
++            }
++            let mut want = a1.to_vec();
++            want.extend_from_slice(&a2);
++            want.extend_from_slice(&a3);
++            assert_eq!(out, want, "bước {step}");
++            // Một khúc chứa nhiều khối: chỉ báo tên mới nhất
++            assert_eq!(titles.last(), Some(&None), "bước {step}");
++            if step <= 17 {
++                assert_eq!(titles, vec![Some("Ca sĩ - Bài hát".to_string()), None], "bước {step}");
++            }
++        }
++    }
++
++    #[test]
++    fn icy_no_metaint_passthrough() {
++        let mut st = IcyStrip::new(0);
++        let mut out = Vec::new();
++        assert_eq!(st.feed(b"abc", &mut out), None);
++        assert_eq!(out, b"abc");
++    }
++
++    #[test]
++    fn title_encodings() {
++        // Windows-1251: «Песня»
++        let cp = [b"StreamTitle='".as_slice(), &[0xCF, 0xE5, 0xF1, 0xED, 0xFF], b"';"].concat();
++        assert_eq!(stream_title(&cp), Some(Some("Песня".to_string())));
++        // Latin-1: «Café»
++        let l1 = [b"StreamTitle='Caf".as_slice(), &[0xE9], b"';"].concat();
++        assert_eq!(stream_title(&l1), Some(Some("Café".to_string())));
++        assert_eq!(stream_title(b"StreamUrl='x';"), None);
++        assert_eq!(stream_title(b"StreamTitle=' - ';\0\0"), Some(None));
++        // Tên có dấu nháy đơn bên trong
++        assert_eq!(stream_title(b"StreamTitle='Rock'n'Roll';"), Some(Some("Rock'n'Roll".to_string())));
++    }
++
++    /// Khung MP3 MPEG-1 Layer III 128 kbps 44,1 kHz: 417 byte
++    fn mp3_frames(n: usize) -> Vec<u8> {
++        let mut v = Vec::new();
++        for _ in 0..n {
++            let mut f = vec![0u8; 417];
++            f[..4].copy_from_slice(&[0xFF, 0xFB, 0x90, 0x64]);
++            v.extend_from_slice(&f);
++        }
++        v
++    }
++
++    fn adts_frames(n: usize) -> Vec<u8> {
++        let len = 200usize;
++        let mut v = Vec::new();
++        for _ in 0..n {
++            let mut f = vec![0u8; len];
++            f[..7].copy_from_slice(&[0xFF, 0xF1, 0x50, 0x80 | ((len >> 11) & 3) as u8, ((len >> 3) & 0xFF) as u8, (((len & 7) << 5) | 0x1F) as u8, 0xFC]);
++            v.extend_from_slice(&f);
++        }
++        v
++    }
++
++    #[test]
++    fn classify_streams() {
++        assert_eq!(mpeg_frame_len(&[0xFF, 0xFB, 0x90, 0x64]), Some(417));
++        // Luồng bắt đầu giữa khung (Icecast cắt bất kỳ đâu)
++        let mut mid = vec![0x12, 0x34, 0x56];
++        mid.extend(mp3_frames(4));
++        assert_eq!(classify(&mid, Some("application/octet-stream")), ("audio", Some("mp3")));
++        assert_eq!(classify(&adts_frames(4), None), ("audio", Some("aac")));
++        let mut id3 = b"ID3\x04\x00\x00\x00\x00\x00\x05abcde".to_vec();
++        id3.extend(mp3_frames(3));
++        assert_eq!(classify(&id3, None), ("audio", Some("mp3")));
++        assert_eq!(classify(b"#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:6\n", None).0, "hls");
++        assert_eq!(classify(b"\xEF\xBB\xBF#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1\na.m3u8", None).0, "hls");
++        assert_eq!(classify(b"#EXTM3U\n#EXTINF:-1,Radio\nhttp://a/b\n", Some("audio/x-mpegurl")).0, "playlist");
++        assert_eq!(classify(b"http://a.b/stream\n", Some("audio/x-mpegurl")).0, "playlist");
++        assert_eq!(classify(b"[playlist]\nFile1=http://a/b\n", None).0, "playlist");
++        assert_eq!(classify(b"FLV\x01\x05", None).0, "flv");
++        assert_eq!(classify(b"OggS\x00\x02", Some("application/ogg")).0, "ogg");
++        assert_eq!(classify(b"\x00\x00\x00\x18ftypmp42", None).0, "mp4");
++        assert_eq!(classify(b"<!DOCTYPE html><html>", Some("text/html; charset=utf-8")).0, "html");
++        assert_eq!(classify(b"\x00\x01", Some("audio/aacp")), ("audio", Some("aac")));
++        assert_eq!(classify(b"\x00\x01", Some("audio/mpeg")), ("audio", Some("mp3")));
++        let mut ts = vec![0u8; 376];
++        ts[0] = 0x47;
++        ts[188] = 0x47;
++        assert_eq!(classify(&ts, None).0, "ts");
++    }
++
++    #[test]
++    fn playlist_targets() {
++        let base = url::Url::parse("http://radio.example/listen.pls").unwrap();
++        assert_eq!(playlist_target("[playlist]\nNumberOfEntries=2\nFile1=http://s1.example:8000/live\nTitle1=A\n", Some(&base)).as_deref(), Some("http://s1.example:8000/live"));
++        assert_eq!(playlist_target("#EXTM3U\n#EXTINF:-1,Radio\n/stream.mp3\n", Some(&base)).as_deref(), Some("http://radio.example/stream.mp3"));
++        assert_eq!(playlist_target("[playlist]\nFile1=ftp://x\n", Some(&base)), None);
++    }
++}
+diff --git a/linux/ffi/src/media.rs b/linux/ffi/src/media.rs
+index 6d1e8bf..e8c2f4e 100644
+--- a/linux/ffi/src/media.rs
++++ b/linux/ffi/src/media.rs
+@@ -14,6 +14,10 @@ fn opt_s(a: &Value, k: &str) -> Option<String> {
+     a.get(k).and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(|s| s.to_string())
+ }
+ 
++fn hdr_of(a: &Value) -> media_proxy::Hdr {
++    media_proxy::Hdr::of(opt_s(a, "page").as_deref(), opt_s(a, "referer").as_deref(), opt_s(a, "ua").as_deref(), opt_s(a, "origin").as_deref())
++}
++
+ fn hls(a: &Value) -> bool {
+     a.get("hls").and_then(|v| v.as_bool()).unwrap_or(false)
+ }
+@@ -32,6 +36,14 @@ pub fn sync(m: &str, a: &Value) -> Option<Res> {
+         )
+             .map(|o| json!({ "url": o.url, "subtitle": o.subtitle, "token": o.token }))
+             .unwrap_or(Value::Null)),
++        // Đài radio (luồng MP3 / AAC liền — loại do media.sniff báo): {url, token}; «codec» = "aac" | "mp3"
++        "media.openRadio" => Ok(media_proxy::open_radio(&s(a, "src"), hdr_of(a), opt_s(a, "codec").as_deref())
++            .map(|o| json!({ "url": o.url, "token": o.token }))
++            .unwrap_or(Value::Null)),
++        // Tên đài / bài đang phát của phiên radio: {title, name, br, codec} | null
++        "media.radioInfo" => Ok(media_proxy::radio_info(&s(a, "token"))
++            .and_then(|d| serde_json::to_value(d).ok())
++            .unwrap_or(Value::Null)),
+         "media.isPlaylist" => Ok(json!(media_proxy::is_playlist(&s(a, "src")))),
+         "media.closeAll" => {
+             media_proxy::close_all();
+@@ -45,6 +57,9 @@ pub async fn call(m: &str, a: &Value) -> Option<Res> {
+     Some(match m {
+         // Kiểm trước link luồng của trình phát nhúng (trang vẫn mở): HLS thường / tệp video → true
+         "media.probe" => Ok(json!(media_proxy::probe(&s(a, "src"), opt_s(a, "page").as_deref(), hls(a)).await)),
++        // Loại luồng của một link (đọc vài KB đầu, theo chuyển hướng / danh sách .pls của đài): {kind: hls | audio | flv | ts |
++        // mp4 | ogg | html | playlist | http | error | unknown, codec, status, url, ct, name, br, error}
++        "media.sniff" => Ok(serde_json::to_value(media_proxy::sniff(&s(a, "src"), &hdr_of(a)).await).unwrap_or(Value::Null)),
+         _ => return None,
+     })
+ }

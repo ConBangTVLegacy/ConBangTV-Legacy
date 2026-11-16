@@ -36,3 +36,24 @@
   xếp lúc kẹt (gửi SIGABRT lấy báo cáo của iOS): 3 luồng `cbtv-net` ở condvar, 1 luồng trong `kevent`. Bản vá: nhịp chạy trên
   luồng riêng `cbtv-tick` bằng `block_on` — hẹn giờ của luồng đó đánh thức thẳng bộ điều khiển (kqueue `EVFILT_USER`), luồng
   giữ bộ điều khiển dậy mỗi 50 ms và lấy việc trong hàng đợi chung, không qua bước chọn luồng để đánh thức của bộ lập lịch.
+- `0006-radio-streams.patch` — **đài radio** trong danh sách kênh IPTV (luồng MP3 / AAC liền của Icecast / Shoutcast — AVPlayer iOS
+  5 / 6 phát được luồng này, nhưng link đài hay không có đuôi nên app không đoán được loại):
+  - `media.sniff` (gọi nền): đọc ≤ 4 KB đầu của link (theo chuyển hướng) → `kind` = hls | audio (+ `codec` mp3 / aac, tìm hai
+    khung MPEG / ADTS liền nhau — Icecast cắt luồng giữa khung) | flv | ts | mp4 | ogg | html | playlist | http (mã lỗi) | error;
+    danh sách `.pls` / `.m3u` của đài thì đọc tiếp địa chỉ bên trong (tối đa 2 lớp); `icy-name`, `icy-br`.
+  - `media.openRadio` → `r/<n>.mp3|aac`: mỗi lần trình phát mở là một kết nối tới đài kèm `Icy-MetaData: 1`; trả luồng liền
+    (200, không độ dài, không Range — như Icecast) đã bỏ khối ICY (mỗi `icy-metaint` byte); tên bài `StreamTitle` (UTF-8, không
+    phải UTF-8 thì Windows-1251 / Latin-1) giữ ở phiên, app hỏi bằng `media.radioInfo`.
+  - `radio.rs` (nhận dạng, bỏ khối ICY, giải mã tên bài) — 5 phép thử; thử với 27 đài thật trong danh sách: 23 MP3 nhận đúng,
+    2 đài chết (404 / 403), luồng ra giải mã sạch bằng ffmpeg, đọc được tên bài Kirin («NILETTO - ТЫ ТАКАЯ КРАСИВАЯ»).
+- `0007-ts-live-hls.patch` — **luồng MPEG-TS liền** (IPTV kiểu Xtream «http://máy-chủ/tên/mật-khẩu/123», link .ts — nhiều nhà
+  cung cấp chỉ cho TS, HLS `/live/…m3u8` bị 403): AVPlayer iOS 5 / 6 chỉ phát HLS. `media.open` với `ts: true` → `open_ts` →
+  việc nền (`run_live`, chung với FLV — `Feeder::Flv | Ts`) đọc luồng, `ts_hls::Segmenter` cắt đoạn ~2 s tại khung khoá H.264 (cờ
+  random_access / NAL IDR, SPS), không đổi vỏ; mỗi đoạn mở đầu bằng PAT + PMT (bộ đếm riêng), bỏ bảng phụ; đoạn giữ trong
+  `flv_hls::Live` (`w/live.m3u8`). H.265 / MPEG-2 → lỗi rõ. **Tiếng MP1 / MP2** (AVPlayer không giải mã, và kênh tiếng hỏng thì
+  cả hình đứng): xét tầng ở gói tiếng đầu (chưa biết thì chờ tối đa 2 s mới cắt đoạn đầu), MP2 thì bỏ kênh tiếng, viết lại PMT
+  (CRC-32 MPEG-2), ghi `# cb-note:` vào danh sách phát (app báo «phát hình không tiếng»). **Hình xen kẽ dạng trường (PAFF —
+  field_pic_flag = 1, kiểu bộ mã hoá đài phát sóng 1080i)**: bộ giải mã của iPad 1 không nhận (MBAFF của x264 thì được) — đọc SPS
+  + đầu lát (exp-Golomb, bỏ 00 00 03), ghi `# cb-hint:`; app canh 20 s chưa lên hình thì báo rõ, ghi «không phát được» cho máy đó.
+  Thử: 6 phép thử `ts_hls`; luồng thật (H.264 1080i PAFF + MP2) ra HLS giải mã sạch bằng ffmpeg; trên iPad 1 iOS 5 các luồng thử
+  720p / 1080p High AAC, MP3, chỉ hình, 1080i MBAFF đều phát; MP2 → hình không tiếng; PAFF → báo lỗi sau 21 s.

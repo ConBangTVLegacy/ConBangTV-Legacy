@@ -11,7 +11,7 @@
 ///  • Lưu ở kho prefs của lõi: iptv_lists, iptv_active, iptv_epg_url (cả nhà); iptv_favs, iptv_recent (từng người xem — khoá
 ///    «key#pid»); iptv_bad (kênh máy không phát được: H.265, khổ quá lớn…).
 /// Kênh: {k (khoá: tên chuẩn hoá), n (tên), g (nhóm), logo, id (tvg-id), num, urls: [địa chỉ], ref (Referer), ua,
-///        hdr ({địa chỉ: {ref, ua}} — nguồn gộp vào có tiêu đề khác), kick (giờ bóng lăn), dur (phút)}
+///        hdr ({địa chỉ: {ref, ua}} — nguồn gộp vào có tiêu đề khác), kick (giờ bóng lăn), dur (phút), radio (đài phát thanh)}
 extern NSString *const CBIPTVChangedNotification;   // danh sách / lịch vừa tải xong
 
 typedef NS_ENUM(NSInteger, CBMatchState) {
@@ -24,12 +24,17 @@ typedef NS_ENUM(NSInteger, CBMatchState) {
 @interface CBIPTV : NSObject
 
 // ---- Danh sách ----
-/// [{id, name, url, count, updated (ms), epg, err}]
+/// [{id, name, url | file + src (thêm từ tệp), count, updated (ms), epg, err}]
 + (NSArray *)lists;
 + (NSDictionary *)activeList;
 + (void)setActive:(NSString *)listId;
 /// Thêm danh sách (tên lấy từ địa chỉ) và chọn nó; trả bản ghi mới
 + (NSDictionary *)addList:(NSString *)url name:(NSString *)name;
+/// Thêm danh sách từ nội dung tệp M3U (máy tính gửi qua Wi-Fi, tệp trên máy, «Mở bằng»): chép vào Documents/ConBangTV-iptv,
+/// bản ghi {id, name, file, src (tên tệp gốc)} — không tải mạng, không tự làm mới. Chọn nó; nil + error nếu không phải M3U
++ (NSDictionary *)addListWithData:(NSData *)data fileName:(NSString *)fileName name:(NSString *)name error:(NSString **)error;
+/// Đường dẫn tệp đã chép của danh sách thêm từ tệp (nil = danh sách theo địa chỉ)
++ (NSString *)localFileOf:(NSDictionary *)list;
 + (void)renameList:(NSString *)listId name:(NSString *)name;
 + (void)removeList:(NSString *)listId;
 /// Kênh của danh sách đang chọn (đã đọc đệm); nil = chưa tải
@@ -97,6 +102,8 @@ typedef NS_ENUM(NSInteger, CBMatchState) {
 + (NSString *)clock:(NSTimeInterval)t;
 /// Referer / User-Agent gửi lên máy chủ cho nguồn `url` của kênh: {referer, ua} (tham số media.open)
 + (NSDictionary *)headersFor:(NSDictionary *)channel url:(NSString *)url;
+/// Đài radio (danh sách ghi radio="true", nhóm «Radio» / «Phát thanh», link .mp3 / .aac / .pls)
++ (BOOL)isRadio:(NSDictionary *)channel;
 /// Link giả «không có tín hiệu» mà danh sách thể thao để cho trận chưa có link thật (…/no-signal/…)
 + (BOOL)isPlaceholderURL:(NSString *)url;
 /// Danh sách phát là đoạn phim ngắn có hồi kết (hình chờ «không có tín hiệu» thay cho luồng trực tiếp)

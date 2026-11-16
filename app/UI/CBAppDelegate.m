@@ -7,6 +7,7 @@
 #import "CBLog.h"
 #import "CBNavController.h"
 #import "CBJSON.h"
+#import "CBListImport.h"
 #import "CBParental.h"
 #import "CBPrefs.h"
 #import "CBTVViewController.h"
@@ -90,6 +91,17 @@
     } else {
         [CBTVViewController playKey:key from:self.nav];
     }
+}
+
+/// «Mở bằng Côn Bằng TV» (Mail, Filza…) một tệp .m3u / .m3u8: iOS chép vào Documents/Inbox → thêm thành danh sách kênh
+- (BOOL)application:(UIApplication *)application openURL:(NSURL *)url sourceApplication:(NSString *)source annotation:(id)annotation {
+    if (!url.isFileURL) return NO;
+    CBLog(@"Mở tệp từ %@: %@", source ?: @"?", url.path);
+    NSString *path = url.path;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        [CBListImport importFile:path done:nil];
+    });
+    return YES;
 }
 
 - (void)applicationDidBecomeActive:(UIApplication *)application {

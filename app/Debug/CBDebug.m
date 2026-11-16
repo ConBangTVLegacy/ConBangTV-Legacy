@@ -19,6 +19,7 @@
 #import "CBTouch.h"
 #import "CBJSON.h"
 #import "CBIPTV.h"
+#import "CBListImport.h"
 #import "CBLivePlayerViewController.h"
 #import "CBTVSettingsViewController.h"
 #import "CBTVViewController.h"
@@ -187,6 +188,14 @@
         NSArray *lists = [CBIPTV lists];
         NSInteger i = arg.integerValue;
         if (i >= 0 && i < (NSInteger)lists.count) [CBIPTV setActive:CBStr(lists[i], @"id")];
+    } else if ([verb isEqualToString:@"tvremove"]) {
+        // tvremove <số> — xoá danh sách (số như tvlists)
+        NSArray *lists = [CBIPTV lists];
+        NSInteger i = arg.integerValue;
+        if (i >= 0 && i < (NSInteger)lists.count) {
+            CBLog(@"[gỡ lỗi] xoá danh sách «%@»", CBStr(lists[i], @"name"));
+            [CBIPTV removeList:CBStr(lists[i], @"id")];
+        }
     } else if ([verb isEqualToString:@"tvrefresh"]) {
         [CBIPTV refresh:YES done:^(NSString *err) { CBLog(@"[gỡ lỗi] tải lại danh sách: %@", err ?: @"xong"); }];
     } else if ([verb isEqualToString:@"tvepg"]) {
@@ -252,6 +261,16 @@
                   [CBIPTV matchLine:c at:now] ?: @"(kênh thường)", [kinds componentsJoinedByString:@","],
                   CBStr(c, @"ua") ? @" · UA riêng" : @"", [CBIPTV hasKickReminder:c] ? @" · 🔔" : @"");
         }
+    } else if ([verb isEqualToString:@"tvupload"]) {
+        // tvupload — hộp «Gửi tệp từ máy tính» (mở trang nhận tệp trên Wi-Fi)
+        [CBListImport showUpload:nil];
+        CBLog(@"[gỡ lỗi] [truyền hình] trang nhận tệp: %@", [CBListImport uploadAddress] ?: @"(không mở được)");
+    } else if ([verb isEqualToString:@"tvfiles"]) {
+        // tvfiles — tệp .m3u / .m3u8 tìm thấy trên máy (như «Chọn tệp .m3u trên máy này»)
+        for (NSDictionary *f in [CBListImport localFiles]) CBLog(@"[gỡ lỗi] [truyền hình] tệp %@ (%@ byte)", f[@"path"], f[@"size"]);
+    } else if ([verb isEqualToString:@"tvimport"]) {
+        // tvimport <đường dẫn> — thêm danh sách từ tệp trên máy
+        [CBListImport importFile:arg done:nil];
     } else if ([verb isEqualToString:@"tvage"]) {
         // tvage <phút> — lùi giờ «cập nhật» của danh sách đang chọn để thử tự làm mới (màn Truyền hình tải lại trong ≤ 30 giây)
         NSDictionary *l = [CBIPTV activeList];

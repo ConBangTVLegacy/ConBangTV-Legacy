@@ -2,6 +2,7 @@
 #import "CBImages.h"
 #import "CBIPTV.h"
 #import "CBJSON.h"
+#import "CBListImport.h"
 #import "CBLivePlayerViewController.h"
 #import "CBLog.h"
 #import "CBParental.h"
@@ -134,7 +135,9 @@
         if (ms == CBMatchLive) f = MAX(0, MIN(1, (now - kick) / (CBNum(c, @"dur", 150) * 60)));
     } else {
         _prog.textColor = [CBTheme text];
-        _prog.text = p ? CBStr(p, @"t") : (compact ? CBStr(c, @"n") : CBStr(c, @"g"));
+        NSString *g = CBStr(c, @"g") ?: @"";
+        if ([CBIPTV isRadio:c]) g = [@"📻 " stringByAppendingString:g];   // đài radio: nghe được khi khoá máy
+        _prog.text = p ? CBStr(p, @"t") : (compact ? CBStr(c, @"n") : g);
         _time.text = p ? [NSString stringWithFormat:@"%@–%@", [CBIPTV clock:s], [CBIPTV clock:e]] : nil;
         _next.text = n ? [NSString stringWithFormat:@"Tiếp: %@ %@", [CBIPTV clock:CBNum(n, @"s", 0)], CBStr(n, @"t")] : nil;
     }
@@ -143,7 +146,8 @@
         _prog.textColor = [CBTheme text];
         _next.text = match;
     } else if (compact) {
-        _next.text = p ? [NSString stringWithFormat:@"%@ · %@", CBStr(c, @"n"), _time.text] : CBStr(c, @"g");
+        NSString *g = [CBIPTV isRadio:c] ? [@"📻 " stringByAppendingString:CBStr(c, @"g") ?: @""] : CBStr(c, @"g");
+        _next.text = p ? [NSString stringWithFormat:@"%@ · %@", CBStr(c, @"n"), _time.text] : g;
     }
     self.contentView.alpha = bad ? 0.55 : (ms == CBMatchOver ? 0.7 : 1);
     _live.hidden = !compact;
@@ -706,29 +710,9 @@
     }];
 }
 
+/// Thêm danh sách: theo địa chỉ, gửi tệp từ máy tính qua Wi-Fi, hoặc tệp .m3u có trên máy (CBListImport)
 + (void)askAddList:(void (^)(NSDictionary *))done {
-    CBAlert *a = [CBAlert title:@"Thêm danh sách kênh" message:@"Địa chỉ danh sách M3U / M3U8 (http…)" cancel:@"Huỷ"
-                         others:@[@"Thêm"] done:^(CBAlert *alert, NSInteger index) {
-        if (index == alert.cancelButtonIndex) return;
-        NSString *url = [[alert textFieldAtIndex:0].text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-        if (url.length < 8) {
-            [CBTheme toast:@"Chưa có địa chỉ danh sách."];
-            return;
-        }
-        NSDictionary *l = [CBIPTV addList:url name:nil];
-        CBLog(@"Truyền hình: thêm danh sách %@", url);
-        [CBIPTV refresh:YES done:^(NSString *err) {
-            [CBTheme toast:err ?: [NSString stringWithFormat:@"Đã tải %lu kênh.", (unsigned long)[CBIPTV channels].count]];
-        }];
-        if (done) done(l);
-    }];
-    a.alertViewStyle = UIAlertViewStylePlainTextInput;
-    UITextField *f = [a textFieldAtIndex:0];
-    f.keyboardType = UIKeyboardTypeURL;
-    f.autocorrectionType = UITextAutocorrectionTypeNo;
-    f.autocapitalizationType = UITextAutocapitalizationTypeNone;
-    f.placeholder = @"http://…/danh-sach.m3u";
-    [a show];
+    [CBListImport ask:done];
 }
 
 + (void)playKey:(NSString *)key from:(UIViewController *)host {

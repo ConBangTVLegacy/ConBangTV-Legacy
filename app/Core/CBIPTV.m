@@ -26,8 +26,8 @@ static const long long kMatchListMaxAge = 30LL * 60 * 1000;
 static const long long kWaitingListMaxAge = 5LL * 60 * 1000;
 /// Tự làm mới: vừa thử tải (hỏng) thì chờ chừng này mới thử lại
 static const long long kAutoRetryGap = 3LL * 60 * 1000;
-/// Đổi cách đọc M3U (2: giờ trận, giữ BLV; 3: link giả «no-signal») — đệm cũ đọc lại
-static const NSInteger kParseVersion = 3;
+/// Đổi cách đọc M3U (2: giờ trận, giữ BLV; 3: link giả «no-signal»; 4: kênh radio; 5: bỏ mã nước «|UK| » đầu tên) — đệm cũ đọc lại
+static const NSInteger kParseVersion = 5;
 /// Kênh trận đấu thường lên sóng trước giờ bóng lăn chừng này (giây)
 static const double kMatchEarly = 30 * 60;
 static const long long kGuideMaxAge = 6LL * 3600 * 1000;
@@ -63,6 +63,17 @@ static void CBWriteJSON(NSString *path, id obj) {
 }
 
 /// Văn bản của tệp tải về: UTF-8, không được thì Latin-1 (vài danh sách cũ)
+/// Tệp danh sách người xem thêm từ tệp (máy tính gửi qua Wi-Fi, tệp trên máy, «Mở bằng»): giữ ở Documents/ConBangTV-iptv — không
+/// phải bộ nhớ đệm (iOS dọn Caches khi máy đầy, mà danh sách này không tải lại được)
+static NSString *CBLocalListDir(void) {
+    static NSString *dir;
+    if (!dir) {
+        dir = [CBDocumentsDir() stringByAppendingPathComponent:@"ConBangTV-iptv"];
+        [[NSFileManager defaultManager] createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:NULL];
+    }
+    return dir;
+}
+
 static NSString *CBReadText(NSString *path) {
     NSData *d = [NSData dataWithContentsOfFile:path];
     if (!d) return nil;
@@ -189,6 +200,18 @@ static NSInteger CBSourceRank(NSString *url) {
     return CBIsPlaceholder(url) ? 2 : (CBIsFlv(url) ? 1 : 0);
 }
 
+/// Đài radio: danh sách ghi `radio="true"` (kiểu Kodi / iptv-org), nhóm tên «Radio» / «Phát thanh» / «Truyền thanh», hoặc link
+/// tệp tiếng / danh sách của đài (.mp3, .aac, .pls). Đài không đánh dấu (link không đuôi) trình phát vẫn nhận ra lúc mở.
+static BOOL CBIsRadio(NSDictionary *attrs, NSString *group, NSString *url) {
+    NSString *r = [attrs[@"radio"] lowercaseString];
+    if ([r isEqualToString:@"true"] || [r isEqualToString:@"1"]) return YES;
+    NSString *g = [CBIPTV norm:group ?: @""];
+    if ([g rangeOfString:@"radio"].location != NSNotFound || [g rangeOfString:@"phat thanh"].location != NSNotFound ||
+        [g rangeOfString:@"truyen thanh"].location != NSNotFound) return YES;
+    NSString *ext = [[[[NSURL URLWithString:url] path] pathExtension] lowercaseString];
+    return [@[@"mp3", @"aac", @"pls"] containsObject:ext ?: @""];
+}
+
 /// {epg, channels}
 static NSDictionary *CBParseM3U(NSString *text) {
     NSCalendar *cal = [[NSCalendar alloc] initWithCalendarIdentifier:NSGregorianCalendar];
@@ -266,6 +289,11 @@ static NSDictionary *CBParseM3U(NSString *text) {
                     // Tên hiển thị bỏ phần trong ngoặc («Can Tho TV 2 (1080p) [Geo-blocked]» → «Can Tho TV 2»)
                     static NSRegularExpression *br;
                     if (!br) br = [NSRegularExpression regularExpressionWithPattern:@"\\s*(\\([^)]*\\)|\\[[^\\]]*\\])" options:0 error:NULL];
+                    // Danh sách kiểu Xtream ghi mã nước đầu tên: «|UK| SPORT 1 HD», «DE| ZDF» → bỏ (tên ô kênh khỏi cụt)
+                    static NSRegularExpression *tag;
+                    if (!tag) tag = [NSRegularExpression regularExpressionWithPattern:@"^\\|?[A-Z0-9]{2,5}\\|\\s*" options:0 error:NULL];
+                    NSString *untagged = [tag stringByReplacingMatchesInString:n options:0 range:NSMakeRange(0, n.length) withTemplate:@""];
+                    if (untagged.length) n = untagged;
                     NSString *bare = [[br stringByReplacingMatchesInString:n options:0 range:NSMakeRange(0, n.length) withTemplate:@""]
                         stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
                     if (bare.length) n = bare;
@@ -307,6 +335,7 @@ static NSDictionary *CBParseM3U(NSString *text) {
                     }
                     if (ref.length) c[@"ref"] = ref;
                     if (ua.length) c[@"ua"] = ua;
+                    if (CBIsRadio(attrs, g, url)) c[@"radio"] = @YES;
                     byKey[mk] = c;
                     [order addObject:mk];
                 }
@@ -602,13 +631,51 @@ static BOOL CBGunzip(NSString *src, NSString *dst) {
     return l;
 }
 
++ (NSDictionary *)addListWithData:(NSData *)data fileName:(NSString *)fileName name:(NSString *)name error:(NSString **)error {
+    NSString *text = data.length ? ([[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding]
+                                    ?: [[NSString alloc] initWithData:data encoding:NSISOLatin1StringEncoding]) : nil;
+    if (!text || ([text rangeOfString:@"#EXTINF"].location == NSNotFound && [text rangeOfString:@"http"].location == NSNotFound)) {
+        if (error) *error = data.length ? @"Tệp không phải danh sách M3U (không có dòng #EXTINF / địa chỉ kênh nào)." : @"Tệp trống.";
+        return nil;
+    }
+    if (!name.length) {
+        // «iptv-playlist---2026-11-11T131814-437.m3u» → «iptv-playlist»
+        NSString *n = [[fileName lastPathComponent] stringByDeletingPathExtension] ?: @"";
+        static NSRegularExpression *stamp;
+        if (!stamp) stamp = [NSRegularExpression regularExpressionWithPattern:@"[-_ ]*\\d{4}-\\d{2}-\\d{2}([T_ ]?[\\d.:-]*)?$" options:0 error:NULL];
+        n = [stamp stringByReplacingMatchesInString:n options:0 range:NSMakeRange(0, n.length) withTemplate:@""];
+        n = [[n stringByReplacingOccurrencesOfString:@"_" withString:@" "] stringByTrimmingCharactersInSet:
+                [NSCharacterSet characterSetWithCharactersInString:@" -."]];
+        name = n.length ? (n.length > 40 ? [n substringToIndex:40] : n) : @"Danh sách từ tệp";
+    }
+    NSString *lid = [NSString stringWithFormat:@"l%lld", CBNowMs()];
+    NSString *file = [lid stringByAppendingPathExtension:@"m3u"];
+    if (![data writeToFile:[CBLocalListDir() stringByAppendingPathComponent:file] atomically:YES]) {
+        if (error) *error = @"Không ghi được tệp vào máy (bộ nhớ đầy?).";
+        return nil;
+    }
+    NSDictionary *l = @{@"id": lid, @"name": name, @"file": file, @"src": [fileName lastPathComponent] ?: file};
+    [self saveLists:[[self lists] arrayByAddingObject:l]];
+    [self setActive:lid];
+    CBLog(@"IPTV: thêm danh sách từ tệp «%@» (%lu byte) → %@", fileName, (unsigned long)data.length, lid);
+    return l;
+}
+
++ (NSString *)localFileOf:(NSDictionary *)list {
+    NSString *f = CBStr(list, @"file");
+    return f ? [CBLocalListDir() stringByAppendingPathComponent:f] : nil;
+}
+
 + (void)renameList:(NSString *)listId name:(NSString *)name {
     if (name.length) [self updateList:listId with:@{@"name": name}];
 }
 
 + (void)removeList:(NSString *)listId {
     NSMutableArray *lists = [NSMutableArray array];
-    for (NSDictionary *l in [self lists]) if (![CBStr(l, @"id") isEqualToString:listId]) [lists addObject:l];
+    for (NSDictionary *l in [self lists]) {
+        if (![CBStr(l, @"id") isEqualToString:listId]) [lists addObject:l];
+        else if ([self localFileOf:l]) [[NSFileManager defaultManager] removeItemAtPath:[self localFileOf:l] error:NULL];
+    }
     [self saveLists:lists];
     [[NSFileManager defaultManager] removeItemAtPath:CBListFile(listId) error:NULL];
     [[NSFileManager defaultManager] removeItemAtPath:CBGuideFile(listId) error:NULL];
@@ -660,7 +727,7 @@ static long long CBListMaxAge(NSArray *channels) {
 
 + (void)autoRefresh {
     NSDictionary *l = [self activeList];
-    if (!l || gLoading || gGuideLoading || CBNowMs() - gLastTry < kAutoRetryGap) return;
+    if (!l || CBStr(l, @"file") || gLoading || gGuideLoading || CBNowMs() - gLastTry < kAutoRetryGap) return;
     NSArray *have = [self channels];
     if (have && CBNowMs() - (long long)CBNum(l, @"updated", 0) < CBListMaxAge(have)) return;
     CBLog(@"IPTV: tự làm mới danh sách «%@» (cập nhật lần trước %@)", CBStr(l, @"name"),
@@ -671,15 +738,18 @@ static long long CBListMaxAge(NSArray *channels) {
 + (void)refresh:(BOOL)force done:(void (^)(NSString *))done {
     NSDictionary *l = [self activeList];
     NSString *lid = CBStr(l, @"id"), *url = CBStr(l, @"url");
-    if (!lid || !url) {
+    // Danh sách thêm từ tệp: đọc lại bản đã chép vào app (không tải mạng, không tự làm mới — tệp mới thì người xem thêm lại)
+    NSString *local = [self localFileOf:l];
+    if (!lid || (!url && !local)) {
         if (done) done(@"Chưa có danh sách kênh");
         return;
     }
+    if (!url) url = [@"tệp " stringByAppendingString:CBStr(l, @"src") ?: CBStr(l, @"file")];
     if (!gWaiters) gWaiters = [NSMutableArray array];
     if (done) [gWaiters addObject:[done copy]];
     if (gLoading) return;
     NSArray *have = [self channels];
-    BOOL fresh = CBNowMs() - (long long)CBNum(l, @"updated", 0) < CBListMaxAge(have);
+    BOOL fresh = local || CBNowMs() - (long long)CBNum(l, @"updated", 0) < CBListMaxAge(have);
     if (!force && fresh && have) {
         [self finishWaiters:nil];
         [self refreshGuide:NO done:nil];
@@ -687,11 +757,11 @@ static long long CBListMaxAge(NSArray *channels) {
     }
     gLoading = YES;
     gLastTry = CBNowMs();
-    gStatus = @"Đang tải danh sách kênh…";
+    gStatus = local ? @"Đang đọc danh sách kênh…" : @"Đang tải danh sách kênh…";
     [[NSNotificationCenter defaultCenter] postNotificationName:CBIPTVChangedNotification object:nil];
     NSString *tmp = [CBIPTVDir() stringByAppendingPathComponent:[NSString stringWithFormat:@"%@.m3u", lid]];
     long long t0 = CBNowMs();
-    CBDownload(url, tmp, ^(NSString *err) {
+    void (^got)(NSString *) = ^(NSString *err) {
         if (err) {
             CBLog(@"IPTV: tải danh sách %@ lỗi: %@", url, err);
             gLoading = NO;
@@ -729,7 +799,15 @@ static long long CBListMaxAge(NSArray *channels) {
                 [self refreshGuide:NO done:nil];
             });
         });
-    });
+    };
+    if (local) {
+        // Chép ra tệp tạm như bản tải về (khối đọc xoá tệp tạm sau khi đọc)
+        [[NSFileManager defaultManager] removeItemAtPath:tmp error:NULL];
+        BOOL ok = [[NSFileManager defaultManager] copyItemAtPath:local toPath:tmp error:NULL];
+        got(ok ? nil : @"không đọc được tệp danh sách đã lưu");
+    } else {
+        CBDownload(url, tmp, got);
+    }
 }
 
 #pragma mark - Lịch
@@ -942,10 +1020,11 @@ static long long CBListMaxAge(NSArray *channels) {
 + (NSDictionary *)badMap {
     id v = [CBPrefs get:@"iptv_bad"];
     if (!CBIsDict(v)) return @{};
-    // Bản trước chưa phát được FLV và đánh dấu hỏng cả nguồn — giờ lõi đổi FLV sang HLS: bỏ các dấu đó
+    // Bản trước chưa phát được FLV / TS liền và đánh dấu hỏng cả nguồn — giờ lõi đổi FLV (0.5.3) và TS liền (0.5.5) sang HLS: bỏ
+    // các dấu đó
     NSMutableDictionary *m = nil;
     for (NSString *k in v) {
-        if ([CBStr(v, k) hasPrefix:@"Luồng FLV —"]) {
+        if ([CBStr(v, k) hasPrefix:@"Luồng FLV —"] || [CBStr(v, k) hasPrefix:@"Luồng TS liền —"]) {
             if (!m) m = [v mutableCopy];
             [m removeObjectForKey:k];
         }
@@ -1163,6 +1242,10 @@ static long long CBListMaxAge(NSArray *channels) {
     [[UIApplication sharedApplication] scheduleLocalNotification:n];
     CBLog(@"Truyền hình: nhắc lúc bóng lăn %@ (%@)", CBStr(c, @"n"), [self clock:kick]);
     return YES;
+}
+
++ (BOOL)isRadio:(NSDictionary *)channel {
+    return CBNum(channel, @"radio", 0) != 0;
 }
 
 + (BOOL)isPlaceholderURL:(NSString *)url {

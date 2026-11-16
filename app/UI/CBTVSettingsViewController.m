@@ -101,15 +101,17 @@ enum { CBTVSecLists = 0, CBTVSecGuide, CBTVSecPlay, CBTVSecCount };
 
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
     if (section == CBTVSecLists) {
-        return @"App không kèm sẵn kênh. Dán địa chỉ danh sách M3U / M3U8 mà anh có quyền xem; app đọc nhóm, logo và địa chỉ "
-               @"lịch phát sóng ghi trong danh sách. Danh sách tự tải lại khi cũ quá 6 giờ.";
+        return @"App không kèm sẵn kênh. Thêm danh sách M3U / M3U8 mà anh có quyền xem: dán địa chỉ, gửi tệp từ máy tính qua "
+               @"Wi-Fi, hoặc chọn tệp .m3u có trên máy; app đọc nhóm, logo, đài radio và địa chỉ lịch phát sóng ghi trong danh sách. "
+               @"Danh sách theo địa chỉ tự tải lại khi cũ; danh sách từ tệp thì thêm lại khi có tệp mới.";
     }
     if (section == CBTVSecGuide) {
         return @"Lịch phát sóng (EPG, dạng XMLTV — .xml hoặc .xml.gz) lấy theo địa chỉ ghi trong danh sách; danh sách không ghi "
                @"thì đặt ở đây. App chỉ giữ lịch của các kênh trong danh sách, từ hôm qua tới ngày mai.";
     }
     return @"iOS 5 / 6 chỉ giải mã H.264 tới 1920×1080: kênh H.265 (HEVC) hay khổ lớn hơn được ghi là «không phát được» sau lần "
-           @"mở đầu tiên. Kênh phát luồng TS liền (không phải HLS) hay DASH (.mpd) thì AVPlayer của iOS 5 / 6 không phát.";
+           @"mở đầu tiên. Luồng FLV và TS liền (IPTV kiểu Xtream) app tự đổi sang HLS; tiếng MP2 thì phát hình không tiếng. Hình xen "
+           @"kẽ dạng trường của đài phát sóng (1080i) hay DASH (.mpd) thì máy cũ không phát.";
 }
 
 - (NSString *)listDetail:(NSDictionary *)l {
@@ -130,7 +132,7 @@ enum { CBTVSecLists = 0, CBTVSecGuide, CBTVSecPlay, CBTVSecCount };
             c.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
             return c;
         }
-        UITableViewCell *c = [self cell:tv text:@"+ Thêm danh sách (địa chỉ M3U)" detail:nil];
+        UITableViewCell *c = [self cell:tv text:@"+ Thêm danh sách (địa chỉ / tệp M3U)" detail:nil];
         c.textLabel.textColor = [CBTheme brand];
         return c;
     }
@@ -163,8 +165,8 @@ enum { CBTVSecLists = 0, CBTVSecGuide, CBTVSecPlay, CBTVSecCount };
             return;
         }
         _sheetList = lists[ip.row];
-        UIActionSheet *sheet = [[UIActionSheet alloc] initWithTitle:[NSString stringWithFormat:@"%@\n%@", CBStr(_sheetList, @"name"),
-                                                                                                  CBStr(_sheetList, @"url")]
+        NSString *from = CBStr(_sheetList, @"url") ?: [NSString stringWithFormat:@"Tệp «%@»", CBStr(_sheetList, @"src") ?: @"?"];
+        UIActionSheet *sheet = [[UIActionSheet alloc] initWithTitle:[NSString stringWithFormat:@"%@\n%@", CBStr(_sheetList, @"name"), from]
                                                            delegate:self cancelButtonTitle:nil destructiveButtonTitle:nil
                                                   otherButtonTitles:nil];
         [sheet addButtonWithTitle:@"Dùng danh sách này"];
