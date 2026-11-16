@@ -29,3 +29,10 @@
   - Đã thử: ffmpeg phát qua cổng một luồng FLV 720p (B-frame + AAC) nhả theo nhịp thời gian thật — máy chủ nhận đúng UA /
     Referer, danh sách phát có sau ~4 s, 20 s lấy ra giải mã hết không lỗi. 4 phép thử `flv_hls`, thêm phép thử phiên FLV /
     tiêu đề trong `media_proxy`.
+- `0005-ios-tick-thread.patch` — **runtime tokio ngủ hẳn ngay lúc mở app** (iOS armv7 hai nhân — iPhone 5 / iPad mini; iPad 1 một
+  nhân chưa gặp): nhịp 50 ms (đã vào repo chính) là một việc đẩy vào runtime, mà chính việc đẩy đó có lúc không đánh thức luồng
+  nào → nhịp không bao giờ chạy, mọi `cbtv_call` sau đó nằm im (không tải được danh sách kênh / trang chủ, không lỗi, không hết
+  giờ); cổng đồng bộ bị huỷ lúc app vào nền nhưng không đóng được → mở lại báo «Address already in use (os error 48)». Ngăn
+  xếp lúc kẹt (gửi SIGABRT lấy báo cáo của iOS): 3 luồng `cbtv-net` ở condvar, 1 luồng trong `kevent`. Bản vá: nhịp chạy trên
+  luồng riêng `cbtv-tick` bằng `block_on` — hẹn giờ của luồng đó đánh thức thẳng bộ điều khiển (kqueue `EVFILT_USER`), luồng
+  giữ bộ điều khiển dậy mỗi 50 ms và lấy việc trong hàng đợi chung, không qua bước chọn luồng để đánh thức của bộ lập lịch.

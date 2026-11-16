@@ -98,6 +98,8 @@
 + (void)setSecureDns:(BOOL)on;
 + (BOOL)unblock;
 + (void)setUnblock:(BOOL)on;
+/// Lúc mở app: bản ≤ 0.5.3 lưu «unblock» là số 1 khi chọn Vượt chặn Mức 1 / 2 — lõi chỉ đọc true / false nên coi là tắt; ghi lại
++ (void)repairStoredFlags;
 + (NSString *)serverTypeForHost:(NSString *)host;
 + (void)setServerForHost:(NSString *)host type:(NSString *)type label:(NSString *)label;
 + (NSInteger)disclaimerVersion;

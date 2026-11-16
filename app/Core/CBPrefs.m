@@ -632,7 +632,7 @@ static NSMutableDictionary *gPrivatePositions;
 }
 
 + (void)setUnblockLevel:(NSInteger)level {
-    [self set:@"unblock" value:@(level > 0)];
+    [self set:@"unblock" value:level > 0 ? @YES : @NO];   // không dùng @(level > 0): số 1, lõi (flag_on) đọc thành tắt
     if (level > 0) [self set:@"unblock_level" value:@(level == 2 ? 2 : 1)];
     [CBCore networkSettingsChanged];
 }
@@ -686,6 +686,14 @@ static NSMutableDictionary *gPrivatePositions;
 
 + (BOOL)unblock {
     return [self boolKey:@"unblock" def:YES];  // như lõi (prefs.rs flag_on): chưa có khoá = bật
+}
+
++ (void)repairStoredFlags {
+    id v = [self get:@"unblock"];
+    if (![v isKindOfClass:[NSNumber class]] || CFGetTypeID((__bridge CFTypeRef)v) == CFBooleanGetTypeID()) return;
+    CBLog(@"Cài đặt: khoá unblock lưu là số %@ (lõi đọc thành tắt) — ghi lại thành %@", v, [v boolValue] ? @"true" : @"false");
+    [self set:@"unblock" value:[v boolValue] ? @YES : @NO];
+    [CBCore networkSettingsChanged];
 }
 
 + (void)setUnblock:(BOOL)on {

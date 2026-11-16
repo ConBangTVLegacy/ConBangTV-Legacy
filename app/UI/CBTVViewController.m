@@ -275,7 +275,7 @@
     UIActivityIndicatorView *_spinner;
     NSTimer *_timer;
     NSDictionary *_sheetChannel;
-    BOOL _favsChosen, _appeared;
+    BOOL _favsChosen, _appeared, _onScreen;
 }
 
 - (instancetype)init {
@@ -349,7 +349,9 @@
     [self.view addSubview:_spinner];
 
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(rebuild) name:CBIPTVChangedNotification object:nil];
-    _timer = [NSTimer scheduledTimerWithTimeInterval:30 target:self selector:@selector(tickGuide) userInfo:nil repeats:YES];
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(becameActive)
+                                                 name:UIApplicationDidBecomeActiveNotification object:nil];
+    _timer =[NSTimer scheduledTimerWithTimeInterval:30 target:self selector:@selector(tickGuide) userInfo:nil repeats:YES];
     [self rebuild];
     if ([CBIPTV activeList]) [CBIPTV refresh:NO done:^(NSString *err) { if (err) [CBTheme toast:err]; }];
 }
@@ -360,11 +362,18 @@
     // Quay lại màn (xem xong kênh…): danh sách thể thao cũ quá 30 phút thì tải lại — trận / link mới thêm liên tục
     if (_appeared && [CBIPTV activeList] && ![CBIPTV loading]) [CBIPTV refresh:NO done:nil];
     _appeared = YES;
+    _onScreen = YES;
 }
 
 - (void)viewWillDisappear:(BOOL)animated {
     [super viewWillDisappear:animated];
+    _onScreen = NO;   // đang xem kênh / màn khác: không tự tải lại (trình phát tự lấy link mới khi nguồn hỏng)
     if (self.isMovingFromParentViewController) [_timer invalidate];
+}
+
+/// App trở lại từ nền (máy để lâu): vẽ lại giờ trận và tải lại danh sách nếu đã quá hạn
+- (void)becameActive {
+    if (_onScreen) [self tickGuide];
 }
 
 - (void)tickGuide {
@@ -372,6 +381,8 @@
         NSIndexPath *ip = [_cv indexPathForItemAtPoint:c.center];
         if (ip && ip.item < (NSInteger)_visible.count) [c setChannel:_visible[ip.item] compact:NO];
     }
+    // Màn đang mở: tự làm mới danh sách khi quá hạn (6 giờ / 30 phút / 5 phút — CBIPTV autoRefresh)
+    if (_onScreen && [UIApplication sharedApplication].applicationState == UIApplicationStateActive) [CBIPTV autoRefresh];
 }
 
 - (void)viewDidLayoutSubviews {

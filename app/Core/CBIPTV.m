@@ -17,9 +17,15 @@ static BOOL gLoading, gGuideLoading;
 static NSString *gStatus;
 static NSMutableArray *gWaiters;    // khối done chờ lần tải đang chạy
 
+static long long gLastTry;          // lần gần nhất bắt đầu tải danh sách (ms) — tự làm mới không thử lại dồn dập khi mạng hỏng
+
 static const long long kListMaxAge = 6LL * 3600 * 1000;
 /// Danh sách thể thao (có giờ trận): trận mới / link mới thêm liên tục — tải lại sau 30 phút
 static const long long kMatchListMaxAge = 30LL * 60 * 1000;
+/// Có trận sắp / đang đá mà danh sách chưa có link thật (link giả «no-signal»): link thật thường thêm sát giờ — 5 phút
+static const long long kWaitingListMaxAge = 5LL * 60 * 1000;
+/// Tự làm mới: vừa thử tải (hỏng) thì chờ chừng này mới thử lại
+static const long long kAutoRetryGap = 3LL * 60 * 1000;
 /// Đổi cách đọc M3U (2: giờ trận, giữ BLV; 3: link giả «no-signal») — đệm cũ đọc lại
 static const NSInteger kParseVersion = 3;
 /// Kênh trận đấu thường lên sóng trước giờ bóng lăn chừng này (giây)
@@ -639,6 +645,29 @@ static BOOL CBGunzip(NSString *src, NSString *dst) {
     for (void (^b)(NSString *) in w) b(err);
 }
 
+/// Danh sách cũ quá bao lâu thì tải lại (ms): có trận sắp / đang đá mà chưa có link thật → 5 phút; có trận → 30 phút; còn lại 6 giờ
+static long long CBListMaxAge(NSArray *channels) {
+    NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
+    BOOL matches = NO;
+    for (NSDictionary *c in channels) {
+        double kick = CBNum(c, @"kick", 0);
+        if (kick <= 0) continue;
+        matches = YES;
+        if (CBNum(c, @"nolink", 0) && now >= kick - kMatchEarly && now < kick + CBNum(c, @"dur", 150) * 60) return kWaitingListMaxAge;
+    }
+    return matches ? kMatchListMaxAge : kListMaxAge;
+}
+
++ (void)autoRefresh {
+    NSDictionary *l = [self activeList];
+    if (!l || gLoading || gGuideLoading || CBNowMs() - gLastTry < kAutoRetryGap) return;
+    NSArray *have = [self channels];
+    if (have && CBNowMs() - (long long)CBNum(l, @"updated", 0) < CBListMaxAge(have)) return;
+    CBLog(@"IPTV: tự làm mới danh sách «%@» (cập nhật lần trước %@)", CBStr(l, @"name"),
+          CBNum(l, @"updated", 0) > 0 ? [self clock:CBNum(l, @"updated", 0) / 1000] : @"chưa");
+    [self refresh:NO done:nil];
+}
+
 + (void)refresh:(BOOL)force done:(void (^)(NSString *))done {
     NSDictionary *l = [self activeList];
     NSString *lid = CBStr(l, @"id"), *url = CBStr(l, @"url");
@@ -650,15 +679,14 @@ static BOOL CBGunzip(NSString *src, NSString *dst) {
     if (done) [gWaiters addObject:[done copy]];
     if (gLoading) return;
     NSArray *have = [self channels];
-    BOOL matches = NO;
-    for (NSUInteger i = 0; i < MIN(have.count, (NSUInteger)60) && !matches; i++) matches = CBNum(have[i], @"kick", 0) > 0;
-    BOOL fresh = CBNowMs() - (long long)CBNum(l, @"updated", 0) < (matches ? kMatchListMaxAge : kListMaxAge);
+    BOOL fresh = CBNowMs() - (long long)CBNum(l, @"updated", 0) < CBListMaxAge(have);
     if (!force && fresh && have) {
         [self finishWaiters:nil];
         [self refreshGuide:NO done:nil];
         return;
     }
     gLoading = YES;
+    gLastTry = CBNowMs();
     gStatus = @"Đang tải danh sách kênh…";
     [[NSNotificationCenter defaultCenter] postNotificationName:CBIPTVChangedNotification object:nil];
     NSString *tmp = [CBIPTVDir() stringByAppendingPathComponent:[NSString stringWithFormat:@"%@.m3u", lid]];

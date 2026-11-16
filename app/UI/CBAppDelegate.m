@@ -29,6 +29,7 @@
     CBLog(@"=== Côn Bằng TV Legacy %@ (dựng cho iOS 5 / 6%@) — %@ iOS %@, RAM %.0f MB", version, CBOldIOS() ? @", đang chạy kiểu iOS 5" : @"", CBDeviceModel(),
           [UIDevice currentDevice].systemVersion, [NSProcessInfo processInfo].physicalMemory / 1048576.0);
     [CBCore start];
+    [CBPrefs repairStoredFlags];
     [CBCore sync:@"app.setVersion" args:@{@"version": [(CBOldIOS() ? @"ios5-" : @"ios6-") stringByAppendingString:version ?: @"0"]}];
     [[AVAudioSession sharedInstance] setCategory:AVAudioSessionCategoryPlayback error:NULL];
     [CBTheme apply];

@@ -29,6 +29,10 @@
 #include <mach-o/dyld.h>
 #import <objc/message.h>
 
+@interface CBIPTV (CBDebug)
++ (void)updateList:(NSString *)listId with:(NSDictionary *)changes;   // riêng của CBIPTV.m (lệnh tvage)
+@end
+
 @implementation CBDebug
 
 + (void)start {
@@ -248,6 +252,12 @@
                   [CBIPTV matchLine:c at:now] ?: @"(kênh thường)", [kinds componentsJoinedByString:@","],
                   CBStr(c, @"ua") ? @" · UA riêng" : @"", [CBIPTV hasKickReminder:c] ? @" · 🔔" : @"");
         }
+    } else if ([verb isEqualToString:@"tvage"]) {
+        // tvage <phút> — lùi giờ «cập nhật» của danh sách đang chọn để thử tự làm mới (màn Truyền hình tải lại trong ≤ 30 giây)
+        NSDictionary *l = [CBIPTV activeList];
+        long long updated = CBNowMs() - (long long)(arg.doubleValue * 60000);
+        if (l) [CBIPTV updateList:CBStr(l, @"id") with:@{@"updated": @(updated)}];
+        CBLog(@"[gỡ lỗi] [truyền hình] danh sách «%@» coi như cập nhật lúc %@", CBStr(l, @"name"), [CBIPTV clock:updated / 1000]);
     } else if ([verb isEqualToString:@"tvremind"]) {
         // tvremind <ô> — bật / tắt «Nhắc lúc bóng lăn»
         NSArray *vis = [self tvScreen:NO].visibleChannels;

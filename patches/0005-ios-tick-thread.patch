@@ -1,0 +1,26 @@
+diff --git a/linux/ffi/src/lib.rs b/linux/ffi/src/lib.rs
+index 146b27d..d47d94b 100644
+--- a/linux/ffi/src/lib.rs
++++ b/linux/ffi/src/lib.rs
+@@ -73,11 +73,17 @@ pub extern "C" fn cbtv_init(data_dir: *const c_char, cb: Callback) -> i32 {
+         // iOS 6 (bản ConBangTV_Legacy, armv7): việc app đẩy vào từ ngoài (cbtv_call) có lúc không đánh thức luồng nào của tokio —
+         // ngăn xếp lúc kẹt: mọi luồng ngủ ở park_condvar / Driver::turn, việc nằm chờ tới khi một bộ hẹn giờ khác hết hạn (có lúc
+         // 20 giây; đóng phim rồi mở phim khác là gặp). Nhịp 50 ms giữ cho luồng thức dậy xem hàng đợi.
++        // Nhịp chạy trên luồng riêng (block_on), không phải việc đẩy vào runtime: chính việc nhịp đó cũng có lúc không đánh thức ai
++        // ngay lúc mở app → runtime ngủ hẳn, không việc nào chạy (iPhone 5 hai nhân: không tải được gì, cổng đồng bộ huỷ rồi không
++        // đóng được → «Address already in use»). Hẹn giờ của luồng riêng đánh thức thẳng bộ điều khiển (kqueue), luồng đang giữ
++        // bộ điều khiển dậy mỗi 50 ms và xem hàng đợi chung.
+         #[cfg(target_os = "ios")]
+-        cbtv::rt().spawn(async {
+-            loop {
+-                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+-            }
++        let _ = std::thread::Builder::new().name("cbtv-tick".into()).spawn(|| {
++            cbtv::rt().block_on(async {
++                loop {
++                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
++                }
++            })
+         });
+     });
+     if r.is_ok() {

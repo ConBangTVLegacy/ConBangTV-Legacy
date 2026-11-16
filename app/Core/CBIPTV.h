@@ -3,7 +3,8 @@
 /// Truyền hình (IPTV): danh sách kênh M3U / M3U8 người xem tự thêm (app không kèm sẵn kênh), lịch phát sóng XMLTV.
 ///  • Danh sách: tải qua lõi (`http.get` — TLS / DNS / proxy như phần còn lại của app), đọc #EXTINF (tvg-id, tvg-name, tvg-logo,
 ///    group-title, tvg-chno), #EXTGRP, #EXTVLCOPT http-referrer / http-user-agent, «url|Referer=…»; kênh trùng tên trong cùng
-///    nhóm gộp thành nhiều nguồn. Lưu đệm Library/Caches/iptv/<mã>.json; tải lại khi cũ quá 6 giờ.
+///    nhóm gộp thành nhiều nguồn. Lưu đệm Library/Caches/iptv/<mã>.json; tải lại khi cũ quá 6 giờ (danh sách có trận: 30 phút;
+///    trận sắp / đang đá mà chưa có link thật: 5 phút) — lúc vào màn Truyền hình và tự làm mới khi màn đang mở.
 ///  • Lịch: địa chỉ EPG ghi trong đầu danh sách (url-tvg / x-tvg-url) hoặc người xem tự đặt; tải bằng lõi (`http.download`), giải
 ///    nén .gz theo từng khúc ra đĩa, đọc XML dần (NSXMLParser trên luồng — iPad 1 chỉ 256 MB), chỉ giữ chương trình của các
 ///    kênh trong danh sách, từ 24 giờ trước tới 48 giờ sau. Khớp kênh theo tvg-id, không có thì theo tên.
@@ -39,6 +40,9 @@ typedef NS_ENUM(NSInteger, CBMatchState) {
 /// Tải danh sách đang chọn (force: bỏ qua đệm còn mới), rồi lịch nếu cũ. done trên luồng chính
 + (void)refresh:(BOOL)force done:(void (^)(NSString *err))done;
 + (void)refreshGuide:(BOOL)force done:(void (^)(NSString *err))done;
+/// Màn Truyền hình đang mở (gọi mỗi 30 giây / lúc app trở lại): tải lại danh sách nếu đã quá hạn; vừa tải hỏng thì 3 phút sau
+/// mới thử lại
++ (void)autoRefresh;
 
 // ---- Nhóm / lọc ----
 /// Các nhóm theo thứ tự xuất hiện: [{name, count}]

@@ -51,7 +51,7 @@ Cổng phát nội bộ 127.0.0.1 (media_proxy: bỏ quảng cáo, cắt PNG ng�
 | Proxy | Cài đặt → Mạng → Proxy: SOCKS5 (có đăng nhập) hoặc Shadowsocks (dán link `ss://`), DNS qua proxy, chỉ trang phim, thử kết nối; lõi lo hết (trang, video qua cổng phát nội bộ, ảnh tải qua lõi khi proxy cho cả app); proxy lỗi thì báo lỗi, không đi thẳng |
 | Giới hạn giờ xem | từng người xem: số phút mỗi ngày, giờ đi ngủ (tới 6 giờ sáng); hết giờ phim dừng, xem thêm cần mã PIN phụ huynh — cùng khoá với bản Windows / TV / iPad |
 | Đồng bộ trong nhà | ghép với tivi / Windows / iPad bằng mã 4 số (lõi `sync_service`, cổng 8791): lịch sử, chỗ xem, theo dõi, người xem, trang phim |
-| Truyền hình (IPTV) | chip «Truyền hình» + hàng «Kênh vừa xem» ở trang chủ, Cài đặt › Dữ liệu › Truyền hình. **App không kèm sẵn kênh**: người xem tự thêm danh sách M3U / M3U8 (`Core/CBIPTV.m` — #EXTINF tvg-id / tvg-name / tvg-logo / group-title / tvg-chno, #EXTGRP, #EXTVLCOPT `http-referrer` / `http-user-agent`, `url\|Referer=…&User-Agent=…`; kênh trùng tên trong nhóm gộp thành nhiều nguồn; đệm `Library/Caches/iptv`, tải lại sau 6 giờ). Lịch phát sóng XMLTV (địa chỉ trong đầu danh sách hoặc tự đặt; `.gz` giải nén ra đĩa, đọc dần bằng NSXMLParser — iPad 1 chỉ 256 MB), «Nhắc tôi» 5 phút trước giờ phát. Lưới kênh: nhóm, tìm / gõ số kênh, ★ yêu thích, chương trình đang phát + thanh tiến độ. Trình phát trực tiếp (`UI/CBLivePlayerViewController.m`): toàn màn hình, «☰ Kênh» mở bảng kênh, nút tự ẩn sau 6 s, vuốt lên / xuống đổi kênh, tạm dừng → «CHẬM m:ss» / «Về trực tiếp», nguồn lỗi tự sang nguồn sau, luồng máy không giải mã được (H.265 / AV1 / quá khổ) ghi «không phát được», giới hạn giờ xem. Referer / User-Agent riêng của nguồn gửi lên máy chủ qua lõi; **luồng HTTP-FLV** (.flv — kênh thể thao) lõi đổi sang HLS trực tiếp (bản vá 0004). **Danh sách thể thao** (giờ trận trong tên: «20:00 16/11 ⚽ A vs B (BLV …) [hls]»): mỗi BLV một kênh, bản HLS / FLV thành nhiều nguồn; dòng «● Đang đá» / «Sắp đá 20:00 · còn 25 phút» / «Đã xong», trận đang đá lên đầu; trận còn > 30 phút thì hỏi «Nhắc lúc bóng lăn / Vẫn mở»; trận sắp / đang đá mà chưa có hình (kể cả link giả «no-signal» của danh sách) thì chờ, tải lại danh sách và thử lại mỗi 20 s; danh sách có trận tải lại sau 30 phút |
+| Truyền hình (IPTV) | chip «Truyền hình» + hàng «Kênh vừa xem» ở trang chủ, Cài đặt › Dữ liệu › Truyền hình. **App không kèm sẵn kênh**: người xem tự thêm danh sách M3U / M3U8 (`Core/CBIPTV.m` — #EXTINF tvg-id / tvg-name / tvg-logo / group-title / tvg-chno, #EXTGRP, #EXTVLCOPT `http-referrer` / `http-user-agent`, `url\|Referer=…&User-Agent=…`; kênh trùng tên trong nhóm gộp thành nhiều nguồn; đệm `Library/Caches/iptv`; **tự làm mới** — lúc vào màn Truyền hình, mỗi 30 s khi màn đang mở và lúc app trở lại từ nền: tải lại khi danh sách cũ quá 6 giờ, danh sách có trận 30 phút, có trận sắp / đang đá mà chưa có link thật 5 phút; tải hỏng thì 3 phút sau mới thử lại; không tải lúc đang xem kênh). Lịch phát sóng XMLTV (địa chỉ trong đầu danh sách hoặc tự đặt; `.gz` giải nén ra đĩa, đọc dần bằng NSXMLParser — iPad 1 chỉ 256 MB), «Nhắc tôi» 5 phút trước giờ phát. Lưới kênh: nhóm, tìm / gõ số kênh, ★ yêu thích, chương trình đang phát + thanh tiến độ. Trình phát trực tiếp (`UI/CBLivePlayerViewController.m`): toàn màn hình, «☰ Kênh» mở bảng kênh, nút tự ẩn sau 6 s, vuốt lên / xuống đổi kênh, tạm dừng → «CHẬM m:ss» / «Về trực tiếp», nguồn lỗi tự sang nguồn sau, hỏng hết nguồn thì tải lại danh sách (cũ quá 10 phút) tìm link mới — link có hạn dùng — một lần mỗi lần phát được, «Thử lại» cũng vậy; bảng kênh lấy bản mới của danh sách, luồng máy không giải mã được (H.265 / AV1 / quá khổ) ghi «không phát được», giới hạn giờ xem. Referer / User-Agent riêng của nguồn gửi lên máy chủ qua lõi; **luồng HTTP-FLV** (.flv — kênh thể thao) lõi đổi sang HLS trực tiếp (bản vá 0004). **Danh sách thể thao** (giờ trận trong tên: «20:00 16/11 ⚽ A vs B (BLV …) [hls]»): mỗi BLV một kênh, bản HLS / FLV thành nhiều nguồn; dòng «● Đang đá» / «Sắp đá 20:00 · còn 25 phút» / «Đã xong», trận đang đá lên đầu; trận còn > 30 phút thì hỏi «Nhắc lúc bóng lăn / Vẫn mở»; trận sắp / đang đá mà chưa có hình (kể cả link giả «no-signal» của danh sách) thì chờ, tải lại danh sách và thử lại mỗi 20 s; danh sách có trận tải lại sau 30 phút |
 
 Bản thử (không `FINALPACKAGE=1`) có `Debug/CBDebug.m`: đọc lệnh từ `Documents/ConBangTV-cmd.txt` (`shot`, `film`, `play`, `search`,
 `settings`, `profiles`, `sync`, `syncpair`, `pick`, `scroll`, `wait`, `status`, `core`, `pref`, `notifyadd` / `notifycheck` /
@@ -62,7 +62,7 @@ mở trang trong UIWebView (kèm trang gốc — trang nhúng chặn yêu cầu 
 và tính năng / thẻ `<video>` của trang, `browserpage` / `venetium` trang mà nút «Mở trong Venetium» sẽ mở / bấm nút đó; truyền
 hình: `tv`, `tvadd <url>`, `tvlists`, `tvuse <số>`, `tvrefresh`, `tvepg`, `tvepgurl`, `tvguide <ô>`, `tvgroup <số>`, `tvq <chữ>`,
 `tvplay <ô>`, `tvnext` / `tvprev` / `tvch <số>` / `tvpanel` / `tvpause` / `tvlive` / `tvsrc` / `tvclose`, `tvstatus`,
-`tvsettings`, `tvmatches [từ ô]` (trạng thái trận, nguồn HLS / FLV), `tvremind <ô>`…) để thử tự động qua SSH. Lệnh mới đừng đặt
+`tvsettings`, `tvmatches [từ ô]` (trạng thái trận, nguồn HLS / FLV), `tvremind <ô>`, `tvage <phút>` (lùi giờ cập nhật danh sách để thử tự làm mới)…) để thử tự động qua SSH. Lệnh mới đừng đặt
 tên bắt đầu bằng «wait» (bị hiểu là lệnh chờ).
 
 ## Dựng (máy Linux, vd Ubuntu 22.04+)
@@ -174,6 +174,10 @@ sử, vuốt ngang hàng phim, kéo xuống để tải lại, cuộn tự tải
 - **Ô lưới «mồ côi»**: ô kênh gọi `layoutIfNeeded` (đo khung logo) khi lưới đang dựng ô → CALayer bố cục ngược lên lưới, dựng ô
   lồng trong lần dựng đang chạy; lần ngoài ghi đè ô của lần trong → ô đó vẫn hiện mà không ai quản, đè ô thật (sau khi đổi danh
   sách kênh vẫn thấy kênh của danh sách cũ) → `CBCollectionView` chặn dựng lồng (dựng lại tối đa thêm một lượt).
+- **Cờ bool gửi sang lõi phải là `BOOL` thật**: `@(a && b)`, `@(x > 0)`, `@(!y)` có kiểu `int` → `NSNumber` số → JSON `1`;
+  serde của lõi đọc `1` thành «không phải bool» → mặc định false. Đã dính: link kênh không đuôi `.m3u8` (link chuyển tiếp) bị coi
+  là tệp MP4 → không phát; Vượt chặn Mức 1 / 2 lưu `"unblock":1` → lõi coi là tắt (app tự sửa khoá cũ lúc mở). Gán vào biến
+  `BOOL` trước, hoặc `cond ? @YES : @NO`.
 - **UIAlertView iOS 6**: lúc hộp đang hiện, `keyWindow` là cửa sổ của hộp — mở màn mới (trình phát) từ cửa sổ của app
   (`delegate.window`) và trong `didDismissWithButtonIndex`, không thì màn mở ra không hiện.
 - **HLS fMP4** (dexter.pw: `#EXT-X-MAP` + đoạn `moof` / `mdat`): AVPlayer iOS 6 chỉ phát HLS dạng MPEG-TS (fMP4 có từ iOS 10) →
@@ -197,7 +201,10 @@ sử, vuốt ngang hàng phim, kéo xuống để tải lại, cuộn tự tải
   (`bytes=0-<cuối>`) → vá cổng phát nội bộ.
 - **tokio trên armv7 iOS 6:** việc đẩy vào từ ngoài (`cbtv_call`) có lúc không đánh thức luồng nào — ngăn xếp lấy bằng lệnh gỡ lỗi
   `crash`: mọi luồng ngủ ở `park_condvar` / `Driver::turn` (kqueue `EVFILT_USER` thì chạy đúng, đã kiểm bằng `tools/kqtest`) → nhịp
-  50 ms (`ffi-ios-wakeup.patch`).
+  50 ms (`ffi-ios-wakeup.patch`, đã vào repo chính). Nhịp đó cũng là một việc đẩy vào runtime → có lần mở app (máy hai nhân —
+  iPhone 5 / iPad mini, ~1/12 lần) chính nó bị lỡ, runtime ngủ hẳn: không lệnh mạng nào chạy, cổng đồng bộ không đóng được
+  («Address already in use»). `patches/0005`: nhịp chạy trên luồng riêng (`block_on`). Lấy ngăn xếp của app đang kẹt trên bản
+  phát hành: `kill -ABRT <pid>` → báo cáo trong `/var/mobile/Library/Logs/CrashReporter/`.
 - **Tốc độ phát:** AVPlayer iOS 6 chỉ đổi rate khi `canPlayFastForward` / `canPlaySlowForward` (tệp video); luồng HLS báo
   không (0 / 0) — đặt rate khác 1 thì bị bỏ qua, đang dừng mà đặt `rate = 1.5` thì không phát lại → luôn hỏi trước, không được
   thì phát 1×.

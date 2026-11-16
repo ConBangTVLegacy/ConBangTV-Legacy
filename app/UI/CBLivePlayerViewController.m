@@ -53,6 +53,7 @@ static void CBLiveForceOrientation(UIInterfaceOrientation o) {
     NSTimer *_tick, *_hideTimer;
     NSInteger _token, _ticks;
     BOOL _closed, _started, _appeared, _retriedReset, _baseSet;
+    BOOL _listChecked;   // kênh thường hỏng hết nguồn: đã tải lại danh sách tìm link mới (một lần mỗi lần mở / mỗi lần phát được)
     long long _startedAt;
     NSInteger _reopens;   // số lần luồng tự dừng rồi mở lại (cùng nguồn)
     double _baseBehind;   // độ trễ tự nhiên sau mép trực tiếp lúc vừa phát (AVPlayer phát sau mép ~3 đoạn)
@@ -398,6 +399,7 @@ static void CBLiveForceOrientation(UIInterfaceOrientation o) {
     if (index < 0 || index >= (NSInteger)_channels.count) return;
     _index = index;
     _source = 0;
+    _listChecked = NO;
     // Bỏ qua nguồn đã biết là máy không phát được
     NSArray *urls = CBArr([self channel], @"urls");
     while (_source + 1 < (NSInteger)urls.count && [CBIPTV badReason:urls[_source]]) _source++;
@@ -427,15 +429,24 @@ static void CBLiveForceOrientation(UIInterfaceOrientation o) {
 }
 
 - (void)retry {
+    [self showLoading:@"Đang kiểm tra link mới…"];
     // Kênh trận đấu: lấy danh sách mới (link thật hay được thêm sát giờ) rồi thử lại từ nguồn đầu
     if (CBNum([self channel], @"kick", 0) > 0) {
-        [self showLoading:@"Đang kiểm tra link mới…"];
         [self refreshThenRetry];
         return;
     }
-    _retriedReset = NO;
-    _reopens = 0;
-    [self openSource];
+    // Kênh thường: danh sách cũ quá 10 phút thì tải lại (link có hạn dùng); nguồn đổi thì thử từ đầu, không thì mở lại nguồn này
+    __weak CBLivePlayerViewController *weakSelf = self;
+    [self refreshChannel:600 done:^(BOOL changed) {
+        CBLivePlayerViewController *s = weakSelf;
+        if (changed) {
+            [s retryFromFirstSource];
+            return;
+        }
+        s->_retriedReset = NO;
+        s->_reopens = 0;
+        [s openSource];
+    }];
 }
 
 - (void)updateLabels {
@@ -534,7 +545,10 @@ static void CBLiveForceOrientation(UIInterfaceOrientation o) {
     // HTTP-FLV trực tiếp: lõi đổi sang HLS trực tiếp (bản vá 0004)
     BOOL flv = [path hasSuffix:@".flv"];
     BOOL ts = [path hasSuffix:@".ts"] || [path hasSuffix:@".mkv"];
-    NSMutableDictionary *args = [@{@"src": url, @"hls": @(!file && !ts && !flv), @"flv": @(flv)} mutableCopy];
+    // Biến BOOL riêng: @(a && b) là số 1 (kiểu int) → JSON 1, lõi đọc cờ bool thành false → coi là tệp MP4 — hỏng mọi link không
+    // đuôi .m3u8 (link chuyển tiếp «…/?id=vtv6», .php…)
+    BOOL hls = !file && !ts && !flv;
+    NSMutableDictionary *args = [@{@"src": url, @"hls": @(hls), @"flv": @(flv)} mutableCopy];
     // Referer gửi đúng như danh sách kênh ghi; User-Agent riêng của nguồn (máy chủ thể thao hay đòi)
     [args addEntriesFromDictionary:[CBIPTV headersFor:c url:url]];
     id opened = [CBCore sync:@"media.open" args:args];
@@ -634,20 +648,36 @@ static void CBLiveForceOrientation(UIInterfaceOrientation o) {
         });
         return;
     }
-    [self showError:[NSString stringWithFormat:@"%@ không phát được.\n%@", name, reason] retry:!permanent];
+    NSString *msg = [NSString stringWithFormat:@"%@ không phát được.\n%@", name, reason];
+    // Kênh thường hỏng hết nguồn: link có hạn dùng (token) / người làm danh sách vừa thay link — tải lại danh sách (cũ quá 10 phút)
+    // một lần; nguồn của kênh đổi thì thử lại từ đầu
+    if (!permanent && !_listChecked && ms == CBMatchNone) {
+        _listChecked = YES;
+        CBLog(@"Truyền hình: %@ hỏng hết nguồn (%@) — xem danh sách có link mới không", name, reason);
+        [self showLoading:@"Đang kiểm tra link mới…"];
+        __weak CBLivePlayerViewController *weakSelf = self;
+        [self refreshChannel:600 done:^(BOOL changed) {
+            CBLivePlayerViewController *s = weakSelf;
+            if (changed) [s retryFromFirstSource];
+            else [s showError:msg retry:YES];
+        }];
+        return;
+    }
+    [self showError:msg retry:!permanent];
 }
 
-/// Kênh trận đấu chờ lên sóng: link thật thường chỉ có khi người làm danh sách cập nhật — tải lại danh sách (cũ quá 2 phút),
-/// lấy bản mới của kênh (cùng khoá) rồi thử lại từ nguồn đầu
-- (void)refreshThenRetry {
+/// Tải lại danh sách nếu cũ hơn `age` giây (đang tải thì chờ), thay kênh đang xem bằng bản mới (cùng khoá); done(YES) = nguồn của
+/// kênh vừa đổi. Không gọi done nếu trong lúc chờ người xem đã đổi kênh / đóng trình phát
+- (void)refreshChannel:(double)age done:(void (^)(BOOL changed))done {
     NSInteger t = _token;
     __weak CBLivePlayerViewController *weakSelf = self;
-    [CBIPTV refreshIfOlderThan:120 done:^(NSString *err) {
+    [CBIPTV refreshIfOlderThan:age done:^(NSString *err) {
         CBLivePlayerViewController *s = weakSelf;
         if (!s || s->_closed || t != s->_token || s->_started) return;
         NSDictionary *old = [s channel];
         NSDictionary *fresh = [CBIPTV channelForKey:CBStr(old, @"k")];
-        if (fresh && ![CBArr(fresh, @"urls") isEqualToArray:CBArr(old, @"urls")]) {
+        BOOL changed = fresh && ![CBArr(fresh, @"urls") isEqualToArray:CBArr(old, @"urls")];
+        if (changed) {
             CBLog(@"Truyền hình: %@ — danh sách vừa cập nhật nguồn (%lu → %lu)", CBStr(old, @"n"),
                   (unsigned long)CBArr(old, @"urls").count, (unsigned long)CBArr(fresh, @"urls").count);
         }
@@ -656,8 +686,41 @@ static void CBLiveForceOrientation(UIInterfaceOrientation o) {
             m[s->_index] = fresh;
             s->_channels = m;
         }
-        [s retryFromFirstSource];
+        done(changed);
     }];
+}
+
+/// Kênh trận đấu chờ lên sóng: link thật thường chỉ có khi người làm danh sách cập nhật — tải lại danh sách (cũ quá 2 phút),
+/// lấy bản mới của kênh (cùng khoá) rồi thử lại từ nguồn đầu
+- (void)refreshThenRetry {
+    __weak CBLivePlayerViewController *weakSelf = self;
+    [self refreshChannel:120 done:^(BOOL changed) {
+        [weakSelf retryFromFirstSource];
+    }];
+}
+
+/// Danh sách vừa tải lại: thay các kênh khác trong bảng kênh bằng bản mới (cùng khoá) — kênh đang xem chỉ đổi khi phát hỏng
+/// (refreshChannel:), để không đổi nguồn dưới chân luồng đang chạy
+- (void)syncChannels {
+    if ([CBIPTV loading]) return;
+    NSArray *all = [CBIPTV channels];
+    if (!all.count) return;
+    NSMutableDictionary *byKey = [NSMutableDictionary dictionaryWithCapacity:all.count];
+    for (NSDictionary *c in all) {
+        NSString *k = CBStr(c, @"k");
+        if (k && !byKey[k]) byKey[k] = c;   // khoá trùng: lấy kênh đầu như channelForKey:
+    }
+    NSMutableArray *m = [_channels mutableCopy];
+    BOOL changed = NO;
+    for (NSUInteger i = 0; i < m.count; i++) {
+        if ((NSInteger)i == _index) continue;
+        NSDictionary *f = byKey[CBStr(m[i], @"k")];
+        if (f && f != m[i]) {
+            m[i] = f;
+            changed = YES;
+        }
+    }
+    if (changed) _channels = m;
 }
 
 - (void)retryFromFirstSource {
@@ -711,6 +774,7 @@ static void CBLiveForceOrientation(UIInterfaceOrientation o) {
             if (self->_item.status == AVPlayerItemStatusReadyToPlay && !self->_started) {
                 self->_started = YES;
                 self->_startedAt = CBNowMs();
+                self->_listChecked = NO;   // phát được rồi: lần sau hỏng (link hết hạn sau vài giờ) lại được tìm link mới
                 [self hideStatus];
                 [CBIPTV addRecent:[self channel]];
                 CBLog(@"Truyền hình: %@ đang phát (nguồn %ld)", CBStr([self channel], @"n"), (long)self->_source + 1);
@@ -825,6 +889,7 @@ static void CBLiveForceOrientation(UIInterfaceOrientation o) {
 }
 
 - (void)guideChanged {
+    [self syncChannels];
     [self updateProgramme];
     [_panel reloadData];
     [self.view setNeedsLayout];
