@@ -234,16 +234,38 @@ static BOOL gPrompting;
         }
         __block NSInteger left = (NSInteger)servers.count;
         __block BOOL finished = NO;
+        void (^miss)(void) = ^{
+            if (!finished && --left == 0) {
+                finished = YES;
+                done(nil);
+            }
+        };
         for (NSDictionary *s in servers) {
             [CBCore call:@"site.videoOf" args:@{@"src": src, @"server": s} done:^(id v, NSString *e) {
                 if (finished) return;
-                if (CBIsDict(v) && CBVideoIsDirect(v)) {
+                if (!(CBIsDict(v) && CBVideoIsDirect(v))) {
+                    miss();
+                    return;
+                }
+                // Có link phát thẳng: tải thử — trang (KKPhim) có lúc đưa tập vào danh sách trước khi đưa video lên (link 404)
+                [CBCore call:@"http.get" args:@{@"url": CBStr(v, @"url") ?: @""} done:^(id ok, NSString *err) {
+                    if (finished) return;
+                    NSInteger code = (NSInteger)CBNum(ok, @"code", 0);
+                    if (code == 404 || code == 410) {
+                        CBLog(@"Báo khi xem được: server %@ có link nhưng máy chủ phim trả HTTP %ld", CBStr(s, @"label"), (long)code);
+                        miss();
+                        return;
+                    }
+                    // Có video nhưng chỉ ở khổ / mức chip máy không giải mã được (KKPhim Tiên Nghịch 166–167: 2542×1080 mức 5.0)
+                    NSString *bad = code >= 200 && code < 300 ? CBPlaylistUndecodable(CBStr(ok, @"text")) : nil;
+                    if (bad) {
+                        CBLog(@"Báo khi xem được: server %@ chỉ có bản %@ — máy này không giải mã được", CBStr(s, @"label"), bad);
+                        miss();
+                        return;
+                    }
                     finished = YES;
                     done(CBStr(s, @"label") ?: @"?");
-                } else if (--left == 0) {
-                    finished = YES;
-                    done(nil);
-                }
+                }];
             }];
         }
     }];

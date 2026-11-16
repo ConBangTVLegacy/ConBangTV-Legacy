@@ -140,6 +140,10 @@ static void CBForceOrientation(UIInterfaceOrientation o) {
     NSMutableSet *_embedHosts;  // tên miền các server chỉ có trình phát nhúng (báo lỗi rõ hơn khi là trình phát có khoá)
     NSString *_directFailed;    // server phát thẳng được nhưng AVPlayer lỗi khi mở (tên) — hết server thì báo lỗi này
     NSInteger _directFailCode;
+    NSString *_playingSrc;      // link gốc (trước cổng phát nội bộ) của server đang mở
+    BOOL _directMissing;        // link gốc trả 404 / 410: trang đã có tên tập nhưng máy chủ phim chưa có video
+    NSString *_levelsUndecodable;  // danh sách chính đang mở: không bản nào máy giải mã được → mô tả bản lớn nhất
+    NSString *_undecodable;     // tập này: server bị bỏ vì không bản nào máy giải mã được («2542×1080, H.264 mức 5.0»)
     // Chất lượng: luồng nhiều bản (dexter.pw: 1080p / 720p / 480p…) — lõi giữ đúng một bản khi địa chỉ có ?h=<chiều cao>
     NSString *_localUrl;        // danh sách phát chính trên cổng phát nội bộ (chưa kèm ?h=)
     NSArray *_levels;           // [{h, bw}] các bản, cao → thấp (đọc từ danh sách chính); < 2 bản thì không có mục «Chất lượng»
@@ -572,8 +576,17 @@ static void CBForceOrientation(UIInterfaceOrientation o) {
 
 /// Trang mở trong Venetium: trang web thường → trang tập (trình phát + nút server của chính trang); trang dạng API (KKPhim,
 /// NguonC, VSMOV… — địa chỉ tập do app đặt, không phải trang xem được) → trang trình phát nhúng của server đầu tiên chỉ có
-/// trình phát nhúng
+/// trình phát nhúng. Riêng NguonC → trang phim của NguonC (/phim/<tên>): trang nhúng của NguonC (streamc…) chỉ mở khi được
+/// nhúng từ phim.nguonc.com, mở thẳng thì Cloudflare chặn («Sorry, you have been blocked»); người xem chọn tập ở mục «Xem phim»
 - (NSString *)browserPageURL {
+    NSURL *ep = _epUrl.length ? [NSURL URLWithString:_epUrl] : nil;
+    if ([ep.host.lowercaseString hasSuffix:@"nguonc.com"]) {
+        NSArray *parts = [ep.path componentsSeparatedByString:@"/"];  // "", "phim", tên, tập
+        NSUInteger i = [parts indexOfObject:@"phim"];
+        if (i != NSNotFound && i + 1 < parts.count && [parts[i + 1] length]) {
+            return [NSString stringWithFormat:@"%@://%@/phim/%@", ep.scheme, ep.host, parts[i + 1]];
+        }
+    }
     id api = [CBCore sync:@"api.isKnown" args:@{@"url": _epUrl ?: @""}];
     BOOL isApi = [api respondsToSelector:@selector(boolValue)] && [api boolValue];
     if (!isApi) return _epUrl;
@@ -588,6 +601,26 @@ static void CBForceOrientation(UIInterfaceOrientation o) {
 - (void)openInVenetium {
     NSString *page = [self browserPageURL];
     if (!page.length) return;
+    // NguonC: «Guard» của trang dừng video khi thấy trình chặn quảng cáo (Venetium chặn sẵn trên mọi trang) — chỉ báo «Có dấu
+    // hiệu chặn quảng cáo». Tắt «Chặn quảng cáo» trong menu Venetium cho phim.nguonc.com là đủ (Venetium xét theo trang đang mở,
+    // không theo trang nhúng). Đã thử trên iPad mini 1: tắt rồi thì tập 167 phát, quảng cáo trong khung có nút bỏ qua sau 1 giây.
+    // Hai nút (nằm cạnh nhau): ba nút xếp dọc làm iPhone nằm ngang mất chỗ hiện lời nhắc
+    if ([[NSURL URLWithString:page].host hasSuffix:@"nguonc.com"]) {
+        NSArray *eps = [self episodes];
+        NSString *ep = _index >= 0 && (NSUInteger)_index < eps.count ? CBStr(eps[_index], @"title") : nil;
+        NSString *msg = [NSString stringWithFormat:@"NguonC chỉ phát khi Venetium không chặn quảng cáo: ở trang phim chạm ⋮ → tắt "
+                         "«Chặn quảng cáo», rồi «Xem ngay» → chọn %@. Quảng cáo có nút «Bỏ qua» sau 1 giây.",
+                         ep.length ? ep : @"tập muốn xem"];
+        __weak CBPlayerViewController *weakSelf = self;
+        [[CBAlert title:@"Xem trong Venetium" message:msg cancel:@"Huỷ" others:@[@"Mở Venetium"] done:^(CBAlert *a, NSInteger i) {
+            if (i != a.cancelButtonIndex) [weakSelf openPageInVenetium:page];
+        }] show];
+        return;
+    }
+    [self openPageInVenetium:page];
+}
+
+- (void)openPageInVenetium:(NSString *)page {
     NSString *enc = (__bridge_transfer NSString *)CFURLCreateStringByAddingPercentEscapes(
         NULL, (__bridge CFStringRef)page, NULL, CFSTR(":/?#[]@!$&'()*+,;="), kCFStringEncodingUTF8);
     NSURL *u = [NSURL URLWithString:[@"venetium://open?url=" stringByAppendingString:enc]];
@@ -801,10 +834,14 @@ static void CBForceOrientation(UIInterfaceOrientation o) {
     [self clearSubtitles];
     _versionFallback = NO;
     _directFailed = nil;
+    _directMissing = NO;
+    _undecodable = nil;
+    _playingSrc = nil;
     _fallbackFrom = nil;
     _embedHosts = [NSMutableSet set];
     _localUrl = nil;
     _levels = nil;
+    _levelsUndecodable = nil;
     _levelsToken++;
     _subTracks = nil;
     _subIdx = -1;
@@ -970,6 +1007,7 @@ static void CBForceOrientation(UIInterfaceOrientation o) {
         }
         if (local) {
             _serverIdx = _probeNext;
+            _playingSrc = url;
             [self setServerTitle:CBStr(s, @"label")];
             if (sub) [self loadSubtitles:sub];
             else [self setSubTracks:CBArr(v, @"subs") later:CBStr(v, @"subsLater")];
@@ -979,6 +1017,7 @@ static void CBForceOrientation(UIInterfaceOrientation o) {
             if (![local isEqualToString:_localUrl]) {
                 _localUrl = local;
                 _levels = nil;
+                _levelsUndecodable = nil;
                 _levelsToken++;
             }
             [self playLocalWithQuality];
@@ -994,6 +1033,46 @@ static void CBForceOrientation(UIInterfaceOrientation o) {
         // Đã phát được rồi mới rớt: mất mạng / server chập chờn — không phải lỗi «iOS 6 không phát được»
         [self showError:@"Mất kết nối tới server phát.\nKiểm tra Wi-Fi rồi bấm «Thử lại»." button:@"Thử lại"
                  action:@selector(retryEpisode)];
+        return;
+    }
+    if (_undecodable) {
+        // Server có video nhưng chỉ ở khổ / mức chip máy không giải mã được: thử cùng tập ở bản khác; không có thì báo đúng
+        if (!_versionFallback && [self tryOtherVersion]) return;
+        NSArray *eps = [self episodes];
+        NSString *ep = _index >= 0 && (NSUInteger)_index < eps.count ? CBStr(eps[_index], @"title") : nil;
+        BOOL locked = NO;
+        for (NSString *h in _embedHosts) {
+            if ([h hasSuffix:@"streamfree.vip"] || [h rangeOfString:@"streamc."].location != NSNotFound) locked = YES;
+        }
+        NSMutableString *msg = [NSMutableString stringWithFormat:@"%@: bản phát thẳng chỉ có khổ %@ — máy iOS 5 / 6 chỉ giải mã được "
+                                @"tới 1920×1080 nên không phát được.", ep.length ? ep : @"Tập này", _undecodable];
+        // Server có khoá (streamfree / NguonC) là bản khác — xem được trong Venetium (trình duyệt thật, có MediaSource); trình phát
+        // nhúng của chính trang (vd player.phimapi.com) dùng cùng link quá khổ nên không gợi ý
+        BOOL venetium = locked && [self venetiumInstalled];
+        if (locked) [msg appendString:@" Các server khác chỉ có trình phát có khoá riêng của trang (streamfree / NguonC)."];
+        [msg appendString:venetium ? @"\nBấm «Mở trong Venetium» để xem bằng trình phát của trang."
+                                   : @"\nXem tập này ở trang khác: «⇄ đổi nguồn» ở trang phim."];
+        if (_versionFallback) {
+            NSArray *groups = CBArr(_detail, @"groups");
+            [msg appendFormat:@"\n(Đã thử cả bản %@ và bản %@.)", _fallbackFrom ?: @"?",
+                              _groupIndex < (NSInteger)groups.count ? CBStr(groups[_groupIndex], @"name") : @"?"];
+        }
+        [self showError:msg button:_servers.count > 1 ? @"Chọn server" : nil action:@selector(showServers)];
+        _venetiumButton.hidden = !venetium;
+        [self.view setNeedsLayout];
+        return;
+    }
+    if (_directMissing) {
+        // Máy chủ phim chưa có video (404): thử cùng tập ở bản khác trước; không có thì báo đúng + «Báo khi xem được»
+        if (!_versionFallback && [self tryOtherVersion]) return;
+        NSArray *eps = [self episodes];
+        NSString *ep = _index >= 0 && (NSUInteger)_index < eps.count ? CBStr(eps[_index], @"title") : nil;
+        [self showError:[NSString stringWithFormat:@"%@ đã có trong danh sách của trang nhưng máy chủ phim chưa có video (lỗi 404) — "
+                                                   @"trang thường đưa video lên sau ít phút tới vài giờ.\n"
+                                                   @"Bấm «Báo khi xem được» để app báo khi xem được.", ep.length ? ep : @"Tập này"]
+                 button:@"Thử lại" action:@selector(retryEpisode)];
+        [self offerWait];
+        _venetiumButton.hidden = YES;  // trình phát nhúng của trang dùng cùng link 404
         return;
     }
     if (_directFailed) {
@@ -1026,8 +1105,13 @@ static void CBForceOrientation(UIInterfaceOrientation o) {
             NSString *from = CBStr(groups[_groupIndex], @"name") ?: @"đang xem";
             NSString *to = CBStr(groups[g], @"name") ?: @"khác";
             CBLog(@"%@ bản %@: không server nào phát được — thử bản %@", title, from, to);
+            // Giữ lý do của bản trước (máy không giải mã được / máy chủ chưa có video) cho lời báo cuối nếu bản kia cũng không phát được
+            NSString *undecodable = _undecodable;
+            BOOL missing = _directMissing;
             _groupIndex = g;
             [self openEpisode:(NSInteger)k];
+            _undecodable = undecodable;
+            _directMissing = missing;
             _versionFallback = YES;
             _fallbackFrom = from;
             [CBTheme toast:[NSString stringWithFormat:@"%@ bản %@ chưa có server phát được trên iOS 6 — mở bản %@.", title, from, to]];
@@ -1158,6 +1242,15 @@ static void CBForceOrientation(UIInterfaceOrientation o) {
     });
 }
 
+/// Luồng không có bản nào máy giải mã được (đọc từ danh sách chính): không đưa cho AVPlayer (chờ ~40 s rồi dịch vụ phát của iOS
+/// sập -11819) — sang server sau; hết server thì báo rõ khổ / mức của bản đó
+- (void)skipUndecodable:(NSString *)desc {
+    NSString *label = _serverIdx < (NSInteger)_servers.count ? CBStr(_servers[_serverIdx], @"label") : nil;
+    CBLog(@"Server %@: chỉ có bản %@ — máy này không giải mã được, bỏ qua", label ?: @"?", desc);
+    _undecodable = desc;
+    [self tryServer:_serverIdx + 1 token:_token];
+}
+
 - (void)playbackFailed:(NSError *)error {
     AVPlayerItemErrorLogEvent *ev = _item.errorLog.events.lastObject;
     NSError *under = error.userInfo[NSUnderlyingErrorKey];
@@ -1187,7 +1280,30 @@ static void CBForceOrientation(UIInterfaceOrientation o) {
         _directFailed = CBStr(_servers[_serverIdx], @"label") ?: @"?";
         _directFailCode = error.code;
     }
-    [self tryServer:_serverIdx + 1 token:_token];
+    // Hỏi lại link gốc qua lõi trước khi sang server sau: 404 / 410 = trang đã đưa tập vào danh sách nhưng máy chủ phim chưa
+    // có video (KKPhim Tiên Nghịch tập 167, 16/11: API có tập, link m3u8 404 — AVPlayer chỉ báo -11800 / -12666)
+    NSString *src = _playingSrc, *label = _directFailed;
+    NSInteger t = _token, next = _serverIdx + 1;
+    if (!src.length) {
+        [self tryServer:next token:t];
+        return;
+    }
+    __block BOOL answered = NO;
+    __weak CBPlayerViewController *weakSelf = self;
+    void (^go)(NSInteger) = ^(NSInteger code) {
+        CBPlayerViewController *s = weakSelf;
+        if (answered || !s || t != s->_token || s->_closed) return;
+        answered = YES;
+        if (code == 404 || code == 410) {
+            CBLog(@"Server %@: link gốc trả HTTP %ld — máy chủ phim chưa có video", label, (long)code);
+            s->_directMissing = YES;
+        }
+        [s tryServer:next token:t];
+    };
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(8 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ go(0); });
+    [CBCore call:@"http.get" args:@{@"url": src} done:^(id ok, NSString *err) {
+        go((NSInteger)CBNum(ok, @"code", 0));
+    }];
 }
 
 - (void)failedToEnd:(NSNotification *)n {
@@ -1591,17 +1707,33 @@ static void CBForceOrientation(UIInterfaceOrientation o) {
     return best ?: lowest;
 }
 
-/// Máy giải mã được bản này? H.264 phần cứng: A4 (iPad 1, iPhone 4 — máy RAM 256 MB) tới 1280×720; A5 / A6 tới 1920×1088, mức 4.2
-static BOOL CBDecodable(NSInteger w, NSInteger h, NSInteger avcLevel) {
-    BOOL a4 = [NSProcessInfo processInfo].physicalMemory < 300ull * 1024 * 1024;
-    NSInteger maxW = a4 ? 1280 : 1920, maxH = a4 ? 720 : 1088;
+static BOOL CBFits(NSInteger w, NSInteger h, NSInteger avcLevel, NSInteger maxW, NSInteger maxH) {
     if (w > 0 && h > 0 && (MAX(w, h) > maxW || MIN(w, h) > maxH)) return NO;
     return avcLevel <= 42;
 }
 
+/// Bản nên chọn khi có nhiều bản? H.264 phần cứng theo Apple: A4 (iPad 1, iPhone 4 — máy RAM 256 MB) tới 1280×720; A5 / A6 tới
+/// 1920×1088, mức 4.2
+static BOOL CBDecodable(NSInteger w, NSInteger h, NSInteger avcLevel) {
+    BOOL a4 = [NSProcessInfo processInfo].physicalMemory < 300ull * 1024 * 1024;
+    return CBFits(w, h, avcLevel, a4 ? 1280 : 1920, a4 ? 720 : 1088);
+}
+
+/// Bản chắc chắn không máy iOS 5 / 6 nào giải mã được (quá 1920×1088 hoặc mức > 4.2) — chỉ bản này mới bị chặn hẳn. A4 thực tế
+/// vẫn phát được hơn 720p: iPad 1 phát KKPhim 1920×816 mức 4.0 (16/11) → không chặn theo giới hạn 720p của A4
+static BOOL CBDecodableAtAll(NSInteger w, NSInteger h, NSInteger avcLevel) {
+    return CBFits(w, h, avcLevel, 1920, 1088);
+}
+
 /// Các bản của luồng (RESOLUTION / BANDWIDTH / CODECS + địa chỉ trong danh sách chính): [{h, bw, uri}] cao → thấp, mỗi chiều cao
-/// một bản; bỏ bản máy này không giải mã được (trừ khi không còn bản nào)
-static NSArray *CBParseLevels(NSString *text) {
+/// một bản; bỏ bản máy này không giải mã được (trừ khi không còn bản nào). undecodable: mọi bản đều không giải mã được → mô tả
+/// bản lớn nhất («2542×1080, H.264 mức 5.0») — vd KKPhim Tiên Nghịch tập 166–167: một bản duy nhất 2542×1080 mức 5.0, AVPlayer
+/// chờ ~40 s rồi dịch vụ phát của iOS sập (-11819)
+static NSArray *CBParseLevels(NSString *text, NSString **undecodable) {
+    if (undecodable) *undecodable = nil;
+    NSString *biggest = nil;
+    NSInteger biggestPx = 0;
+    BOOL anyPossible = NO;  // có bản không vượt giới hạn chung của máy iOS 5 / 6 (CBDecodableAtAll)
     NSMutableDictionary *byHeight = [NSMutableDictionary dictionary], *all = [NSMutableDictionary dictionary];
     NSArray *lines = [text componentsSeparatedByString:@"\n"];
     static NSRegularExpression *avc;
@@ -1636,12 +1768,20 @@ static NSArray *CBParseLevels(NSString *text) {
         if (h <= 0) continue;
         NSDictionary *entry = @{@"h": @(h), @"bw": @(bw), @"uri": uri};
         if (bw >= [all[@(h)][@"bw"] doubleValue]) all[@(h)] = entry;
+        if (CBDecodableAtAll(w, h, level)) {
+            anyPossible = YES;
+        } else if (w * h > biggestPx) {
+            biggestPx = w * h;
+            biggest = level ? [NSString stringWithFormat:@"%ld×%ld, H.264 mức %.1f", (long)w, (long)h, level / 10.0]
+                            : [NSString stringWithFormat:@"%ld×%ld", (long)w, (long)h];
+        }
         if (!CBDecodable(w, h, level)) {
             CBLog(@"Bỏ bản %ldx%ld (H.264 mức %.1f): máy này không giải mã được", (long)w, (long)h, level / 10.0);
             continue;
         }
         if (bw >= [byHeight[@(h)][@"bw"] doubleValue]) byHeight[@(h)] = entry;
     }
+    if (!anyPossible && all.count && undecodable) *undecodable = biggest;
     if (!byHeight.count) byHeight = all;  // không bản nào vừa: giữ hết (còn hơn không có gì)
     NSMutableArray *out = [NSMutableArray array];
     for (NSNumber *h in [[[byHeight allKeys] sortedArrayUsingSelector:@selector(compare:)] reverseObjectEnumerator]) {
@@ -1650,11 +1790,17 @@ static NSArray *CBParseLevels(NSString *text) {
     return out;
 }
 
-/// Phát danh sách chính của cổng phát nội bộ theo chất lượng đã chọn. Đã chọn cố định (vd 1080p) mà chưa biết các bản: đọc danh
-/// sách chính trước để không mở bản máy không giải mã được (xem effectiveQuality)
+NSString *CBPlaylistUndecodable(NSString *m3u8) {
+    NSString *bad = nil;
+    CBParseLevels(m3u8 ?: @"", &bad);
+    return bad;
+}
+
+/// Phát danh sách chính của cổng phát nội bộ theo chất lượng đã chọn. Chưa biết các bản: đọc danh sách chính trước — để không mở
+/// bản máy không giải mã được (xem effectiveQuality), và không đưa cho AVPlayer luồng không có bản nào máy giải mã được
 - (void)playLocalWithQuality {
     NSString *local = _localUrl;
-    if ([CBPrefs videoQuality] <= 0 || ![local hasSuffix:@".m3u8"] || _levels) {
+    if (![local hasSuffix:@".m3u8"] || _levels) {
         [self play:[self withQuality:local]];
         return;
     }
@@ -1662,8 +1808,12 @@ static NSArray *CBParseLevels(NSString *text) {
     [self loadLevelsThen:^{
         CBPlayerViewController *s = weakSelf;
         if (!s || s->_closed || ![local isEqualToString:s->_localUrl]) return;
+        if (s->_levelsUndecodable) {
+            [s skipUndecodable:s->_levelsUndecodable];
+            return;
+        }
         NSInteger q = [CBPrefs videoQuality], eff = [s effectiveQuality];
-        if (eff != q) {
+        if (q > 0 && eff != q) {
             CBLog(@"Chất lượng %@: phim này không có bản máy phát được — phát %@", [s levelName:q], [s levelName:eff]);
             [CBTheme toast:[NSString stringWithFormat:@"Bản %@ của phim này máy không phát được — đang phát %@",
                                                       [s levelName:q], [s levelName:eff]]];
@@ -1692,7 +1842,9 @@ static NSArray *CBParseLevels(NSString *text) {
         CBPlayerViewController *s = weakSelf;
         if (!s || t != s->_levelsToken || s->_closed) return;
         NSString *text = data ? [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] : nil;
-        s->_levels = CBParseLevels(text ?: @"");
+        NSString *bad = nil;
+        s->_levels = CBParseLevels(text ?: @"", &bad);
+        s->_levelsUndecodable = bad;
 #ifdef DEBUG
         for (NSString *line in [text componentsSeparatedByString:@"\n"]) {
             if ([line hasPrefix:@"#EXT-X-STREAM-INF:"] || [line hasPrefix:@"#EXT-X-MEDIA:"]) CBLog(@"[danh sách chính] %@", line);

@@ -22,6 +22,8 @@
 #import <QuartzCore/QuartzCore.h>
 #import <UIKit/UIKit.h>
 #include <dlfcn.h>
+#include <mach-o/dyld.h>
+#import <objc/message.h>
 
 @implementation CBDebug
 
@@ -156,8 +158,9 @@
         NSString *film = args.count ? args[0] : @"";
         NSString *ep = args.count > 1 ? args[1] : ([CBPrefs historyFor:film][@"epUrl"] ?: @"");
         CBPlayerViewController *p = [[CBPlayerViewController alloc] initWithFilm:film detail:nil episode:ep resume:YES];
-        // Đang có trình phát thì đóng trước (không chồng hai trình phát)
-        double delay = player ? 0.8 : 0;
+        // Đang có trình phát thì đóng trước (không chồng hai trình phát). Trình phát còn đang đóng dở (lệnh «close» ngay trước):
+        // iOS 5 ném lỗi nếu mở màn mới lúc đó → cũng chờ
+        double delay = player || nav.presentedViewController ? 1.0 : 0;
         [player close];
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             [[self top] presentViewController:p animated:YES completion:nil];
@@ -291,16 +294,69 @@
         UIViewController *root = nav.viewControllers.count ? nav.viewControllers[0] : nil;
         [nav popToRootViewControllerAnimated:NO];
         if ([root isKindOfClass:[CBHomeViewController class]]) [(CBHomeViewController *)root openMore:[arg integerValue]];
-    } else if ([verb isEqualToString:@"web"]) {
-        // web <url> — mở trang trong UIWebView (cùng WebKit với Safari iOS 6) để xem trang web hiển thị ra sao; «home» để đóng
+    } else if ([verb isEqualToString:@"web"] || [verb isEqualToString:@"webframe"]) {
+        // web <url> [referer] — mở trang trong UIWebView (WebKit của máy, hay WebKit mới của Web Port nếu đã bật cho app) để
+        // xem trang hiển thị ra sao; referer: gửi kèm trang gốc (trang nhúng chặn yêu cầu không có trang gốc). webframe <url>
+        // <trang gốc> — nạp trang trong khung iframe của một trang thuộc trang gốc (như trang web nhúng trình phát). «home» để đóng
         UIViewController *vc = [[UIViewController alloc] init];
         UIWebView *wv = [[UIWebView alloc] initWithFrame:nav.view.bounds];
         wv.scalesPageToFit = YES;
+        wv.allowsInlineMediaPlayback = YES;
+        wv.mediaPlaybackRequiresUserAction = NO;
         wv.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
         vc.view = wv;
         vc.title = @"Trang web";
-        [wv loadRequest:[NSURLRequest requestWithURL:[NSURL URLWithString:arg]]];
+        NSString *url = args.count ? args[0] : @"";
+        NSString *ref = args.count > 1 ? args[1] : nil;
+        if ([verb isEqualToString:@"webframe"] && ref) {
+            NSString *html = [NSString stringWithFormat:@"<!doctype html><meta name=viewport content=\"width=device-width,"
+                              "initial-scale=1\"><style>html,body{margin:0;height:100%%;background:#000}iframe{border:0;"
+                              "width:100%%;height:100%%}</style><iframe src=\"%@\" allowfullscreen allow=\"autoplay;"
+                              "fullscreen\"></iframe>", url];
+            [wv loadHTMLString:html baseURL:[NSURL URLWithString:ref]];
+        } else {
+            NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:url]];
+            if (ref) [req setValue:ref forHTTPHeaderField:@"Referer"];
+            [wv loadRequest:req];
+        }
         [nav pushViewController:vc animated:NO];
+    } else if ([verb isEqualToString:@"browserpage"]) {
+        // browserpage — trang nút «Mở trong Venetium» sẽ mở cho tập đang phát (nút chỉ hiện khi máy có Venetium)
+        SEL s = NSSelectorFromString(@"browserPageURL");
+        if ([player respondsToSelector:s]) {
+            CBLog(@"[gỡ lỗi] trang mở trong trình duyệt: %@", ((id (*)(id, SEL))objc_msgSend)(player, s));
+        }
+    } else if ([verb isEqualToString:@"venetium"]) {
+        // venetium — bấm «Mở trong Venetium» của trình phát (kể cả khi máy không có Venetium — để thử hộp nhắc NguonC)
+        SEL s = NSSelectorFromString(@"openInVenetium");
+        if ([player respondsToSelector:s]) ((void (*)(id, SEL))objc_msgSend)(player, s);
+    } else if ([verb isEqualToString:@"wkinfo"]) {
+        // wkinfo — WebKit nào đang nạp trong app (Web Port: thư viện ở /var/wkd), tính năng của trang đang mở trong UIWebView
+        // (MediaSource, WebAssembly…) và trạng thái thẻ <video> đầu tiên của trang
+        uint32_t n = _dyld_image_count(), wk = 0;
+        for (uint32_t i = 0; i < n; i++) {
+            const char *name = _dyld_get_image_name(i);
+            if (name && strstr(name, "/var/wkd/")) wk++;
+        }
+        CBLog(@"[gỡ lỗi] WebKit: %@ (%u thư viện /var/wkd)", wk ? @"Web Port" : @"của máy", wk);
+        UIWebView *wv = nil;
+        UIViewController *top = nav.topViewController;
+        if ([top.view isKindOfClass:[UIWebView class]]) wv = (UIWebView *)top.view;
+        if (wv) {
+            NSString *js = @"(function(){var v=document.querySelector('video');var r='UA='+navigator.userAgent+' MSE='+"
+                "(!!window.MediaSource)+' MMS='+(!!window.ManagedMediaSource)+' WASM='+(typeof WebAssembly)+' subtle='+"
+                "(!!(window.crypto&&crypto.subtle))+' url='+location.href.slice(0,80);if(v){r+=' video: paused='+v.paused+"
+                "' t='+v.currentTime.toFixed(1)+' rs='+v.readyState+' ns='+v.networkState+' err='+(v.error&&v.error.code)+"
+                "' size='+v.videoWidth+'x'+v.videoHeight+' src='+(v.currentSrc||v.src||'').slice(0,90)}else{r+=' video=0 "
+                "iframe='+document.getElementsByTagName('iframe').length}return r})()";
+            CBLog(@"[gỡ lỗi] trang: %@", [wv stringByEvaluatingJavaScriptFromString:js]);
+        }
+    } else if ([verb isEqualToString:@"js"]) {
+        // js <biểu thức> — chạy JavaScript trong UIWebView đang mở (lệnh web), ghi kết quả vào nhật ký
+        UIViewController *top = nav.topViewController;
+        if ([top.view isKindOfClass:[UIWebView class]]) {
+            CBLog(@"[gỡ lỗi] js → %@", [(UIWebView *)top.view stringByEvaluatingJavaScriptFromString:arg]);
+        }
     } else if ([verb isEqualToString:@"unhist"]) {
         // unhist <url phim> — xoá khỏi lịch sử / Xem tiếp (có dấu xoá — máy đã ghép cũng xoá)
         [CBPrefs removeHistory:arg];

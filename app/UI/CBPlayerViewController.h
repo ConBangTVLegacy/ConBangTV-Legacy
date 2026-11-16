@@ -30,3 +30,7 @@
 - (void)setSleepAfter:(NSTimeInterval)seconds endOfEpisode:(BOOL)endOfEpisode;
 - (void)debugPlayedToEnd;
 @end
+
+/// Danh sách phát chính (HLS) không có bản nào máy này giải mã được → mô tả bản lớn nhất («2542×1080, H.264 mức 5.0»); nil
+/// nếu có bản phát được / không ghi khổ (danh sách con)
+NSString *CBPlaylistUndecodable(NSString *m3u8);
