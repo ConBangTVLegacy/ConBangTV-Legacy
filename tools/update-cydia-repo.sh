@@ -5,6 +5,7 @@
 # Nguồn trong Cydia: https://conbangtvlegacy.github.io/repo/  (dòng APT: deb https://conbangtvlegacy.github.io/repo/ ./)
 # Cần dpkg-dev (dpkg-scanpackages), gzip, bzip2 — chạy trên máy Linux dựng.
 set -euo pipefail
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 REPO="${1:?thư mục repo/}"
 shift
 mkdir -p "$REPO/debs"
@@ -15,6 +16,10 @@ cd "$REPO"
 # Giữ 3 bản mới nhất (theo số bản trong tên tệp)
 ls debs/*.deb | sort -V | head -n -3 | xargs -r rm -f
 dpkg-scanpackages -m debs /dev/null > Packages 2>/dev/null
+# Cydia 1.1.30 (iOS 5 / 6) hiện chữ có dấu trong Description thành «?»; gói cũ (≤ 0.5.5) mang mô tả có dấu → mọi bản dùng mô tả
+# không dấu hiện tại của app/control
+DESC="$(sed -n 's/^Description: *//p' "$ROOT/app/control")"
+sed -i "s#^Description: .*#Description: ${DESC}#" Packages
 gzip -9nc Packages > Packages.gz
 bzip2 -9c Packages > Packages.bz2
 {
