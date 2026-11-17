@@ -5,6 +5,9 @@
 @interface CBAlert : UIAlertView <UIAlertViewDelegate>
 + (CBAlert *)title:(NSString *)title message:(NSString *)message cancel:(NSString *)cancel others:(NSArray *)others
               done:(void (^)(CBAlert *alert, NSInteger index))done;
+/// Nút `index` là nút thứ mấy trong `others` (0, 1…); -1 = nút huỷ. Đừng dùng firstOtherButtonIndex: nút «others» thêm bằng
+/// addButtonWithTitle nên UIAlertView của iOS 5 / 6 để nó là -1 (lệch hai nút)
+- (NSInteger)otherIndex:(NSInteger)index;
 /// Hộp nhập mã PIN 4 số (ẩn chữ, bàn phím số); pin = nil khi bấm Huỷ
 + (void)askPin:(NSString *)title message:(NSString *)message done:(void (^)(NSString *pin))done;
 @end

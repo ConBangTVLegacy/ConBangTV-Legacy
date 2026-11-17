@@ -617,17 +617,104 @@ static BOOL CBGunzip(NSString *src, NSString *dst) {
     [self saveLists:lists];
 }
 
+/// Tên mặc định của danh sách theo địa chỉ: tên tệp («vn.m3u» → «vn»), không có thì tên miền
+static NSString *CBListNameFromURL(NSString *url) {
+    NSURL *u = [NSURL URLWithString:url];
+    NSString *file = [[u.lastPathComponent stringByDeletingPathExtension] stringByReplacingOccurrencesOfString:@"_" withString:@" "];
+    return file.length > 2 && ![file isEqualToString:@"/"] ? file : (u.host ?: @"Danh sách kênh");
+}
+
 + (NSDictionary *)addList:(NSString *)url name:(NSString *)name {
     url = [url stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
     if (![url hasPrefix:@"http://"] && ![url hasPrefix:@"https://"]) url = [@"http://" stringByAppendingString:url];
-    if (!name.length) {
-        NSURL *u = [NSURL URLWithString:url];
-        NSString *file = [[u.lastPathComponent stringByDeletingPathExtension] stringByReplacingOccurrencesOfString:@"_" withString:@" "];
-        name = file.length > 2 && ![file isEqualToString:@"/"] ? file : (u.host ?: @"Danh sách kênh");
-    }
+    if (!name.length) name = CBListNameFromURL(url);
     NSDictionary *l = @{@"id": [NSString stringWithFormat:@"l%lld", CBNowMs()], @"name": name, @"url": url};
     [self saveLists:[[self lists] arrayByAddingObject:l]];
     [self setActive:l[@"id"]];
+    return l;
+}
+
++ (NSString *)listURLFrom:(NSString *)input {
+    NSString *s = [input stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if (!s.length) return nil;
+    NSRange sep = [s rangeOfString:@"://"];
+    if (sep.location == NSNotFound) {
+        s = [@"http://" stringByAppendingString:s];
+    } else {
+        NSString *scheme = [[s substringToIndex:sep.location] lowercaseString];
+        if (![scheme isEqualToString:@"http"] && ![scheme isEqualToString:@"https"]) return nil;
+        s = [scheme stringByAppendingString:[s substringFromIndex:sep.location]];
+    }
+    NSURL *u = [NSURL URLWithString:s];
+    if (!u) {
+        // Dấu cách / chữ có dấu trong địa chỉ dán vào: mã hoá %XX (giữ nguyên các %XX, # có sẵn)
+        NSString *esc = CFBridgingRelease(CFURLCreateStringByAddingPercentEscapes(NULL, (__bridge CFStringRef)s, CFSTR("%#[]"), NULL,
+                                                                                  kCFStringEncodingUTF8));
+        u = esc ? [NSURL URLWithString:esc] : nil;
+        if (u) s = esc;
+    }
+    return u.host.length ? s : nil;
+}
+
++ (NSDictionary *)listWithURL:(NSString *)url {
+    for (NSDictionary *l in [self lists]) if (url && [CBStr(l, @"url") isEqualToString:url]) return l;
+    return nil;
+}
+
++ (void)checkListURL:(NSString *)url done:(void (^)(NSDictionary *, NSString *))done {
+    NSString *tmp = [CBIPTVDir() stringByAppendingPathComponent:[NSString stringWithFormat:@"check-%lld.m3u", CBNowMs()]];
+    long long t0 = CBNowMs();
+    CBDownload(url, tmp, ^(NSString *err) {
+        if (err) {
+            [[NSFileManager defaultManager] removeItemAtPath:tmp error:NULL];
+            CBLog(@"IPTV: tải thử %@ lỗi: %@", url, err);
+            done(nil, [NSString stringWithFormat:@"Không tải được: %@", err]);
+            return;
+        }
+        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+            NSString *text = CBReadText(tmp);
+            [[NSFileManager defaultManager] removeItemAtPath:tmp error:NULL];
+            NSString *why = nil;
+            NSDictionary *parsed = nil;
+            if (!text.length) {
+                why = @"Địa chỉ này trả về tệp trống.";
+            } else if ([text rangeOfString:@"#EXT-X-TARGETDURATION"].location != NSNotFound ||
+                       [text rangeOfString:@"#EXT-X-STREAM-INF"].location != NSNotFound) {
+                // Link .m3u8 của một kênh (luồng HLS) chứ không phải danh sách kênh
+                why = @"Đây là link phát của MỘT kênh (luồng HLS), không phải danh sách kênh. Cần link danh sách M3U có nhiều kênh "
+                      @"(mỗi kênh một dòng #EXTINF).";
+            } else if ([text rangeOfString:@"#EXTINF"].location == NSNotFound) {
+                NSString *head = [[text substringToIndex:MIN(text.length, (NSUInteger)2048)] lowercaseString];
+                why = [head rangeOfString:@"<html"].location != NSNotFound || [head rangeOfString:@"<!doctype"].location != NSNotFound
+                    ? @"Địa chỉ này là một trang web, không phải danh sách M3U. Cần link tới chính tệp danh sách (.m3u / .m3u8)."
+                    : @"Tệp tải về không phải danh sách M3U (không có dòng #EXTINF nào).";
+            } else {
+                parsed = CBParseM3U(text);
+                if (!CBArr(parsed, @"channels").count) {
+                    parsed = nil;
+                    why = @"Danh sách không có kênh nào.";
+                }
+            }
+            dispatch_async(dispatch_get_main_queue(), ^{
+                CBLog(@"IPTV: tải thử %@ — %@ (%lld ms)", url,
+                      parsed ? [NSString stringWithFormat:@"%lu kênh", (unsigned long)CBArr(parsed, @"channels").count] : why, CBNowMs() - t0);
+                done(parsed, why);
+            });
+        });
+    });
+}
+
++ (NSDictionary *)addList:(NSString *)url parsed:(NSDictionary *)parsed {
+    NSString *lid = [NSString stringWithFormat:@"l%lld", CBNowMs()];
+    NSArray *channels = CBArr(parsed, @"channels");
+    CBWriteJSON(CBListFile(lid), parsed);
+    NSMutableDictionary *l = [@{@"id": lid, @"name": CBListNameFromURL(url), @"url": url, @"count": @(channels.count),
+                                @"updated": @(CBNowMs())} mutableCopy];
+    if (CBStr(parsed, @"epg")) l[@"epg"] = CBStr(parsed, @"epg");
+    [self saveLists:[[self lists] arrayByAddingObject:l]];
+    [self setActive:lid];
+    CBLog(@"IPTV: thêm danh sách %@ — %lu kênh, lịch %@", url, (unsigned long)channels.count, CBStr(parsed, @"epg") ?: @"không có");
+    [self refreshGuide:NO done:nil];
     return l;
 }
 
@@ -764,6 +851,7 @@ static long long CBListMaxAge(NSArray *channels) {
     void (^got)(NSString *) = ^(NSString *err) {
         if (err) {
             CBLog(@"IPTV: tải danh sách %@ lỗi: %@", url, err);
+            [[NSFileManager defaultManager] removeItemAtPath:tmp error:NULL];   // tải hỏng giữa chừng còn để lại tệp tạm
             gLoading = NO;
             gStatus = nil;
             [self updateList:lid with:@{@"err": err}];

@@ -28,8 +28,17 @@ typedef NS_ENUM(NSInteger, CBMatchState) {
 + (NSArray *)lists;
 + (NSDictionary *)activeList;
 + (void)setActive:(NSString *)listId;
-/// Thêm danh sách (tên lấy từ địa chỉ) và chọn nó; trả bản ghi mới
+/// Thêm danh sách (tên lấy từ địa chỉ) và chọn nó, chưa tải thử; trả bản ghi mới
 + (NSDictionary *)addList:(NSString *)url name:(NSString *)name;
+/// Địa chỉ người xem gõ / dán → địa chỉ danh sách (thêm http:// khi thiếu, mã hoá dấu cách / chữ có dấu); nil = không phải http(s)
++ (NSString *)listURLFrom:(NSString *)input;
+/// Danh sách đã có với địa chỉ này (nil = chưa có)
++ (NSDictionary *)listWithURL:(NSString *)url;
+/// Tải thử danh sách theo địa chỉ, chưa lưu gì: parsed ({epg, channels, v}) khi đọc được ít nhất một kênh, không thì why = lý do
+/// (tiếng Việt, đưa thẳng lên hộp thoại). Khối gọi trên luồng chính
++ (void)checkListURL:(NSString *)url done:(void (^)(NSDictionary *parsed, NSString *why))done;
+/// Thêm danh sách đã tải thử được (checkListURL) — lưu luôn kênh, khỏi tải lại — và chọn nó; trả bản ghi mới
++ (NSDictionary *)addList:(NSString *)url parsed:(NSDictionary *)parsed;
 /// Thêm danh sách từ nội dung tệp M3U (máy tính gửi qua Wi-Fi, tệp trên máy, «Mở bằng»): chép vào Documents/ConBangTV-iptv,
 /// bản ghi {id, name, file, src (tên tệp gốc)} — không tải mạng, không tự làm mới. Chọn nó; nil + error nếu không phải M3U
 + (NSDictionary *)addListWithData:(NSData *)data fileName:(NSString *)fileName name:(NSString *)name error:(NSString **)error;

@@ -302,14 +302,19 @@ static void CBServe(int fd) {
     return l;
 }
 
+/// Mở hộp sau khi hộp vừa bấm đã đóng hẳn (iOS 5 / 6: mở hộp mới lúc hộp cũ đang đóng thì hộp mới không hiện)
+static void CBAfterAlert(dispatch_block_t b) {
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.45 * NSEC_PER_SEC)), dispatch_get_main_queue(), b);
+}
+
 + (void)ask:(void (^)(NSDictionary *))done {
     [[CBAlert title:@"Thêm danh sách kênh" message:@"Danh sách M3U / M3U8 mà anh có quyền xem — app không kèm sẵn kênh." cancel:@"Huỷ"
              others:@[@"Nhập địa chỉ (http…)", @"Gửi tệp từ máy tính (Wi-Fi)", @"Chọn tệp .m3u trên máy này"]
                done:^(CBAlert *a, NSInteger index) {
-        if (index == a.cancelButtonIndex) return;
-        NSInteger k = index - a.firstOtherButtonIndex;
-        // Hộp sau mở khi hộp này đã đóng hẳn (iOS 5 / 6: mở hộp mới lúc hộp cũ đang đóng thì hộp mới không hiện)
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.45 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        NSInteger k = [a otherIndex:index];
+        if (k < 0) return;
+        CBLog(@"Truyền hình: thêm danh sách — chọn «%@»", [a buttonTitleAtIndex:index]);
+        CBAfterAlert(^{
             if (k == 0) [self askURL:done];
             else if (k == 1) [self showUpload:done];
             else [self pickLocal:done];
@@ -318,20 +323,39 @@ static void CBServe(int fd) {
 }
 
 + (void)askURL:(void (^)(NSDictionary *))done {
+    [self askURL:done text:nil];
+}
+
+/// Hộp nhập địa chỉ; `text` = địa chỉ lần trước (bấm «Sửa địa chỉ» sau khi tải thử lỗi)
++ (void)askURL:(void (^)(NSDictionary *))done text:(NSString *)text {
     CBAlert *a = [CBAlert title:@"Thêm danh sách kênh" message:@"Địa chỉ danh sách M3U / M3U8 (http…)" cancel:@"Huỷ"
                          others:@[@"Thêm"] done:^(CBAlert *alert, NSInteger index) {
-        if (index == alert.cancelButtonIndex) return;
-        NSString *url = [[alert textFieldAtIndex:0].text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-        if (url.length < 8) {
+        if ([alert otherIndex:index] < 0) return;
+        NSString *input = [[alert textFieldAtIndex:0].text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        if (!input.length) {
             [CBTheme toast:@"Chưa có địa chỉ danh sách."];
             return;
         }
-        NSDictionary *l = [CBIPTV addList:url name:nil];
-        CBLog(@"Truyền hình: thêm danh sách %@", url);
-        [CBIPTV refresh:YES done:^(NSString *err) {
-            [CBTheme toast:err ?: [NSString stringWithFormat:@"Đã tải %lu kênh.", (unsigned long)[CBIPTV channels].count]];
-        }];
-        if (done) done(l);
+        NSString *url = [CBIPTV listURLFrom:input];
+        CBLog(@"Truyền hình: thêm danh sách «%@» → %@", input, url ?: @"địa chỉ không đúng");
+        CBAfterAlert(^{
+            if (!url) {
+                [self failURL:input why:@"Địa chỉ chưa đúng — cần dạng http://tên-miền/danh-sach.m3u (hoặc https://…)." done:done];
+                return;
+            }
+            NSDictionary *have = [CBIPTV listWithURL:url];
+            if (have) {
+                // Đã có: chọn nó và tải lại (lần trước có thể lỗi)
+                [CBIPTV setActive:CBStr(have, @"id")];
+                [CBIPTV refresh:YES done:^(NSString *err) {
+                    [CBTheme toast:err ?: [NSString stringWithFormat:@"Đã có danh sách «%@» — đã chọn, %lu kênh.", CBStr(have, @"name"),
+                                                                     (unsigned long)[CBIPTV channels].count]];
+                }];
+                if (done) done(have);
+                return;
+            }
+            [self checkURL:url done:done];
+        });
     }];
     a.alertViewStyle = UIAlertViewStylePlainTextInput;
     UITextField *f = [a textFieldAtIndex:0];
@@ -339,7 +363,45 @@ static void CBServe(int fd) {
     f.autocorrectionType = UITextAutocorrectionTypeNo;
     f.autocapitalizationType = UITextAutocapitalizationTypeNone;
     f.placeholder = @"http://…/danh-sach.m3u";
+    f.text = text;
     [a show];
+}
+
+/// Tải thử (hộp «Đang tải thử…» có nút Huỷ); chỉ thêm khi đọc được kênh — lỗi thì không thêm gì, danh sách đang dùng giữ nguyên
++ (void)checkURL:(NSString *)url done:(void (^)(NSDictionary *))done {
+    __block BOOL over = NO;
+    CBAlert *wait = [CBAlert title:@"Đang tải thử danh sách…" message:url cancel:@"Huỷ" others:nil done:^(CBAlert *a, NSInteger index) {
+        over = YES;
+        CBLog(@"Truyền hình: huỷ tải thử %@", url);
+    }];
+    [wait show];
+    NSDate *t0 = [NSDate date];
+    [CBIPTV checkListURL:url done:^(NSDictionary *parsed, NSString *why) {
+        // Hộp chờ hiện ít nhất 0,6 s (tải lỗi ngay — sai tên miền — thì hộp chờ chưa kịp hiện xong đã đóng)
+        double hold = MAX(0, 0.6 + [t0 timeIntervalSinceNow]);
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(hold * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            if (over) return;
+            over = YES;
+            // Đóng bằng mã thì CBAlert không gọi khối done
+            [wait dismissWithClickedButtonIndex:wait.cancelButtonIndex animated:YES];
+            if (!parsed) {
+                CBAfterAlert(^{ [self failURL:url why:why done:done]; });
+                return;
+            }
+            NSDictionary *l = [CBIPTV addList:url parsed:parsed];
+            [CBTheme toast:[NSString stringWithFormat:@"Đã thêm «%@» — %lu kênh.", CBStr(l, @"name"),
+                                                      (unsigned long)CBArr(parsed, @"channels").count]];
+            if (done) done(l);
+        });
+    }];
+}
+
++ (void)failURL:(NSString *)url why:(NSString *)why done:(void (^)(NSDictionary *))done {
+    [[CBAlert title:@"Chưa thêm được danh sách" message:[NSString stringWithFormat:@"%@\n\n%@", why ?: @"Không đọc được danh sách.", url]
+             cancel:@"Đóng" others:@[@"Sửa địa chỉ"] done:^(CBAlert *a, NSInteger index) {
+        if ([a otherIndex:index] != 0) return;
+        CBAfterAlert(^{ [self askURL:done text:url]; });
+    }] show];
 }
 
 + (void)showUpload:(void (^)(NSDictionary *))done {
@@ -409,8 +471,7 @@ static void CBServe(int fd) {
     }
     [[CBAlert title:@"Chọn tệp danh sách" message:@"Tệp .m3u / .m3u8 trên máy (mới nhất trước)" cancel:@"Huỷ" others:titles
                done:^(CBAlert *a, NSInteger index) {
-        if (index == a.cancelButtonIndex) return;
-        NSInteger k = index - a.firstOtherButtonIndex;
+        NSInteger k = [a otherIndex:index];
         if (k >= 0 && k < (NSInteger)files.count) [self importFile:files[k][@"path"] done:done];
     }] show];
 }
