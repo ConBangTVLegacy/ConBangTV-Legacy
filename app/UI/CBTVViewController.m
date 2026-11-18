@@ -15,8 +15,9 @@
 #pragma mark - Ô kênh
 
 @implementation CBChannelCell {
-    UIView *_logoBox, *_track, *_fill;
-    UIImageView *_logo;
+    UIImageView *_card, *_logoBox;   // nền thẻ / nền ô logo: ảnh bo góc kéo giãn (không layer.cornerRadius — xem CBTheme)
+    UIView *_track, *_fill;
+    CBCoverView *_logo;   // có logo thì ẩn chữ viết tắt (_abbr) nằm dưới
     UILabel *_abbr, *_num, *_name, *_prog, *_time, *_next, *_live;
     UIButton *_star;
     BOOL _compact;
@@ -39,12 +40,11 @@
 
 - (instancetype)initWithFrame:(CGRect)frame {
     if ((self = [super initWithFrame:frame])) {
-        self.contentView.layer.cornerRadius = 10;
-        self.contentView.clipsToBounds = YES;
-        _logoBox = [[UIView alloc] init];
-        _logoBox.backgroundColor = CBRGB(0x262B32);
-        _logoBox.layer.cornerRadius = 6;
-        _logoBox.clipsToBounds = YES;
+        // Nền thẻ / ô logo là ảnh bo góc kéo giãn: layer.cornerRadius (kể cả không cắt) làm lưới kênh iPad 1 chỉ còn ~10 khung/s
+        _card = [[UIImageView alloc] initWithFrame:self.contentView.bounds];
+        _card.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+        [self.contentView addSubview:_card];
+        _logoBox = [[UIImageView alloc] initWithImage:[CBTheme imageWithColor:CBRGB(0x262B32) radius:6]];
         [self.contentView addSubview:_logoBox];
         _abbr = [[UILabel alloc] init];
         _abbr.backgroundColor = [UIColor clearColor];
@@ -53,17 +53,15 @@
         _abbr.adjustsFontSizeToFitWidth = YES;
         _abbr.minimumScaleFactor = 0.5;
         [_logoBox addSubview:_abbr];
-        _logo = [[UIImageView alloc] init];
+        _logo = [[CBCoverView alloc] init];
+        _logo.placeholder = _abbr;
         _logo.contentMode = UIViewContentModeScaleAspectFit;
         [_logoBox addSubview:_logo];
-        _live = [[UILabel alloc] init];
-        _live.backgroundColor = CBRGB(0xD93A3F);
+        _live = [CBTheme roundLabel:CBRGB(0xD93A3F) radius:3];
         _live.textColor = [UIColor whiteColor];
         _live.font = [CBTheme bold:9];
         _live.textAlignment = NSTextAlignmentCenter;
         _live.text = @"TRỰC TIẾP";
-        _live.layer.cornerRadius = 3;
-        _live.clipsToBounds = YES;
         [_logoBox addSubview:_live];
         _num = [self label:[CBTheme font:12] color:CBRGB(0x8D959E)];
         _name = [self label:[CBTheme bold:15] color:[CBTheme text]];
@@ -92,7 +90,12 @@
 
 - (void)setHighlighted:(BOOL)highlighted {
     [super setHighlighted:highlighted];
-    self.contentView.backgroundColor = highlighted ? CBRGB(0x2A3037) : (_compact ? [UIColor clearColor] : CBRGB(0x1A1D22));
+    [self updateCard];
+}
+
+- (void)updateCard {
+    UIColor *c = self.highlighted ? CBRGB(0x2A3037) : (_compact ? nil : CBRGB(0x1A1D22));
+    _card.image = c ? [CBTheme imageWithColor:c radius:10] : nil;
 }
 
 - (void)prepareForReuse {
@@ -104,7 +107,7 @@
 
 - (void)setChannel:(NSDictionary *)c compact:(BOOL)compact {
     _compact = compact;
-    self.contentView.backgroundColor = compact ? [UIColor clearColor] : CBRGB(0x1A1D22);
+    [self updateCard];
     NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
     NSDictionary *p = [CBIPTV nowFor:c at:now], *n = [CBIPTV nextFor:c at:now];
     NSString *bad = [CBIPTV channelBadReason:c];
@@ -517,10 +520,8 @@
         [b setTitle:t forState:UIControlStateNormal];
         UIColor *fg = on ? [CBTheme onBrand] : (i == 0 ? [CBTheme focus] : [CBTheme text]);
         [b setTitleColor:fg forState:UIControlStateNormal];
-        [b setBackgroundImage:[CBTheme imageWithColor:on ? [CBTheme brand] : [CBTheme surface]] forState:UIControlStateNormal];
-        [b setBackgroundImage:[CBTheme imageWithColor:[CBTheme surface2]] forState:UIControlStateHighlighted];
-        b.layer.cornerRadius = h / 2;
-        b.clipsToBounds = YES;
+        [b setBackgroundImage:[CBTheme imageWithColor:on ? [CBTheme brand] : [CBTheme surface] radius:h / 2] forState:UIControlStateNormal];
+        [b setBackgroundImage:[CBTheme imageWithColor:[CBTheme surface2] radius:h / 2] forState:UIControlStateHighlighted];
         CGFloat bw = ceil([t sizeWithFont:font].width) + 28;
         b.frame = CGRectMake(x, 7, bw, h);
         [b addTarget:self action:@selector(chipTapped:) forControlEvents:UIControlEventTouchUpInside];

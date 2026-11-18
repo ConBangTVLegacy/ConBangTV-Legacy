@@ -16,11 +16,14 @@
 - (void)setTitle:(NSString *)title watched:(BOOL)watched current:(BOOL)current;
 @end
 
-@implementation CBEpCell
+@implementation CBEpCell {
+    UIImageView *_bg;   // nền + viền bo góc: ảnh kéo giãn (không layer.cornerRadius — xem CBTheme imageWithColor:radius:)
+}
 - (instancetype)initWithFrame:(CGRect)frame {
     if ((self = [super initWithFrame:frame])) {
-        self.contentView.layer.cornerRadius = 6;
-        self.contentView.clipsToBounds = YES;
+        _bg = [[UIImageView alloc] initWithFrame:self.contentView.bounds];
+        _bg.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+        [self.contentView addSubview:_bg];
         _label = [[UILabel alloc] initWithFrame:CGRectInset(self.contentView.bounds, 4, 2)];
         _label.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
         _label.backgroundColor = [UIColor clearColor];
@@ -38,10 +41,9 @@
     NSString *t = title ?: @"";
     if ([t hasPrefix:@"Tập "] && t.length <= 9) t = [t substringFromIndex:4];
     _label.text = t;
-    self.contentView.backgroundColor = watched ? [CBTheme watched] : [CBTheme surface2];
+    _bg.image = [CBTheme imageWithColor:watched ? [CBTheme watched] : [CBTheme surface2] radius:6 border:current ? [CBTheme focus] : nil
+                                  width:2];
     _label.textColor = [CBTheme text];
-    self.contentView.layer.borderWidth = current ? 2 : 0;
-    self.contentView.layer.borderColor = [CBTheme focus].CGColor;
 }
 
 - (void)setHighlighted:(BOOL)highlighted {
@@ -71,7 +73,8 @@
     CBCollectionView *_cv;
     // Phần đầu (một bản, đặt vào ô phụ đầu lưới)
     UIView *_header;
-    UIImageView *_poster;
+    CBCoverView *_poster;
+    UIImageView *_posterBg;   // nền xám bo góc lúc chưa có ảnh (ảnh kéo giãn — không layer.cornerRadius)
     UILabel *_titleLabel, *_otherLabel, *_infoLabel, *_countLabel, *_messageLabel;
     UIButton *_playButton, *_followButton;
     // Hàng nút phụ: «Mới nhất: Tập N», «Từ tập đầu» (khi đang xem dở), «⇄ <trang> ▾» (phim có ở nhiều trang — từ trang chủ tổng hợp)
@@ -86,6 +89,10 @@
     UIView *_footer;
     NSArray *_related;
     BOOL _relatedLoading;
+    // Màn đang trượt vào (chưa viewDidAppear): bản tải mới / hàng liên quan về giữa cú trượt thì để sau — dựng lại lúc đó làm
+    // cú trượt giật (iPad mini 1 iOS 8: ~40 khung/s)
+    BOOL _appeared, _pendingRelated;
+    NSDictionary *_pendingDetail;
     NSMutableArray *_relatedViews;  // [UILabel tên hàng, CBRowCell] cho từng hàng
 }
 
@@ -122,8 +129,23 @@
 
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
-    // Từ trình phát quay về: đánh dấu tập đã xem / nút Xem tiếp
-    [self refreshMarks];
+    // Từ trình phát quay về: đánh dấu tập đã xem / nút Xem tiếp. Lần đầu viewDidLoad vừa dựng xong — dựng lại ở đây chỉ làm cú
+    // trượt vào bắt đầu chậm hơn
+    if (_appeared) [self refreshMarks];
+}
+
+- (void)viewDidAppear:(BOOL)animated {
+    [super viewDidAppear:animated];
+    _appeared = YES;
+    if (_pendingDetail) {
+        NSDictionary *d = _pendingDetail;
+        _pendingDetail = nil;
+        [self applyDetail:d];
+    }
+    if (_pendingRelated) {
+        _pendingRelated = NO;
+        [self buildRelated];
+    }
 }
 
 - (void)load {
@@ -137,7 +159,8 @@
               CBIsDict(ok) ? [NSString stringWithFormat:@"%ld tập", (long)CBDetailEpisodeCount(ok)] : [@"LỖI " stringByAppendingString:err ?: @"?"],
               CBNowMs() - t0);
         if (CBIsDict(ok)) {
-            [self applyDetail:ok];
+            if (self->_appeared) [self applyDetail:ok];
+            else self->_pendingDetail = ok;
         } else if (!self->_detail) {
             self->_error = [NSString stringWithFormat:@"Không tải được phim.\n%@", err ?: @""];
             [self relayout];
@@ -158,7 +181,7 @@
     NSArray *groups = CBArr(d, @"groups");
     if (_group >= (NSInteger)groups.count) _group = 0;
     // «Có tập mới» tự động của trang chủ: đã mở phim thì thôi (như bản Windows — lõi ghi tập lớn nhất đã thấy)
-    if (![CBPrefs privateMode]) [CBCore sync:@"home.markSeen" args:@{@"detail": d}];
+    if (![CBPrefs privateMode]) [CBCore call:@"home.markSeen" args:@{@"detail": d} done:nil];   // không chờ (lõi ghi dữ liệu)
     // Phim đang theo dõi: vào trang phim thì cập nhật số tập (chưa coi là đã xem tập mới — xem mới tính)
     if ([CBPrefs followOf:CBStr(d, @"url") ?: @""]) {
         [CBPrefs updateFollow:CBStr(d, @"url") count:CBDetailEpisodeCount(d) latest:CBStr(CBDetailLatestEpisode(d), @"title")
@@ -206,11 +229,11 @@
 - (void)buildHeader {
     _header = [[UIView alloc] init];
     _header.backgroundColor = [CBTheme bg];
-    _poster = [[UIImageView alloc] init];
-    _poster.backgroundColor = [CBTheme surface2];
-    _poster.contentMode = UIViewContentModeScaleAspectFill;
-    _poster.clipsToBounds = YES;
-    _poster.layer.cornerRadius = 8;
+    _posterBg = [[UIImageView alloc] initWithImage:[CBTheme imageWithColor:[CBTheme surface2] radius:8]];
+    [_header addSubview:_posterBg];
+    _poster = [[CBCoverView alloc] init];
+    _poster.placeholder = _posterBg;
+    _poster.contentMode = UIViewContentModeScaleToFill;  // ảnh đã cắt đúng khổ + bo góc sẵn (CBImages … radius:)
     [_header addSubview:_poster];
     _titleLabel = [self label:[CBTheme bold:[CBTheme isPad] ? 22 : 18] color:[CBTheme text]];
     _otherLabel = [self label:[CBTheme font:14] color:[CBTheme dim]];
@@ -244,7 +267,8 @@
 
 - (void)relayout {
     NSString *poster = CBStr(_detail, @"poster") ?: CBStr(_item, @"poster");
-    [CBImages load:poster size:CGSizeMake(160, 240) into:_poster];
+    CGFloat pw = [CBTheme isPad] ? 170 : 110;   // như layoutHeader:
+    [CBImages load:poster size:CGSizeMake(pw, ceil(pw * 1.5)) radius:8 into:_poster];
     _titleLabel.text = CBStr(_detail, @"title") ?: CBStr(_item, @"title");
     _otherLabel.text = CBStr(_detail, @"otherTitle");
     _infoLabel.text = CBStr(_detail, @"info");
@@ -310,6 +334,7 @@
     BOOL pad = [CBTheme isPad];
     CGFloat pw = pad ? 170 : 110;
     _poster.frame = CGRectMake(12, 12, pw, ceil(pw * 1.5));
+    _posterBg.frame = _poster.frame;
     CGFloat x = 12 + pw + 12, cw = w - x - 12, y = 12;
     _titleLabel.frame = CGRectMake(x, y, cw, [CBTheme heightOf:_titleLabel.text font:_titleLabel.font width:cw]);
     y = CGRectGetMaxY(_titleLabel.frame) + 4;
@@ -427,7 +452,8 @@
         CBLog(@"Phim liên quan «%@»: %lu hàng sau %lld ms%@", title, (unsigned long)rows.count, CBNowMs() - t0,
               err ? [@" — LỖI " stringByAppendingString:err] : @"");
         self->_related = rows;
-        [self buildRelated];
+        if (self->_appeared) [self buildRelated];
+        else self->_pendingRelated = YES;
     }];
 }
 

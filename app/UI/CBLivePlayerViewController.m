@@ -45,7 +45,8 @@ static void CBLiveForceOrientation(UIInterfaceOrientation o) {
     CBLiveVideoView *_video;
     UIView *_top, *_bottom, *_track, *_fill;
     UIButton *_closeButton, *_guideButton, *_sourceButton, *_channelsButton, *_prevButton, *_playButton, *_nextButton, *_liveButton;
-    UILabel *_titleLabel, *_badge, *_progLabel, *_timeLabel, *_nextLabel, *_status;
+    CBRoundLabel *_badge;   // «TRỰC TIẾP» / «CHẬM m:ss» — màu nền bo góc: fillColor
+    UILabel *_titleLabel, *_progLabel, *_timeLabel, *_nextLabel, *_status;
     UIActivityIndicatorView *_spinner;
     UIButton *_retryButton, *_skipButton;
     UITableView *_panel;
@@ -164,11 +165,10 @@ static void CBLiveForceOrientation(UIInterfaceOrientation o) {
     _titleLabel = [self label:[CBTheme bold:pad ? 16 : 14]];
     _titleLabel.textAlignment = NSTextAlignmentCenter;
     _titleLabel.lineBreakMode = NSLineBreakByTruncatingTail;
-    _badge = [self label:[CBTheme bold:11]];
+    _badge = [CBTheme roundLabel:nil radius:4];   // màu nền gán sau (đỏ = đang phát); nền bo vẽ vào nhãn, không lớp bo góc trên video
+    _badge.font = [CBTheme bold:11];
     _badge.textAlignment = NSTextAlignmentCenter;
     _badge.textColor = [UIColor whiteColor];
-    _badge.layer.cornerRadius = 4;
-    _badge.clipsToBounds = YES;
     for (UIView *v in @[_closeButton, _guideButton, _sourceButton, _channelsButton, _titleLabel, _badge]) [_top addSubview:v];
 
     _bottom = [[UIView alloc] init];
@@ -635,7 +635,7 @@ static void CBLiveForceOrientation(UIInterfaceOrientation o) {
             _badge.text = text;
             [self.view setNeedsLayout];
         }
-        _badge.backgroundColor = _started && _player.rate > 0 ? CBRGB(0xD93A3F) : CBRGB(0x5A6068);
+        _badge.fillColor = _started && _player.rate > 0 ? CBRGB(0xD93A3F) : CBRGB(0x5A6068);
         if (!_liveButton.hidden) {
             _liveButton.hidden = YES;
             [self.view setNeedsLayout];
@@ -650,7 +650,7 @@ static void CBLiveForceOrientation(UIInterfaceOrientation o) {
         _badge.text = text;
         [self.view setNeedsLayout];   // bề ngang nhãn tính lúc bố cục
     }
-    _badge.backgroundColor = behind || !_started ? CBRGB(0x5A6068) : CBRGB(0xD93A3F);
+    _badge.fillColor = behind || !_started ? CBRGB(0x5A6068) : CBRGB(0xD93A3F);
     BOOL showLive = behind && delay > 8;
     if (_liveButton.hidden == showLive) {
         _liveButton.hidden = !showLive;

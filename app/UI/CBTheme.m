@@ -43,6 +43,49 @@
     return img;
 }
 
+static NSString *CBColorKey(UIColor *color) {
+    if (!color) return @"-";
+    CGFloat r = 0, g = 0, b = 0, a = 1;
+    if (![color getRed:&r green:&g blue:&b alpha:&a] && [color getWhite:&r alpha:&a]) g = b = r;
+    return [NSString stringWithFormat:@"%.3f %.3f %.3f %.3f", r, g, b, a];
+}
+
++ (UIImage *)imageWithColor:(UIColor *)color radius:(CGFloat)radius {
+    return [self imageWithColor:color radius:radius border:nil width:0];
+}
+
++ (UIImage *)imageWithColor:(UIColor *)color radius:(CGFloat)radius border:(UIColor *)border width:(CGFloat)width {
+    static NSMutableDictionary *cache;
+    if (!cache) cache = [NSMutableDictionary dictionary];
+    if (!border) width = 0;
+    NSString *key = [NSString stringWithFormat:@"%@ %.1f | %@ %.1f", CBColorKey(color), radius, CBColorKey(border), width];
+    UIImage *img = cache[key];
+    if (img) return img;
+    CGFloat side = MAX(radius, width) * 2 + 1;
+    UIGraphicsBeginImageContextWithOptions(CGSizeMake(side, side), NO, 0);
+    [color setFill];
+    [[UIBezierPath bezierPathWithRoundedRect:CGRectMake(0, 0, side, side) cornerRadius:radius] fill];
+    if (width > 0) {
+        [border setStroke];
+        UIBezierPath *edge = [UIBezierPath bezierPathWithRoundedRect:CGRectInset(CGRectMake(0, 0, side, side), width / 2, width / 2)
+                                                        cornerRadius:MAX(0, radius - width / 2)];
+        edge.lineWidth = width;
+        [edge stroke];
+    }
+    CGFloat cap = MAX(radius, width);
+    img = [UIGraphicsGetImageFromCurrentImageContext() resizableImageWithCapInsets:UIEdgeInsetsMake(cap, cap, cap, cap)];
+    UIGraphicsEndImageContext();
+    cache[key] = img;
+    return img;
+}
+
++ (CBRoundLabel *)roundLabel:(UIColor *)fill radius:(CGFloat)radius {
+    CBRoundLabel *l = [[CBRoundLabel alloc] init];
+    l.fillColor = fill;
+    l.radius = radius;
+    return l;
+}
+
 + (void)apply {
     UINavigationBar *bar = [UINavigationBar appearance];
     [bar setBackgroundImage:[self imageWithColor:[self surface]] forBarMetrics:UIBarMetricsDefault];
@@ -65,25 +108,21 @@
     b.titleLabel.font = [self bold:15];
     UIColor *bg = primary ? [self brand] : [self surface2];
     UIColor *down = primary ? CBRGB(0x1F8A68) : CBRGB(0x343B48);
-    [b setBackgroundImage:[self imageWithColor:bg] forState:UIControlStateNormal];
-    [b setBackgroundImage:[self imageWithColor:down] forState:UIControlStateHighlighted];
+    [b setBackgroundImage:[self imageWithColor:bg radius:8] forState:UIControlStateNormal];
+    [b setBackgroundImage:[self imageWithColor:down radius:8] forState:UIControlStateHighlighted];
     [b setTitleColor:primary ? [self onBrand] : [self text] forState:UIControlStateNormal];
     [b setTitleColor:[self dim] forState:UIControlStateDisabled];
-    b.layer.cornerRadius = 8;
-    b.clipsToBounds = YES;
     b.contentEdgeInsets = UIEdgeInsetsMake(8, 14, 8, 14);
     return b;
 }
 
 + (UIView *)avatarFor:(NSDictionary *)profile size:(CGFloat)size {
-    UILabel *l = [[UILabel alloc] initWithFrame:CGRectMake(0, 0, size, size)];
-    l.backgroundColor = [self profileColor:(NSInteger)CBNum(profile, @"color", 0)];
+    UILabel *l = [self roundLabel:[self profileColor:(NSInteger)CBNum(profile, @"color", 0)] radius:size / 2];
+    l.frame = CGRectMake(0, 0, size, size);
     l.textColor = [UIColor whiteColor];
     l.textAlignment = NSTextAlignmentCenter;
     l.font = [self bold:size * 0.45];
     l.text = [CBPrefs initialOf:profile];
-    l.layer.cornerRadius = size / 2;
-    l.clipsToBounds = YES;
     return l;
 }
 
@@ -99,8 +138,21 @@
 
 + (CGFloat)heightOf:(NSString *)text font:(UIFont *)font width:(CGFloat)width {
     if (!text.length) return 0;
+    // Nhớ kết quả: đo chữ (CoreText) tốn — iOS 8 iPad mini 1 đo mô tả phim dài mất hàng chục ms, mà bố cục gọi lại nhiều lần
+    // (mở trang phim, cuộn ô ảnh bìa). Chỉ dùng trên luồng chính.
+    static NSCache *cache;
+    if (!cache) {
+        cache = [[NSCache alloc] init];
+        cache.countLimit = 2000;
+    }
+    BOOL main = [NSThread isMainThread];
+    NSString *key = main ? [NSString stringWithFormat:@"%@ %.1f %.1f\n%@", font.fontName, font.pointSize, width, text] : nil;
+    NSNumber *hit = key ? [cache objectForKey:key] : nil;
+    if (hit) return hit.doubleValue;
     CGSize s = [text sizeWithFont:font constrainedToSize:CGSizeMake(width, CGFLOAT_MAX) lineBreakMode:NSLineBreakByWordWrapping];
-    return ceil(s.height);
+    CGFloat h = ceil(s.height);
+    if (key) [cache setObject:@(h) forKey:key];
+    return h;
 }
 
 + (NSString *)time:(double)seconds {
@@ -145,15 +197,12 @@ static UILabel *gToast;
     UIView *w = [self toastHost];
     if (!w || !text.length) return;
     [gToast removeFromSuperview];
-    UILabel *l = [[UILabel alloc] init];
-    l.backgroundColor = [UIColor colorWithWhite:0.12 alpha:0.94];
+    UILabel *l = [self roundLabel:[UIColor colorWithWhite:0.12 alpha:0.94] radius:10];
     l.textColor = [UIColor whiteColor];
     l.font = [self font:15];
     l.numberOfLines = 0;
     l.textAlignment = NSTextAlignmentCenter;
     l.text = text;
-    l.layer.cornerRadius = 10;
-    l.clipsToBounds = YES;
     CGFloat maxW = MIN(w.bounds.size.width - 40, 420);
     CGFloat h = [self heightOf:text font:l.font width:maxW - 24] + 20;
     CGSize one = [text sizeWithFont:l.font];
@@ -178,3 +227,40 @@ static UILabel *gToast;
 NSString *CBPlayIcon(void) {
     return CBOldIOS() ? @"►" : @"▶︎";
 }
+
+@implementation CBRoundLabel
+
+- (instancetype)initWithFrame:(CGRect)frame {
+    if ((self = [super initWithFrame:frame])) {
+        [super setBackgroundColor:[UIColor clearColor]];
+        self.opaque = NO;
+        self.contentMode = UIViewContentModeRedraw;  // đổi khổ thì vẽ lại nền
+    }
+    return self;
+}
+
+// Nền thật của nhãn luôn trong suốt — màu nền bo góc là fillColor. Tinh chỉnh chế độ tối (vd Eclipse trên iOS 8) gán lại
+// backgroundColor của mọi nhãn: nếu lấy màu từ đó thì mất nền bo góc (iPad mini 1, 18/11/2026), hoặc hiện nền vuông
+- (void)setBackgroundColor:(UIColor *)color {
+    [super setBackgroundColor:[UIColor clearColor]];
+}
+
+- (void)setFillColor:(UIColor *)fillColor {
+    _fillColor = fillColor;
+    [self setNeedsDisplay];
+}
+
+- (void)setRadius:(CGFloat)radius {
+    _radius = radius;
+    [self setNeedsDisplay];
+}
+
+- (void)drawRect:(CGRect)rect {
+    if (_fillColor && CGColorGetAlpha(_fillColor.CGColor) > 0) {
+        [_fillColor setFill];
+        [[UIBezierPath bezierPathWithRoundedRect:self.bounds cornerRadius:MIN(_radius, MIN(self.bounds.size.width, self.bounds.size.height) / 2)] fill];
+    }
+    [super drawRect:rect];
+}
+
+@end

@@ -3,8 +3,11 @@
 #import "CBJSON.h"
 #import "CBTheme.h"
 
+/// Góc bo của ảnh bìa (điểm)
+static const CGFloat kPosterRadius = 6;
+
 @implementation CBPosterCell {
-    UIImageView *_poster;
+    CBCoverView *_poster;
     UILabel *_title;
     UILabel *_sub;
     UILabel *_badge;
@@ -28,31 +31,25 @@
     if ((self = [super initWithFrame:frame])) {
         [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(purge) name:CBImagesPurgeNotification object:nil];
         self.backgroundColor = [UIColor clearColor];
-        // Nền xám + tên phim nằm dưới ảnh: ảnh tải xong tự che đi
-        _placeholder = [[UILabel alloc] init];
-        _placeholder.backgroundColor = [CBTheme surface2];
+        // Nền xám + tên phim nằm dưới ảnh: có ảnh thì ẩn đi. Không lớp nào trong ô dùng layer.cornerRadius (GPU vẽ ngoài màn hình mỗi
+        // khung khi cuộn — xem CBTheme imageWithColor:radius:): nền bo vẽ vào nội dung nhãn, ảnh bìa bo sẵn lúc giải mã
+        _placeholder = [CBTheme roundLabel:[CBTheme surface2] radius:kPosterRadius];
         _placeholder.textColor = [CBTheme dim];
         _placeholder.font = [CBTheme font:11];
         _placeholder.numberOfLines = 4;
         _placeholder.textAlignment = NSTextAlignmentCenter;
-        _placeholder.layer.cornerRadius = 6;
-        _placeholder.clipsToBounds = YES;
         [self.contentView addSubview:_placeholder];
 
-        _poster = [[UIImageView alloc] init];
+        _poster = [[CBCoverView alloc] init];
+        _poster.placeholder = _placeholder;
         _poster.backgroundColor = [UIColor clearColor];
-        _poster.contentMode = UIViewContentModeScaleAspectFill;
-        _poster.clipsToBounds = YES;
-        _poster.layer.cornerRadius = 6;
+        _poster.contentMode = UIViewContentModeScaleToFill;  // ảnh đã cắt đúng khổ ô
         [self.contentView addSubview:_poster];
 
-        _badge = [[UILabel alloc] init];
-        _badge.backgroundColor = [CBTheme brand];
+        _badge = [CBTheme roundLabel:[CBTheme brand] radius:3];
         _badge.textColor = [CBTheme onBrand];
         _badge.font = [CBTheme bold:10];
         _badge.textAlignment = NSTextAlignmentCenter;
-        _badge.layer.cornerRadius = 3;
-        _badge.clipsToBounds = YES;
         [self.contentView addSubview:_badge];
 
         _track = [[UIView alloc] init];
@@ -97,7 +94,8 @@
 }
 
 - (void)loadPoster {
-    [CBImages load:_posterUrl size:CGSizeMake(self.bounds.size.width, self.bounds.size.width * 1.5) into:_poster];
+    CGFloat w = self.bounds.size.width;
+    [CBImages load:_posterUrl size:CGSizeMake(w, ceil(w * 1.5)) radius:kPosterRadius into:_poster];
 }
 
 - (void)dealloc {

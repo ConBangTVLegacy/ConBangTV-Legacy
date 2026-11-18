@@ -574,28 +574,67 @@ static BOOL CBGunzip(NSString *src, NSString *dst) {
     return ok;
 }
 
+/// Prefs của Truyền hình được đọc lại liên tục khi cuộn: mỗi ô kênh hỏi danh sách đang chọn (lịch phát sóng), kênh hỏng, yêu thích —
+/// mỗi lần là một lượt gọi lõi + JSON (danh sách kênh hỏng tới 500 mục); iPad 1 khựng ~0,5 s mỗi hàng ô mới. Nhớ đệm ngắn trên luồng
+/// chính: ghi qua đây thì cập nhật ngay; lõi tự đổi (vd đồng bộ) thì thấy chậm tối đa 1 giây.
+static NSMutableDictionary *gPrefCache;
+static CFAbsoluteTime gPrefCacheAt;
+
+static id CBTVPrefGet(NSString *key) {
+    if (![NSThread isMainThread]) return [CBPrefs get:key];
+    CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+    if (!gPrefCache || now - gPrefCacheAt > 1.0 || now < gPrefCacheAt) {
+        gPrefCache = [NSMutableDictionary dictionary];
+        gPrefCacheAt = now;
+    }
+    id v = gPrefCache[key];
+    if (!v) {
+        v = [CBPrefs get:key] ?: [NSNull null];
+        gPrefCache[key] = v;
+    }
+    return v == [NSNull null] ? nil : v;
+}
+
+static void CBTVPrefSet(NSString *key, id value) {
+    [CBPrefs set:key value:value];
+    [gPrefCache removeObjectForKey:key];
+}
+
+/// Lời nhắc «bóng lăn» đã hẹn: scheduledLocalNotifications hỏi SpringBoard mỗi lần gọi — ô kênh thể thao hỏi khi hiện lên
+static NSArray *gKickNotes;
+static CFAbsoluteTime gKickNotesAt;
+
+static NSArray *CBScheduledNotes(void) {
+    CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+    if (!gKickNotes || now - gKickNotesAt > 2.0 || now < gKickNotesAt) {
+        gKickNotes = [UIApplication sharedApplication].scheduledLocalNotifications ?: @[];
+        gKickNotesAt = now;
+    }
+    return gKickNotes;
+}
+
 @implementation CBIPTV
 
 #pragma mark - Danh sách
 
 + (NSArray *)lists {
-    id v = [CBPrefs get:@"iptv_lists"];
+    id v = CBTVPrefGet(@"iptv_lists");
     return CBIsArr(v) ? v : @[];
 }
 
 + (void)saveLists:(NSArray *)lists {
-    [CBPrefs set:@"iptv_lists" value:lists];
+    CBTVPrefSet(@"iptv_lists", lists);
 }
 
 + (NSDictionary *)activeList {
     NSArray *lists = [self lists];
-    id active = [CBPrefs get:@"iptv_active"];
+    id active = CBTVPrefGet(@"iptv_active");
     for (NSDictionary *l in lists) if ([CBStr(l, @"id") isEqualToString:active]) return l;
     return lists.firstObject;
 }
 
 + (void)setActive:(NSString *)listId {
-    [CBPrefs set:@"iptv_active" value:listId ?: @""];
+    CBTVPrefSet(@"iptv_active", listId ?: @"");
     gChannels = nil;
     gChannelsList = nil;
     gGuide = nil;
@@ -921,14 +960,14 @@ static long long CBListMaxAge(NSArray *channels) {
 }
 
 + (NSString *)epgOverride {
-    id v = [CBPrefs get:@"iptv_epg_url"];
+    id v = CBTVPrefGet(@"iptv_epg_url");
     return CBIsStr(v) && [v length] ? v : nil;
 }
 
 + (void)setEpgOverride:(NSString *)url {
     url = [url stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-    if (url.length) [CBPrefs set:@"iptv_epg_url" value:url];
-    else [CBPrefs remove:@"iptv_epg_url"];
+    if (url.length) CBTVPrefSet(@"iptv_epg_url", url);
+    else CBTVPrefSet(@"iptv_epg_url", nil);
 }
 
 + (NSString *)epgUrl {
@@ -1008,28 +1047,41 @@ static long long CBListMaxAge(NSArray *channels) {
     });
 }
 
-+ (NSArray *)programmesFor:(NSDictionary *)channel {
+/// Lịch thô của kênh trong đệm: [[giờ bắt đầu, giờ kết thúc, tên]…] theo giờ bắt đầu
++ (NSArray *)rawProgrammesFor:(NSDictionary *)channel {
     NSDictionary *prog = CBDict([self guide], @"prog");
-    if (!prog.count) return @[];
+    if (!prog.count) return nil;
     NSArray *raw = CBStr(channel, @"id") ? CBArr(prog, CBStr(channel, @"id")) : nil;
     if (!raw && CBStr(channel, @"k")) raw = CBArr(prog, [@"n:" stringByAppendingString:CBStr(channel, @"k")]);
+    return raw;
+}
+
+static BOOL CBIsProg(id p) {
+    return CBIsArr(p) && [p count] >= 3 && [p[0] isKindOfClass:[NSNumber class]] && [p[1] isKindOfClass:[NSNumber class]];
+}
+
+static NSDictionary *CBProgDict(NSArray *p) {
+    return @{@"s": p[0], @"e": p[1], @"t": p[2]};
+}
+
++ (NSArray *)programmesFor:(NSDictionary *)channel {
+    NSArray *raw = [self rawProgrammesFor:channel];
     NSMutableArray *out = [NSMutableArray arrayWithCapacity:raw.count];
-    for (id p in raw) {
-        if (CBIsArr(p) && [p count] >= 3) [out addObject:@{@"s": p[0], @"e": p[1], @"t": p[2]}];
-    }
+    for (id p in raw) if (CBIsProg(p)) [out addObject:CBProgDict(p)];
     return out;
 }
 
+// Ô kênh hỏi hai hàm này mỗi lần hiện lên khi cuộn: dò thẳng lịch thô, chỉ dựng từ điển cho mục tìm thấy
 + (NSDictionary *)nowFor:(NSDictionary *)channel at:(NSTimeInterval)now {
-    for (NSDictionary *p in [self programmesFor:channel]) {
-        if (CBNum(p, @"s", 0) <= now && now < CBNum(p, @"e", 0)) return p;
+    for (id p in [self rawProgrammesFor:channel]) {
+        if (CBIsProg(p) && [p[0] doubleValue] <= now && now < [p[1] doubleValue]) return CBProgDict(p);
     }
     return nil;
 }
 
 + (NSDictionary *)nextFor:(NSDictionary *)channel at:(NSTimeInterval)now {
-    for (NSDictionary *p in [self programmesFor:channel]) {
-        if (CBNum(p, @"s", 0) > now) return p;
+    for (id p in [self rawProgrammesFor:channel]) {
+        if (CBIsProg(p) && [p[0] doubleValue] > now) return CBProgDict(p);
     }
     return nil;
 }
@@ -1064,7 +1116,7 @@ static long long CBListMaxAge(NSArray *channels) {
 #pragma mark - Yêu thích / vừa xem / lỗi
 
 + (NSArray *)favoriteKeys {
-    id v = [CBPrefs get:[CBPrefs k:@"iptv_favs"]];
+    id v = CBTVPrefGet([CBPrefs k:@"iptv_favs"]);
     return CBIsArr(v) ? v : @[];
 }
 
@@ -1078,11 +1130,11 @@ static long long CBListMaxAge(NSArray *channels) {
     NSMutableArray *f = [[self favoriteKeys] mutableCopy];
     [f removeObject:k];
     if (on) [f addObject:k];
-    [CBPrefs set:[CBPrefs k:@"iptv_favs"] value:f];
+    CBTVPrefSet([CBPrefs k:@"iptv_favs"], f);
 }
 
 + (NSArray *)recent {
-    id v = [CBPrefs get:[CBPrefs k:@"iptv_recent"]];
+    id v = CBTVPrefGet([CBPrefs k:@"iptv_recent"]);
     return CBIsArr(v) ? v : @[];
 }
 
@@ -1097,7 +1149,7 @@ static long long CBListMaxAge(NSArray *channels) {
     for (NSDictionary *x in [self recent]) {
         if (![CBStr(x, @"k") isEqualToString:k] && r.count < 12) [r addObject:x];
     }
-    [CBPrefs set:[CBPrefs k:@"iptv_recent"] value:r];
+    CBTVPrefSet([CBPrefs k:@"iptv_recent"], r);
 }
 
 + (NSDictionary *)channelForKey:(NSString *)key {
@@ -1106,7 +1158,7 @@ static long long CBListMaxAge(NSArray *channels) {
 }
 
 + (NSDictionary *)badMap {
-    id v = [CBPrefs get:@"iptv_bad"];
+    id v = CBTVPrefGet(@"iptv_bad");
     if (!CBIsDict(v)) return @{};
     // Bản trước chưa phát được FLV / TS liền và đánh dấu hỏng cả nguồn — giờ lõi đổi FLV (0.5.3) và TS liền (0.5.5) sang HLS: bỏ
     // các dấu đó
@@ -1118,7 +1170,7 @@ static long long CBListMaxAge(NSArray *channels) {
         }
     }
     if (m) {
-        [CBPrefs set:@"iptv_bad" value:m];
+        CBTVPrefSet(@"iptv_bad", m);
         return m;
     }
     return v;
@@ -1133,17 +1185,17 @@ static long long CBListMaxAge(NSArray *channels) {
     NSMutableDictionary *m = [[self badMap] mutableCopy];
     if (m.count > 500) [m removeAllObjects];
     m[url] = reason ?: @"Không phát được";
-    [CBPrefs set:@"iptv_bad" value:m];
+    CBTVPrefSet(@"iptv_bad", m);
 }
 
 + (void)clearBad {
-    [CBPrefs remove:@"iptv_bad"];
+    CBTVPrefSet(@"iptv_bad", nil);
 }
 
 + (void)clearBadFor:(NSDictionary *)channel {
     NSMutableDictionary *m = [[self badMap] mutableCopy];
     for (NSString *u in CBArr(channel, @"urls") ?: @[]) [m removeObjectForKey:u];
-    [CBPrefs set:@"iptv_bad" value:m];
+    CBTVPrefSet(@"iptv_bad", m);
 }
 
 + (NSString *)channelBadReason:(NSDictionary *)channel {
@@ -1158,21 +1210,21 @@ static long long CBListMaxAge(NSArray *channels) {
 
 /// Chỉ kênh mà mọi nguồn đều đã ghi «máy không giải mã được» (H.265, khổ quá lớn) — lỗi mạng thoáng qua không ghi
 + (BOOL)hideBad {
-    id v = [CBPrefs get:@"iptv_hide_bad"];
+    id v = CBTVPrefGet(@"iptv_hide_bad");
     return [v respondsToSelector:@selector(boolValue)] ? [v boolValue] : YES;
 }
 
 + (void)setHideBad:(BOOL)on {
-    [CBPrefs set:@"iptv_hide_bad" value:@(on)];
+    CBTVPrefSet(@"iptv_hide_bad", @(on));
 }
 
 + (BOOL)autoSource {
-    id v = [CBPrefs get:@"iptv_auto_source"];
+    id v = CBTVPrefGet(@"iptv_auto_source");
     return [v respondsToSelector:@selector(boolValue)] ? [v boolValue] : YES;
 }
 
 + (void)setAutoSource:(BOOL)on {
-    [CBPrefs set:@"iptv_auto_source" value:@(on)];
+    CBTVPrefSet(@"iptv_auto_source", @(on));
 }
 
 #pragma mark - Phát / tiện ích
@@ -1301,7 +1353,7 @@ static long long CBListMaxAge(NSArray *channels) {
 + (UILocalNotification *)kickReminderFor:(NSDictionary *)c {
     NSString *k = CBStr(c, @"k");
     if (!k) return nil;
-    for (UILocalNotification *n in [UIApplication sharedApplication].scheduledLocalNotifications) {
+    for (UILocalNotification *n in CBScheduledNotes()) {
         if ([n.userInfo[@"iptv"] isEqualToString:k] && n.userInfo[@"kick"]) return n;
     }
     return nil;
@@ -1312,9 +1364,11 @@ static long long CBListMaxAge(NSArray *channels) {
 }
 
 + (BOOL)toggleKickReminder:(NSDictionary *)c {
+    gKickNotes = nil;   // đọc mới (đệm ngắn của CBScheduledNotes)
     UILocalNotification *old = [self kickReminderFor:c];
     if (old) {
         [[UIApplication sharedApplication] cancelLocalNotification:old];
+        gKickNotes = nil;
         CBLog(@"Truyền hình: bỏ nhắc %@", CBStr(c, @"n"));
         return NO;
     }
@@ -1328,6 +1382,7 @@ static long long CBListMaxAge(NSArray *channels) {
     n.soundName = UILocalNotificationDefaultSoundName;
     n.userInfo = @{@"iptv": CBStr(c, @"k"), @"kick": @(kick), @"title": @"Bóng lăn"};
     [[UIApplication sharedApplication] scheduleLocalNotification:n];
+    gKickNotes = nil;
     CBLog(@"Truyền hình: nhắc lúc bóng lăn %@ (%@)", CBStr(c, @"n"), [self clock:kick]);
     return YES;
 }

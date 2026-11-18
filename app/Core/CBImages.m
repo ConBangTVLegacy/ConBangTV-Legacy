@@ -123,9 +123,85 @@ static dispatch_queue_t CBDecodeQueue(void) {
     return lanes[(next++) % count];  // chỉ gọi trên luồng chính
 }
 
-/// Giải mã ảnh thu nhỏ: cạnh dài tối đa maxPx điểm ảnh (không giải mã cả ảnh 1000 px vào RAM)
-static UIImage *CBDecode(NSData *data, CGFloat maxPx) {
-    if (CBIsWebP(data)) return CBDecodeWebP(data, maxPx);
+/// Khổ ảnh muốn có: maxPx = cạnh dài tối đa (giữ tỉ lệ); hoặc fill (w × h điểm ảnh) = cắt kiểu Aspect Fill đúng khổ ô, bo góc
+/// radius điểm ảnh ngay trong ảnh
+typedef struct {
+    CGFloat maxPx;
+    CGSize fill;
+    CGFloat radius;
+} CBImageSpec;
+
+static BOOL CBSpecFill(CBImageSpec s) {
+    return s.fill.width >= 1 && s.fill.height >= 1;
+}
+
+/// Khổ gốc của ảnh (đọc phần đầu tệp, chưa giải mã)
+static CGSize CBSourceSize(NSData *data) {
+    if (CBIsWebP(data)) {
+        WebPBitstreamFeatures f;
+        return WebPGetFeatures(data.bytes, data.length, &f) == VP8_STATUS_OK ? CGSizeMake(f.width, f.height) : CGSizeZero;
+    }
+    CGImageSourceRef src = CGImageSourceCreateWithData((__bridge CFDataRef)data, NULL);
+    if (!src) return CGSizeZero;
+    NSDictionary *p = CFBridgingRelease(CGImageSourceCopyPropertiesAtIndex(src, 0, NULL));
+    CFRelease(src);
+    return CGSizeMake([p[(id)kCGImagePropertyPixelWidth] doubleValue], [p[(id)kCGImagePropertyPixelHeight] doubleValue]);
+}
+
+static void CBAddRoundedRect(CGContextRef c, CGRect r, CGFloat rad) {
+    CGFloat x0 = CGRectGetMinX(r), x1 = CGRectGetMaxX(r), y0 = CGRectGetMinY(r), y1 = CGRectGetMaxY(r);
+    CGContextMoveToPoint(c, x0 + rad, y0);
+    CGContextAddArcToPoint(c, x1, y0, x1, y1, rad);
+    CGContextAddArcToPoint(c, x1, y1, x0, y1, rad);
+    CGContextAddArcToPoint(c, x0, y1, x0, y0, rad);
+    CGContextAddArcToPoint(c, x0, y0, x1, y0, rad);
+    CGContextClosePath(c);
+}
+
+/// Vẽ ảnh đã giải mã ra bitmap cuối cùng (luồng nền — luồng chính khỏi giải nén / co giãn / cắt lúc cuộn): giữ khổ, hoặc cắt kiểu
+/// Aspect Fill đúng khổ ô + bo góc (góc trong suốt — ô khỏi cần cornerRadius + clipsToBounds, thứ bắt GPU vẽ ngoài màn hình mỗi khung)
+static UIImage *CBRender(CGImageRef img, CBImageSpec spec) {
+    size_t sw = CGImageGetWidth(img), sh = CGImageGetHeight(img);
+    BOOL fill = CBSpecFill(spec);
+    size_t w = fill ? (size_t)spec.fill.width : sw, h = fill ? (size_t)spec.fill.height : sh;
+    if (!sw || !sh || !w || !h) return nil;
+    CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
+    CGBitmapInfo info = fill && spec.radius > 0 ? (kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little)
+                                                : (kCGImageAlphaNoneSkipFirst | kCGBitmapByteOrder32Little);
+    CGContextRef ctx = CGBitmapContextCreate(NULL, w, h, 8, 0, cs, info);
+    CGColorSpaceRelease(cs);
+    if (!ctx) return nil;
+    CGRect dst = CGRectMake(0, 0, w, h);
+    if (fill) {
+        CGContextSetInterpolationQuality(ctx, kCGInterpolationMedium);
+        if (spec.radius > 0) {
+            CBAddRoundedRect(ctx, dst, MIN(spec.radius, MIN(w, h) / 2.0));
+            CGContextClip(ctx);
+        }
+        CGFloat k = MAX((CGFloat)w / sw, (CGFloat)h / sh);
+        dst = CGRectMake(round((w - sw * k) / 2), round((h - sh * k) / 2), round(sw * k), round(sh * k));
+    }
+    CGContextDrawImage(ctx, dst, img);
+    CGImageRef drawn = CGBitmapContextCreateImage(ctx);
+    CGContextRelease(ctx);
+    UIImage *out = [UIImage imageWithCGImage:drawn scale:[UIScreen mainScreen].scale orientation:UIImageOrientationUp];
+    CGImageRelease(drawn);
+    return out;
+}
+
+/// Giải mã ảnh thu nhỏ (không giải mã cả ảnh 1000 px vào RAM): cạnh dài tối đa spec.maxPx, hoặc vừa đủ phủ khổ spec.fill
+static UIImage *CBDecode(NSData *data, CBImageSpec spec) {
+    CGFloat maxPx = spec.maxPx;
+    if (CBSpecFill(spec)) {
+        CGSize s = CBSourceSize(data);
+        if (s.width < 1 || s.height < 1) return nil;
+        CGFloat k = MIN(1, MAX(spec.fill.width / s.width, spec.fill.height / s.height));
+        maxPx = ceil(MAX(s.width, s.height) * k);
+    }
+    if (CBIsWebP(data)) {
+        UIImage *img = CBDecodeWebP(data, maxPx);
+        return img && CBSpecFill(spec) ? CBRender(img.CGImage, spec) : img;
+    }
     CGImageSourceRef src = CGImageSourceCreateWithData((__bridge CFDataRef)data, NULL);
     if (!src) return nil;
     NSDictionary *opts = @{(id)kCGImageSourceCreateThumbnailFromImageAlways: @YES,
@@ -134,30 +210,27 @@ static UIImage *CBDecode(NSData *data, CGFloat maxPx) {
     CGImageRef img = CGImageSourceCreateThumbnailAtIndex(src, 0, (__bridge CFDictionaryRef)opts);
     CFRelease(src);
     if (!img) return nil;
-    // Vẽ lại một lần trên luồng nền để luồng chính khỏi giải nén lúc cuộn
-    size_t w = CGImageGetWidth(img), h = CGImageGetHeight(img);
-    CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
-    CGContextRef ctx = CGBitmapContextCreate(NULL, w, h, 8, 0, cs, kCGImageAlphaNoneSkipFirst | kCGBitmapByteOrder32Little);
-    CGColorSpaceRelease(cs);
-    UIImage *out = nil;
-    if (ctx) {
-        CGContextDrawImage(ctx, CGRectMake(0, 0, w, h), img);
-        CGImageRef drawn = CGBitmapContextCreateImage(ctx);
-        CGContextRelease(ctx);
-        out = [UIImage imageWithCGImage:drawn scale:[UIScreen mainScreen].scale orientation:UIImageOrientationUp];
-        CGImageRelease(drawn);
-    }
+    UIImage *out = CBRender(img, spec);
     CGImageRelease(img);
     return out;
 }
 
 @interface CBImageJob : NSObject <NSURLConnectionDataDelegate>
 @property (nonatomic, copy) NSString *url;
-@property (nonatomic) CGFloat maxPx;
+@property (nonatomic) CBImageSpec spec;
 @property (nonatomic, strong) NSMutableData *data;
 @property (nonatomic, strong) NSURLConnection *conn;
 @property (nonatomic) NSInteger status;
 @property (nonatomic) BOOL viaCore;  // đang / đã tải bằng lõi (không thử lại lần nữa)
+@end
+
+@implementation CBCoverView
+
+- (void)setImage:(UIImage *)image {
+    [super setImage:image];
+    self.placeholder.hidden = image != nil;
+}
+
 @end
 
 @implementation CBImages
@@ -209,17 +282,24 @@ static UIImage *CBDecode(NSData *data, CGFloat maxPx) {
         [challenge.sender performDefaultHandlingForAuthenticationChallenge:challenge];
         return;
     }
-    SecTrustRef trust = space.serverTrust;
-    SecTrustSetAnchorCertificates(trust, (__bridge CFArrayRef)[self anchors]);
-    SecTrustSetAnchorCertificatesOnly(trust, false);  // vẫn tin gốc của máy
-    SecTrustResultType result = kSecTrustResultInvalid;
-    if (SecTrustEvaluate(trust, &result) == errSecSuccess &&
-        (result == kSecTrustResultUnspecified || result == kSecTrustResultProceed)) {
-        [challenge.sender useCredential:[NSURLCredential credentialForTrust:trust] forAuthenticationChallenge:challenge];
-    } else {
-        CBLog(@"Chứng chỉ %@ không hợp lệ (%d)", space.host, (int)result);
-        [challenge.sender cancelAuthenticationChallenge:challenge];
-    }
+    // Kiểm trên luồng nền: SecTrustEvaluate chờ tiến trình trustd của iOS (iOS 8 iPad mini 1: ~140 ms mỗi lần bắt tay — ảnh bìa
+    // đang tải là chạm / cuộn khựng); lần đầu còn nạp 118 chứng chỉ gốc. Kết nối chờ trả lời, trả lời lại trên luồng chính.
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        SecTrustRef trust = space.serverTrust;
+        SecTrustSetAnchorCertificates(trust, (__bridge CFArrayRef)[self anchors]);
+        SecTrustSetAnchorCertificatesOnly(trust, false);  // vẫn tin gốc của máy
+        SecTrustResultType result = kSecTrustResultInvalid;
+        BOOL ok = SecTrustEvaluate(trust, &result) == errSecSuccess &&
+                  (result == kSecTrustResultUnspecified || result == kSecTrustResultProceed);
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (ok) {
+                [challenge.sender useCredential:[NSURLCredential credentialForTrust:trust] forAuthenticationChallenge:challenge];
+            } else {
+                CBLog(@"Chứng chỉ %@ không hợp lệ (%d)", space.host, (int)result);
+                [challenge.sender cancelAuthenticationChallenge:challenge];
+            }
+        });
+    });
 }
 
 + (NSString *)debugStatus {
@@ -261,11 +341,16 @@ static UIImage *CBDecode(NSData *data, CGFloat maxPx) {
     }
 }
 
-+ (NSString *)memKey:(NSString *)url px:(CGFloat)px {
-    return [NSString stringWithFormat:@"%.0f|%@", px, url];
++ (NSString *)memKey:(NSString *)url spec:(CBImageSpec)s {
+    if (CBSpecFill(s)) return [NSString stringWithFormat:@"%.0fx%.0f r%.0f %@", s.fill.width, s.fill.height, s.radius, url];
+    return [NSString stringWithFormat:@"%.0f|%@", s.maxPx, url];
 }
 
 + (void)load:(NSString *)url size:(CGSize)size into:(UIImageView *)iv {
+    [self load:url size:size radius:-1 into:iv];
+}
+
++ (void)load:(NSString *)url size:(CGSize)size radius:(CGFloat)radius into:(UIImageView *)iv {
     [self setup];
     // AVIF (vd ảnh bìa yanhh3d — WordPress sinh kèm bản .webp cùng chỗ): iOS 6 không giải mã được AVIF → lấy bản WebP
     NSRange q = [url rangeOfString:@"?"];
@@ -279,8 +364,13 @@ static UIImage *CBDecode(NSData *data, CGFloat maxPx) {
     objc_setAssociatedObject(iv, kUrlKey, url, OBJC_ASSOCIATION_COPY_NONATOMIC);
     iv.image = nil;
     if (!url.length) return;
-    CGFloat maxPx = MAX(size.width, size.height) * [UIScreen mainScreen].scale;
-    UIImage *hit = [gMemory objectForKey:[self memKey:url px:maxPx]];
+    CGFloat scale = [UIScreen mainScreen].scale;
+    CBImageSpec spec = {MAX(size.width, size.height) * scale, CGSizeZero, 0};
+    if (radius >= 0 && size.width >= 1 && size.height >= 1) {
+        spec.fill = CGSizeMake(round(size.width * scale), round(size.height * scale));
+        spec.radius = radius * scale;
+    }
+    UIImage *hit = [gMemory objectForKey:[self memKey:url spec:spec]];
     if (hit) {
         iv.image = hit;
         return;
@@ -301,17 +391,17 @@ static UIImage *CBDecode(NSData *data, CGFloat maxPx) {
         if (!still || ![objc_getAssociatedObject(still, kUrlKey) isEqualToString:url]) return;
         still = nil;
         NSData *data = [NSData dataWithContentsOfFile:file];
-        UIImage *img = data ? CBDecode(data, maxPx) : nil;
+        UIImage *img = data ? CBDecode(data, spec) : nil;
         dispatch_async(dispatch_get_main_queue(), ^{
             if (img) {
-                [gMemory setObject:img forKey:[self memKey:url px:maxPx] cost:(NSUInteger)(img.size.width * img.size.height * 4 *
+                [gMemory setObject:img forKey:[self memKey:url spec:spec] cost:(NSUInteger)(img.size.width * img.size.height * 4 *
                                                                                          img.scale * img.scale)];
                 // Ảnh có sẵn trên máy: hiện ngay, không mờ dần (mờ dần chỉ cho ảnh vừa tải về)
                 UIImageView *v = weakIv;
                 if (v && [objc_getAssociatedObject(v, kUrlKey) isEqualToString:url]) v.image = img;
                 return;
             }
-            [self enqueue:url maxPx:maxPx file:file deliver:deliver view:weakIv];
+            [self enqueue:url spec:spec file:file deliver:deliver view:weakIv];
         });
     });
 }
@@ -324,7 +414,7 @@ static UIImage *CBDecode(NSData *data, CGFloat maxPx) {
 
 static NSMutableDictionary *gWaiters;  // url → mảng khối deliver
 
-+ (void)enqueue:(NSString *)url maxPx:(CGFloat)maxPx file:(NSString *)file deliver:(void (^)(UIImage *))deliver
++ (void)enqueue:(NSString *)url spec:(CBImageSpec)spec file:(NSString *)file deliver:(void (^)(UIImage *))deliver
            view:(UIImageView *)view {
     if (!gWaiters) gWaiters = [NSMutableDictionary dictionary];
     if (!gWants) gWants = [NSMutableDictionary dictionary];
@@ -340,7 +430,7 @@ static NSMutableDictionary *gWaiters;  // url → mảng khối deliver
     gWaiters[url] = [NSMutableArray arrayWithObject:[deliver copy]];
     CBImageJob *job = [[CBImageJob alloc] init];
     job.url = url;
-    job.maxPx = maxPx;
+    job.spec = spec;
     [gQueue addObject:job];
     [self pump];
 }
@@ -441,7 +531,7 @@ static NSMutableDictionary *gWaiters;  // url → mảng khối deliver
     NSArray *waiters = gWaiters[job.url] ?: @[];
     [gWaiters removeObjectForKey:job.url];
     NSString *file = [gDiskDir stringByAppendingPathComponent:CBMd5(job.url)];
-    CGFloat maxPx = job.maxPx;
+    CBImageSpec spec = job.spec;
     NSString *url = job.url;
     if (!data.length) {
         gFailed++;
@@ -452,7 +542,7 @@ static NSMutableDictionary *gWaiters;  // url → mảng khối deliver
         dispatch_async(CBDecodeQueue(), ^{ [data writeToFile:file atomically:YES]; });
     } else if (data.length) {
         dispatch_async(CBDecodeQueue(), ^{
-            UIImage *img = CBDecode(data, maxPx);
+            UIImage *img = CBDecode(data, spec);
             if (img) [data writeToFile:file atomically:YES];
             if (!img) {
                 const unsigned char *b = data.bytes;
@@ -462,7 +552,7 @@ static NSMutableDictionary *gWaiters;  // url → mảng khối deliver
             }
             dispatch_async(dispatch_get_main_queue(), ^{
                 if (img) {
-                    [gMemory setObject:img forKey:[self memKey:url px:maxPx]
+                    [gMemory setObject:img forKey:[self memKey:url spec:spec]
                                   cost:(NSUInteger)(img.size.width * img.size.height * 4 * img.scale * img.scale)];
                 }
                 for (void (^d)(UIImage *) in waiters) d(img);

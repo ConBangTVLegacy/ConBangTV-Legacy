@@ -87,10 +87,8 @@
         b.titleLabel.minimumScaleFactor = 0.7;
         [b setTitle:CBStr(items[i], @"title") forState:UIControlStateNormal];
         [b setTitleColor:[CBTheme text] forState:UIControlStateNormal];
-        [b setBackgroundImage:[CBTheme imageWithColor:[CBTheme surface]] forState:UIControlStateNormal];
-        [b setBackgroundImage:[CBTheme imageWithColor:[CBTheme surface2]] forState:UIControlStateHighlighted];
-        b.layer.cornerRadius = 10;
-        b.clipsToBounds = YES;
+        [b setBackgroundImage:[CBTheme imageWithColor:[CBTheme surface] radius:10] forState:UIControlStateNormal];
+        [b setBackgroundImage:[CBTheme imageWithColor:[CBTheme surface2] radius:10] forState:UIControlStateHighlighted];
         [b addTarget:self action:@selector(tapped:) forControlEvents:UIControlEventTouchUpInside];
         [_scroll addSubview:b];
         [_buttons addObject:b];

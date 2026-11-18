@@ -75,7 +75,21 @@ static UITouch *gTouch;
     return t;
 }
 
+/// Chạm giả chỉ dựng được kiểu GSEvent (iOS 5 / 6). iOS 7+ đọc IOHIDEvent của sự kiện — gửi sự kiện thiếu nó thì UIKit văng
+/// (iPad mini 1 iOS 8, 18/11/2026) → không gửi
++ (BOOL)supported {
+    static BOOL ok, logged;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ ok = [[UIDevice currentDevice].systemVersion floatValue] < 7; });
+    if (!ok && !logged) {
+        logged = YES;
+        CBLog(@"[chạm] chạm giả chưa làm cho iOS 7+ (cần IOHIDEvent) — bỏ qua lệnh");
+    }
+    return ok;
+}
+
 + (void)send:(UITouch *)t phase:(UITouchPhase)phase at:(CGPoint)p {
+    if (![self supported]) return;
     cbSetTime(t, @"setTimestamp:");
     cbSetInt(t, @"setPhase:", phase);
     if (phase != UITouchPhaseBegan) cbSetPoint(t, p, NO);

@@ -56,7 +56,12 @@ Cổng phát nội bộ 127.0.0.1 (media_proxy: bỏ quảng cáo, cắt PNG ng�
 Bản thử (không `FINALPACKAGE=1`) có `Debug/CBDebug.m`: đọc lệnh từ `Documents/ConBangTV-cmd.txt` (`shot`, `film`, `play`, `search`,
 `settings`, `profiles`, `sync`, `syncpair`, `pick`, `scroll`, `wait`, `status`, `core`, `pref`, `notifyadd` / `notifycheck` /
 `notifylist` / `notifydel` — «Báo khi xem được», `touch <x> <y>` / `hold <x> <y> [giây]` / `drag <x1> <y1> <x2> <y2> [giây]` — chạm / nhấn giữ / vuốt giả đi qua đường xử lý chạm
-thật của UIKit (`Debug/CBTouch.m`, toạ độ là điểm trong cửa sổ, hệ dọc), `orient <1–4>` giả xoay máy, `memwarn` giả thiếu bộ nhớ, `pull` giả kéo trang chủ
+thật của UIKit (`Debug/CBTouch.m`, toạ độ là điểm trong cửa sổ, hệ dọc), `fps <điểm/giây> <giây> [h] [p]` cuộn đều danh sách
+của màn đang xem (h = hàng ngang) rồi ghi số khung máy vẽ ra thật (bộ đếm của render server — `Debug/CBFPS.m`), nhịp luồng chính,
+khung chậm nhất; p = lấy mẫu ngăn xếp luồng chính, ghi các hàm tốn thời gian nhất; `flat` bỏ mọi bo góc trên màn để thử A/B,
+bản thử luôn ghi độ trễ chạm và luồng chính nghẽn (`Debug/CBLatency.m`: «[chạm] chạm xuống → ô sáng lên … ms», «nhấc tay → màn X
+hiện xong … ms, … khung/s», «[nghẽn] luồng chính bận liền … ms» kèm ngăn xếp lúc nghẽn — đo được cả khi anh dùng thật),
+`orient <1–4>` giả xoay máy, `memwarn` giả thiếu bộ nhớ, `pull` giả kéo trang chủ
 để tải lại, `rawplay` / `rawmedia <url>` phát thử có khung hình + `rawstop`, `web <url> [referer]` / `webframe <url> <trang gốc>`
 mở trang trong UIWebView (kèm trang gốc — trang nhúng chặn yêu cầu không có), `wkinfo` / `js <biểu thức>` xem WebKit đang nạp
 và tính năng / thẻ `<video>` của trang, `browserpage` / `venetium` trang mà nút «Mở trong Venetium» sẽ mở / bấm nút đó; truyền
@@ -149,6 +154,26 @@ sử, vuốt ngang hàng phim, kéo xuống để tải lại, cuộn tự tải
 6 đã rẽ nhánh (`UIRefreshControl`, `UITableViewHeaderFooterView` — gắn yếu, không dùng trên iOS 5).
 
 ## Bẫy của iOS 6 đã gặp (và cách xử lý)
+
+- **Cuộn giật vì bo góc** (đo bằng lệnh `fps`, 18/11/2026): `layer.cornerRadius` + `clipsToBounds` bắt GPU vẽ lớp ngoài màn hình ở
+  mọi khung hình; iOS 5 tốn cả khi chỉ bo nền không cắt. iPad mini 1 iOS 8: trang chủ cuộn dọc 14 → 50 khung/s, hàng ngang 45 → 59;
+  iPad 1 iOS 5: trang chủ 6 → 48, hàng ngang 21 → 58, lưới kênh 10 → 22–34 (thêm bước dưới). Trong ô danh sách và trên video
+  **không dùng layer.cornerRadius**: ảnh bìa bo góc + cắt đúng khổ ô ngay lúc giải mã (`CBImages load:size:radius:into:`), nút /
+  thẻ / khung dùng ảnh bo góc kéo giãn (`CBTheme imageWithColor:radius:[border:width:]`), nhãn có nền dùng `CBRoundLabel` (vẽ
+  nền vào nội dung nhãn). `UIViewGroupOpacity` = NO (app dựng bằng SDK mới: iOS 7+ mặc định vẽ view có alpha < 1 ngoài màn
+  hình). Nhãn chờ dưới ảnh (`CBCoverView`) ẩn khi có ảnh.
+- **Ô kênh hỏi lõi mỗi lần hiện lên:** prefs của Truyền hình (danh sách đang chọn, kênh hỏng, yêu thích) mỗi lần đọc là một lượt
+  gọi lõi + JSON — một hàng ô mới ~ vài chục lượt, iPad 1 khựng ~0,5 s. CBIPTV đọc qua nhớ đệm 1 giây (`CBTVPrefGet`);
+  `scheduledLocalNotifications` (hỏi SpringBoard) cũng nhớ đệm.
+- **Chạm thấy chậm** (iPad mini 1 iOS 8, đo bằng `CBLatency` lúc anh dùng thật): chạm → app nhận 2–8 ms, ô sáng 20–50 ms — ổn;
+  nhấc tay → trang phim / trình phát hiện xong 640–740 ms vì luồng chính khựng 130–240 ms ngay đầu cú trượt. Đã sửa: kiểm chứng
+  chỉ TLS của ảnh (`SecTrustEvaluate` — iOS 8 gọi sang trustd, ~140 ms) chạy ở luồng nền; trang phim không dựng lại lần hai trong
+  viewWillAppear, `home.markSeen` không chờ, bản tải mới / hàng liên quan về giữa cú trượt thì áp sau viewDidAppear; trang chủ
+  quay về thì làm mới sau cú trượt, dải nút chỉ dựng lại khi chữ đổi, bảng chỉ nạp lại khi «Xem tiếp» / «Có tập mới» đổi;
+  `CBTheme heightOf:` nhớ kết quả đo chữ. iPad 1: quay về trang chủ 550–600 ms (31 khung/s) → 380 ms (54 khung/s).
+  Máy jailbreak có tinh chỉnh nạp vào mọi app (vd Eclipse — chế độ tối) thì vẽ chữ chậm thêm.
+- **Chạm giả trên iOS 7+:** `CBTouch` dựng sự kiện kiểu GSEvent (iOS 5 / 6); iOS 8 đọc IOHIDEvent → app văng — lệnh `touch` /
+  `hold` / `drag` tự bỏ qua trên iOS 7+.
 
 - **`UIAlertView.firstOtherButtonIndex` = -1** khi nút thêm bằng `addButtonWithTitle:` (CBAlert làm vậy) — tính nút theo nó thì
   lệch: 0.5.5 bấm «Nhập địa chỉ» lại ra hộp chọn tệp. Dùng `-[CBAlert otherIndex:]` (vị trí trong mảng `others`).

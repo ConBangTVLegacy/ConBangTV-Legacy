@@ -86,14 +86,23 @@ static void CBForceOrientation(UIInterfaceOrientation o) {
 
 @interface CBPlayerEpCell : CBCollectionViewCell
 @property (nonatomic, strong) UILabel *label;
+/// Ô tập đang xem có viền
+- (void)setCurrent:(BOOL)current;
 @end
 
-@implementation CBPlayerEpCell
+@implementation CBPlayerEpCell {
+    UIImageView *_bg;
+}
+- (void)setCurrent:(BOOL)current {
+    _bg.image = [CBTheme imageWithColor:[UIColor colorWithWhite:1 alpha:0.12] radius:6 border:current ? [CBTheme focus] : nil width:2];
+}
 - (instancetype)initWithFrame:(CGRect)frame {
     if ((self = [super initWithFrame:frame])) {
-        self.contentView.backgroundColor = [UIColor colorWithWhite:1 alpha:0.12];
-        self.contentView.layer.cornerRadius = 6;
-        self.contentView.layer.borderColor = [CBTheme focus].CGColor;
+        // Nền + viền bo góc là ảnh kéo giãn (không layer.cornerRadius — GPU vẽ ngoài màn hình mỗi khung, đè lên video)
+        _bg = [[UIImageView alloc] initWithFrame:self.contentView.bounds];
+        _bg.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+        [self.contentView addSubview:_bg];
+        [self setCurrent:NO];
         _label = [[UILabel alloc] initWithFrame:CGRectInset(self.contentView.bounds, 4, 0)];
         _label.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
         _label.backgroundColor = [UIColor clearColor];
@@ -300,16 +309,13 @@ static void CBForceOrientation(UIInterfaceOrientation o) {
     [_bottom addSubview:_timeLabel];
     [_bottom addSubview:_durLabel];
 
-    _subLabel = [[UILabel alloc] init];
-    _subLabel.backgroundColor = [UIColor colorWithWhite:0 alpha:0.45];
+    _subLabel = [CBTheme roundLabel:[UIColor colorWithWhite:0 alpha:0.45] radius:4];   // nền bo vẽ vào nhãn (không lớp bo góc đè lên video)
     _subLabel.textColor = [UIColor whiteColor];
     _subLabel.font = [CBTheme bold:[CBTheme isPad] ? 24 : 17];
     _subLabel.numberOfLines = 0;
     _subLabel.textAlignment = NSTextAlignmentCenter;
     _subLabel.shadowColor = [UIColor blackColor];
     _subLabel.shadowOffset = CGSizeMake(1, 1);
-    _subLabel.layer.cornerRadius = 4;
-    _subLabel.clipsToBounds = YES;
     _subLabel.hidden = YES;
     _subLabel.userInteractionEnabled = NO;
     [self.view addSubview:_subLabel];
@@ -333,11 +339,10 @@ static void CBForceOrientation(UIInterfaceOrientation o) {
     [_venetiumButton addTarget:self action:@selector(openInVenetium) forControlEvents:UIControlEventTouchUpInside];
     _venetiumButton.hidden = YES;
     [self.view addSubview:_venetiumButton];
-    _toast = [self overlayLabel:[CBTheme bold:22]];
+    _toast = [CBTheme roundLabel:shade radius:8];
+    _toast.textColor = [CBTheme text];
+    _toast.font = [CBTheme bold:22];
     _toast.textAlignment = NSTextAlignmentCenter;
-    _toast.backgroundColor = shade;
-    _toast.layer.cornerRadius = 8;
-    _toast.clipsToBounds = YES;
     _toast.alpha = 0;
     [self.view addSubview:_toast];
 
@@ -752,7 +757,7 @@ static void CBForceOrientation(UIInterfaceOrientation o) {
     BOOL watched = [[CBPrefs watchedEpisodes] containsObject:CBStr(ep, @"url") ?: @""];
     cell.label.text = CBStr(ep, @"title");
     cell.label.textColor = current ? [CBTheme focus] : (watched ? [UIColor colorWithWhite:1 alpha:0.45] : [UIColor whiteColor]);
-    cell.contentView.layer.borderWidth = current ? 2 : 0;
+    [cell setCurrent:current];
     return cell;
 }
 

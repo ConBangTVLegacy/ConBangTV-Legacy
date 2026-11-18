@@ -2,6 +2,8 @@
 
 #define CBRGB(h) [UIColor colorWithRed:(((h) >> 16) & 0xFF) / 255.0 green:(((h) >> 8) & 0xFF) / 255.0 blue:((h) & 0xFF) / 255.0 alpha:1]
 
+@class CBRoundLabel;
+
 /// Màu / chữ / nút chung — cùng bảng màu bản iPad (ios/ConBangTV/Sources/UI/Theme.swift)
 @interface CBTheme : NSObject
 + (UIColor *)bg;
@@ -20,6 +22,14 @@
 /// Giao diện iOS 6 theo màu tối của app (thanh điều hướng, nút, bảng)
 + (void)apply;
 + (UIImage *)imageWithColor:(UIColor *)color;
+/// Bo góc KHÔNG dùng layer.cornerRadius. cornerRadius + clipsToBounds bắt GPU vẽ lớp ngoài màn hình ở mọi khung hình (iPad mini 1
+/// iOS 8: trang chủ 14 khung/s); iOS 5 tốn cả khi chỉ bo nền không cắt (iPad 1: lưới kênh 11 → 30 khung/s khi bỏ bo góc). Dùng thay:
+///  • nút / khung / thẻ: ảnh bo góc kéo giãn được (setBackgroundImage, hoặc UIImageView làm nền) — ảnh dùng chung, nhớ đệm theo
+///    màu + bán kính (+ viền)
++ (UIImage *)imageWithColor:(UIColor *)color radius:(CGFloat)radius;
++ (UIImage *)imageWithColor:(UIColor *)color radius:(CGFloat)radius border:(UIColor *)border width:(CGFloat)width;
+///  • nhãn có màu nền: CBRoundLabel (dưới)
++ (CBRoundLabel *)roundLabel:(UIColor *)fill radius:(CGFloat)radius;
 /// Nút bo góc: primary = nền xanh của app, còn lại nền xám
 + (UIButton *)button:(NSString *)title primary:(BOOL)primary;
 /// Vòng tròn màu có chữ cái đầu tên người xem
@@ -40,3 +50,10 @@
 /// Dấu «phát» đặt trước chữ nút: iOS 6 «▶︎» (kèm ký tự chọn kiểu chữ U+FE0E); iOS 5 không hiểu U+FE0E (hiện ô vuông) và vẽ ▶
 /// thành emoji xanh → «►»
 NSString *CBPlayIcon(void);
+
+/// Nhãn có nền bo góc vẽ thẳng vào nội dung của nhãn (drawRect) — GPU chỉ dán một ảnh, không lớp bo góc nào (xem
+/// imageWithColor:radius:). Màu nền bo góc là fillColor; backgroundColor luôn trong suốt (gán gì cũng bỏ qua).
+@interface CBRoundLabel : UILabel
+@property (nonatomic) CGFloat radius;
+@property (nonatomic, strong) UIColor *fillColor;
+@end

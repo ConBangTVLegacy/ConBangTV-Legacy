@@ -57,10 +57,9 @@
     UIView *h = [[UIView alloc] initWithFrame:CGRectMake(0, 0, w, 128)];
     h.backgroundColor = [CBTheme bg];
     h.autoresizingMask = UIViewAutoresizingFlexibleWidth;
-    UIView *logoBox = [[UIView alloc] initWithFrame:CGRectMake(14, 12, 84, 56)];
-    logoBox.backgroundColor = CBRGB(0x262B32);
-    logoBox.layer.cornerRadius = 8;
-    logoBox.clipsToBounds = YES;
+    // Nền bo góc là ảnh kéo giãn (không layer.cornerRadius — bảng lịch cuộn bên dưới, xem CBTheme imageWithColor:radius:)
+    UIImageView *logoBox = [[UIImageView alloc] initWithImage:[CBTheme imageWithColor:CBRGB(0x262B32) radius:8]];
+    logoBox.frame = CGRectMake(14, 12, 84, 56);
     UILabel *abbr = [[UILabel alloc] initWithFrame:logoBox.bounds];
     abbr.backgroundColor = [UIColor clearColor];
     abbr.textColor = [CBTheme text];
@@ -69,7 +68,8 @@
     abbr.adjustsFontSizeToFitWidth = YES;
     abbr.text = CBStr(_channel, @"n");
     [logoBox addSubview:abbr];
-    UIImageView *logo = [[UIImageView alloc] initWithFrame:CGRectInset(logoBox.bounds, 4, 4)];
+    CBCoverView *logo = [[CBCoverView alloc] initWithFrame:CGRectInset(logoBox.bounds, 4, 4)];
+    logo.placeholder = abbr;   // có logo thì ẩn chữ viết tắt (khỏi lòi ra sau phần trong suốt của logo)
     logo.contentMode = UIViewContentModeScaleAspectFit;
     [logoBox addSubview:logo];
     if (CBStr(_channel, @"logo")) [CBImages load:CBStr(_channel, @"logo") size:logo.bounds.size into:logo];

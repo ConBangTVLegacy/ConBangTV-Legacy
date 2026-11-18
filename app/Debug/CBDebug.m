@@ -17,6 +17,8 @@
 #import "CBSettingsViewController.h"
 #import "CBSyncViewController.h"
 #import "CBTouch.h"
+#import "CBFPS.h"
+#import "CBLatency.h"
 #import "CBJSON.h"
 #import "CBIPTV.h"
 #import "CBListImport.h"
@@ -38,6 +40,7 @@
 
 + (void)start {
     CBLog(@"[gỡ lỗi] nhận lệnh qua %@", [self cmdPath]);
+    [CBLatency start];
     [NSTimer scheduledTimerWithTimeInterval:0.7 target:self selector:@selector(poll) userInfo:nil repeats:YES];
 }
 
@@ -80,6 +83,21 @@
     if ([v isKindOfClass:[UIScrollView class]] && ![v isKindOfClass:[UITextView class]]) return (UIScrollView *)v;
     for (UIView *s in v.subviews) {
         UIScrollView *f = [self scrollIn:s];
+        if (f) return f;
+    }
+    return nil;
+}
+
+/// Danh sách cuộn ngang (hàng phim ở trang chủ…) / dọc (bảng trang chủ, lưới kênh…) đầu tiên đang hiện
++ (UIScrollView *)scrollIn:(UIView *)v horizontal:(BOOL)h {
+    if ([v isKindOfClass:[UIScrollView class]] && !v.hidden && v.window) {
+        UIScrollView *s = (UIScrollView *)v;
+        CGRect onScreen = [s convertRect:s.bounds toView:nil];
+        BOOL more = h ? s.contentSize.width > s.bounds.size.width + 50 : s.contentSize.height > s.bounds.size.height + 50;
+        if (more && CGRectIntersectsRect(onScreen, s.window.bounds)) return s;
+    }
+    for (UIView *s in v.subviews) {
+        UIScrollView *f = [self scrollIn:s horizontal:h];
         if (f) return f;
     }
     return nil;
@@ -578,6 +596,35 @@
         CGFloat y = [arg doubleValue] < 0 ? maxY : MIN(maxY, [arg doubleValue]);
         [sv setContentOffset:CGPointMake(sv.contentOffset.x, y) animated:NO];
         CBLog(@"[gỡ lỗi] cuộn %@ tới %.0f / %.0f", NSStringFromClass([sv class]), y, maxY);
+    } else if ([verb isEqualToString:@"fps"]) {
+        // fps <điểm/giây> <giây> [h] [p] — cuộn đều danh sách của màn đang thấy (h = hàng ngang đầu tiên đang thấy) và đo độ mượt;
+        // p = lấy mẫu ngăn xếp luồng chính, ghi các hàm tốn thời gian nhất
+        UIViewController *top = [self top];
+        if ([top isKindOfClass:[UINavigationController class]]) top = [(UINavigationController *)top topViewController];
+        NSArray *flags = args.count > 2 ? [args subarrayWithRange:NSMakeRange(2, args.count - 2)] : @[];
+        BOOL h = [flags containsObject:@"h"], p = [flags containsObject:@"p"];
+        UIScrollView *sv = [self scrollIn:top.view horizontal:h];
+        double speed = [args[0] doubleValue], secs = args.count > 1 ? [args[1] doubleValue] : 0;
+        [CBFPS scroll:sv speed:speed > 0 ? speed : 1500 seconds:secs > 0 ? secs : 5 horizontal:h profile:p
+                label:[NSString stringWithFormat:@"%@ › %@ %@", NSStringFromClass([top class]), NSStringFromClass([sv class]),
+                                                 h ? @"ngang" : @"dọc"]];
+    } else if ([verb isEqualToString:@"flat"]) {
+        // flat — bỏ mọi bo góc (cornerRadius) trên màn đang thấy, kể cả ô đang nằm kho chờ: thử A/B xem bo góc tốn bao nhiêu
+        UIViewController *top = [self top];
+        if ([top isKindOfClass:[UINavigationController class]]) top = [(UINavigationController *)top topViewController];
+        __block NSUInteger n = 0;
+        __block void (^walk)(UIView *) = nil;
+        void (^w)(UIView *) = ^(UIView *v) {
+            if (v.layer.cornerRadius > 0) {
+                v.layer.cornerRadius = 0;
+                n++;
+            }
+            for (UIView *s in v.subviews) walk(s);
+        };
+        walk = w;
+        walk(top.view);
+        walk = nil;
+        CBLog(@"[gỡ lỗi] bỏ bo góc của %lu lớp", (unsigned long)n);
     } else if ([verb isEqualToString:@"update"]) {
         [CBUpdate checkManual];  // như chạm «Phiên bản» trong Cài đặt
     } else if ([verb isEqualToString:@"sheet"]) {
@@ -739,8 +786,17 @@ static AVPlayerLayer *gRawLayer;
     [[NSFileManager defaultManager] createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:NULL];
     NSString *path = [dir stringByAppendingPathComponent:[name stringByAppendingPathExtension:@"png"]];
     UIImage *img = nil;
+    UIWindow *key = [UIApplication sharedApplication].keyWindow;
     CGImageRef (*grab)(void) = (CGImageRef (*)(void))dlsym(RTLD_DEFAULT, "UIGetScreenImage");
-    if (grab) {
+    if ([key respondsToSelector:@selector(drawViewHierarchyInRect:afterScreenUpdates:)]) {
+        // iOS 7+: UIGetScreenImage trả ảnh trắng (iOS 8) — vẽ lại các cửa sổ của app (cả cửa sổ hộp thoại)
+        UIGraphicsBeginImageContextWithOptions(key.bounds.size, YES, 0);
+        for (UIWindow *w in [UIApplication sharedApplication].windows) {
+            if (!w.hidden) [w drawViewHierarchyInRect:w.bounds afterScreenUpdates:NO];
+        }
+        img = UIGraphicsGetImageFromCurrentImageContext();
+        UIGraphicsEndImageContext();
+    } else if (grab) {
         CGImageRef cg = grab();
         if (cg) {
             img = [UIImage imageWithCGImage:cg];

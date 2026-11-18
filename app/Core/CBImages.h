@@ -3,11 +3,20 @@
 /// Gửi khi purgeOffscreen: ô ảnh bìa đang khuất bỏ ảnh (CBPosterCell)
 extern NSString *const CBImagesPurgeNotification;
 
+/// Khung ảnh có nhãn chờ nằm dưới (tên phim / chữ viết tắt tên kênh): có ảnh thì ẩn nhãn — khỏi vẽ chữ thừa mỗi lần ô hiện lên
+/// khi cuộn, và chữ không lòi ra sau phần trong suốt của logo
+@interface CBCoverView : UIImageView
+@property (nonatomic, weak) UIView *placeholder;
+@end
+
 /// Tải ảnh bìa: NSURLConnection tin thêm gốc Mozilla đóng kèm (cacert.pem — iOS 6 không có gốc Let's Encrypt), lưu đĩa
 /// (Library/Caches/img), giải mã thu nhỏ đúng cỡ ô (ImageIO) để đỡ RAM, bộ nhớ đệm NSCache, tối đa 4 ảnh tải cùng lúc.
 @interface CBImages : NSObject
 /// Đặt ảnh url vào iv (cỡ điểm size); ô tái sử dụng đổi url thì kết quả cũ bị bỏ.
 + (void)load:(NSString *)url size:(CGSize)size into:(UIImageView *)iv;
+/// Như trên, nhưng ảnh giải mã sẵn đúng khổ `size` (cắt kiểu Aspect Fill) và bo góc `radius` điểm ngay trong ảnh (góc trong suốt):
+/// khung ảnh khỏi cần cornerRadius + clipsToBounds — thứ bắt GPU vẽ ngoài màn hình ở mọi khung hình, ô danh sách cuộn giật
++ (void)load:(NSString *)url size:(CGSize)size radius:(CGFloat)radius into:(UIImageView *)iv;
 + (void)cancel:(UIImageView *)iv;
 /// Mỏ neo tin cậy (SecCertificateRef) từ cacert.pem — dùng chung cho mọi kết nối NSURLConnection của app
 + (NSArray *)anchors;

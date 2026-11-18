@@ -23,6 +23,8 @@
     NSArray *_feedRows;     // hàng của trang chủ: {id, title, items, more}
     NSArray *_categories;   // danh mục (dải nút đầu trang): {title, url} hoặc {title, kind: genres|countries} (xem menuWith:)
     UIScrollView *_chips;   // dải nút danh mục cuộn ngang ở đầu trang chủ
+    NSArray *_chipTitles;   // chữ trên các nút lần dựng trước — giống thì khỏi dựng lại
+    BOOL _refreshOnAppear;  // quay về trang chủ: làm mới «Xem tiếp» / «Có tập mới» sau khi cú trượt xong
     NSString *_note;
     NSInteger _token;
     NSMutableDictionary *_offsets;  // id hàng → chỗ đã cuộn ngang
@@ -140,17 +142,29 @@
 
 /// Dải nút danh mục ở đầu trang chủ (★ Điểm IMDb cao, Thể loại, Quốc gia, danh mục của trang) — trước đây nằm tận cuối trang
 - (void)buildChips {
+    // Chữ trên các nút («Theo dõi» kèm số phim có tập mới) — giống lần dựng trước thì giữ nguyên dải nút (dựng lại ~20 nút mỗi lần
+    // quay về trang chủ tốn ~0,1–0,2 s trên iPad 1)
+    NSMutableArray *titles = [NSMutableArray array];
+    NSInteger fresh = -1;
+    for (NSDictionary *c in _categories) {
+        NSString *t = CBStr(c, @"title") ?: @"";
+        if ([t hasSuffix:@"…"]) t = [t substringToIndex:t.length - 1];
+        if ([CBStr(c, @"kind") isEqualToString:@"follows"]) {
+            if (fresh < 0) {
+                fresh = 0;
+                for (NSDictionary *f in [CBPrefs follows]) fresh += CBNum(f, @"count", 0) > CBNum(f, @"seen", 0);
+            }
+            if (fresh) t = [t stringByAppendingFormat:@" (%ld mới)", (long)fresh];
+        }
+        [titles addObject:t];
+    }
+    if (titles.count && [titles isEqualToArray:_chipTitles ?: @[]]) return;
+    _chipTitles = titles;
     for (UIView *v in _chips.subviews) [v removeFromSuperview];
     CGFloat x = 12, h = 34;
     UIFont *font = [CBTheme font:[CBTheme isPad] ? 15 : 14];
     for (NSUInteger i = 0; i < _categories.count; i++) {
-        NSString *t = CBStr(_categories[i], @"title") ?: @"";
-        if ([t hasSuffix:@"…"]) t = [t substringToIndex:t.length - 1];
-        if ([CBStr(_categories[i], @"kind") isEqualToString:@"follows"]) {
-            NSInteger fresh = 0;
-            for (NSDictionary *f in [CBPrefs follows]) fresh += CBNum(f, @"count", 0) > CBNum(f, @"seen", 0);
-            if (fresh) t = [t stringByAppendingFormat:@" (%ld mới)", (long)fresh];
-        }
+        NSString *t = titles[i];
         UIButton *b = [UIButton buttonWithType:UIButtonTypeCustom];
         b.tag = (NSInteger)i;
         b.titleLabel.font = font;
@@ -159,10 +173,8 @@
         BOOL tv = [CBStr(_categories[i], @"kind") isEqualToString:@"tv"];
         [b setTitleColor:star ? [CBTheme focus] : (tv ? [CBTheme brand] : [CBTheme text]) forState:UIControlStateNormal];
         if (tv) b.titleLabel.font = [CBTheme bold:font.pointSize];
-        [b setBackgroundImage:[CBTheme imageWithColor:[CBTheme surface]] forState:UIControlStateNormal];
-        [b setBackgroundImage:[CBTheme imageWithColor:[CBTheme surface2]] forState:UIControlStateHighlighted];
-        b.layer.cornerRadius = h / 2;
-        b.clipsToBounds = YES;
+        [b setBackgroundImage:[CBTheme imageWithColor:[CBTheme surface] radius:h / 2] forState:UIControlStateNormal];
+        [b setBackgroundImage:[CBTheme imageWithColor:[CBTheme surface2] radius:h / 2] forState:UIControlStateHighlighted];
         CGFloat w = ceil([t sizeWithFont:font].width) + 28;
         b.frame = CGRectMake(x, 10, w, h);
         [b addTarget:self action:@selector(chipTapped:) forControlEvents:UIControlEventTouchUpInside];
@@ -215,11 +227,21 @@
     if ((_profileShown && ![_profileShown isEqualToString:[self homeSignature]]) || [self stale]) {
         [self reload];
     } else {
-        [self saveVisibleOffsets];
-        [self rebuildHead];
-        [self buildChips];
-        [self.tableView reloadData];
+        // Làm sau khi cú trượt quay về xong: dựng lại dải nút + nạp lại bảng ngay lúc này làm cú trượt bắt đầu chậm ~0,2 s và giật
+        // (iPad 1: 550 ms, 31 khung/s)
+        _refreshOnAppear = YES;
     }
+}
+
+- (void)viewDidAppear:(BOOL)animated {
+    [super viewDidAppear:animated];
+    if (!_refreshOnAppear) return;
+    _refreshOnAppear = NO;
+    NSArray *old = _headRows;
+    [self saveVisibleOffsets];
+    [self rebuildHead];
+    [self buildChips];
+    if (![old isEqual:_headRows]) [self.tableView reloadData];   // «Xem tiếp» / «Có tập mới» không đổi thì khỏi nạp lại cả bảng
 }
 
 /// Giữ vị trí cuộn ngang của các hàng đang hiện (trước khi dựng lại hàng)

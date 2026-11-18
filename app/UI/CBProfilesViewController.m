@@ -101,6 +101,7 @@ static const NSUInteger CBMaxProfiles = 8;
         if ([(CBStr(p, @"id") ?: @"") isEqualToString:current]) {
             avatar.layer.borderColor = [CBTheme focus].CGColor;
             avatar.layer.borderWidth = 3;
+            avatar.layer.cornerRadius = 40;   // viền tròn theo ảnh (màn tĩnh — không ngại bo góc lớp)
         }
         NSString *name = [NSString stringWithFormat:@"%@%@", CBStr(p, @"name") ?: @"?", CBStr(p, @"pin") ? @" 🔒" : @""];
         [_tiles addObject:[self tileWithAvatar:avatar name:name tag:(NSInteger)i]];
