@@ -9,15 +9,29 @@
 - (void)miniTogglePlay;
 /// Đóng hẳn (lưu chỗ xem, dừng phát)
 - (void)close;
+@optional
+/// Thanh thu nhỏ của iPhone: dòng trên (tên phim / kênh), dòng dưới (tập / chương trình)
+- (NSString *)miniTitle;
+- (NSString *)miniSubtitle;
+/// Phần đã xem 0…1 — vạch tiến độ trên thanh thu nhỏ; âm = không vẽ (kênh trực tiếp)
+- (double)miniProgress;
 @end
 
-/// Trình phát thu nhỏ trong app («hình trong hình» kiểu YouTube): hình phim / kênh thu vào khung nhỏ ở góc màn hình, vẫn phát trong
-/// lúc lướt app. Chạm khung = mở lại toàn màn hình (đúng trình phát đó: tập, phụ đề, chỗ xem), ✕ = đóng hẳn, nút phát / tạm dừng;
-/// kéo để dời sang góc khác. Chỉ trong app — iOS 5–8 không có hình trong hình của hệ thống (AVPictureInPictureController từ iOS 9,
-/// chỉ iPad A7+). Bật trên iPad RAM ≥ 400 MB; tắt trên iPad 1 (256 MB — vừa phát vừa lướt dễ bị iOS tắt app) và iPhone (chưa thử).
+/// Trình phát thu nhỏ trong app («hình trong hình» kiểu YouTube): hình phim / kênh vẫn phát trong lúc lướt app.
+///  • iPad: khung nhỏ nổi ở góc màn hình — chạm = mở lại, ✕ = đóng hẳn, nút phát / tạm dừng, kéo để dời sang góc khác.
+///  • iPhone (màn nhỏ, app đứng dọc): thanh ở đáy màn hình (hình 16:9 bên trái, tên + tập, phát / tạm dừng, ✕), cả app co lên trên
+///    thanh nên không che nội dung (CBRootViewController) — chạm = mở lại, vuốt xuống / ✕ = đóng hẳn. Kéo hình lên = tách thành
+///    khung nổi 192×108 (bám góc gần chỗ thả, né bàn phím); kéo khung xuống quá mép dưới = về thanh. Nhớ kiểu lần trước.
+/// Mở lại là đúng trình phát đó (tập, phụ đề, chỗ xem). Chỉ trong app — iOS 5–8 không có hình trong hình của hệ thống
+/// (AVPictureInPictureController từ iOS 9, chỉ iPad A7+). Bật trên máy RAM ≥ 400 MB; tắt trên máy 256 MB (iPad 1, iPhone 3GS,
+/// iPod touch 4 — vừa phát vừa lướt dễ bị iOS tắt app).
 @interface CBMiniPlayer : NSObject
 /// Máy này có thu nhỏ được không (RAM ≥ 400 MB)
 + (BOOL)available;
+/// Đang có trình phát thu nhỏ (đang xem — đừng hỏi cập nhật / báo xem được…)
++ (BOOL)active;
+/// Biểu tượng nút trên thanh trình phát của iPhone (chỗ hẹp, thay chữ): @"mini" (thu nhỏ), @"float" (hình nổi)
++ (UIImage *)barIcon:(NSString *)kind;
 /// Thu nhỏ trình phát đang mở toàn màn hình
 + (void)minimize:(UIViewController<CBMiniPlayable> *)player;
 + (BOOL)isMini:(UIViewController *)player;

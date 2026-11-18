@@ -12,6 +12,7 @@
 #import "CBPrefs.h"
 #import "CBTVViewController.h"
 #import "CBProfilesViewController.h"
+#import "CBRootViewController.h"
 #import "CBSync.h"
 #import "CBUpdate.h"
 #import "CBWaitPlayable.h"
@@ -42,7 +43,8 @@
     self.window.backgroundColor = [CBTheme bg];
     _home = [[CBHomeViewController alloc] init];
     self.nav = [[CBNavController alloc] initWithRootViewController:_home];
-    self.window.rootViewController = self.nav;
+    // iPhone: màn gốc bọc thanh điều hướng, chừa chỗ cho thanh thu nhỏ ở đáy (CBMiniPlayer); iPad: khung thu nhỏ nổi ở góc
+    self.window.rootViewController = [CBTheme isPad] ? self.nav : [[CBRootViewController alloc] initWithContent:self.nav];
     [self.window makeKeyAndVisible];
     dispatch_async(dispatch_get_main_queue(), ^{ [self gates]; });
     // Mở app bằng thông báo «Nhắc tôi» của lịch phát sóng: phát kênh đó (sau màn miễn trừ / chọn người xem)

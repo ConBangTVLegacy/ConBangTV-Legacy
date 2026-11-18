@@ -7,10 +7,10 @@
 // CBFloat: khung video nổi trên mọi màn (cửa sổ mức 1050 — như băng thông báo), AVPlayer riêng phát địa chỉ đó.
 //   chạm khung → ghi ConBangTV-float-back.json {action: open, time} + vn.conbangtv.float.back, mở app (app tua tới đó, phát tiếp)
 //   ✕          → {action: close, time} (app lưu chỗ xem); khoá máy cũng vậy
-//   nút phát / tạm dừng; kéo → bám góc gần nhất
+//   nút phát / tạm dừng; kéo → bám góc gần nhất; chạm hai lần → đổi cỡ nhỏ / lớn
 // App tự mở lại (bấm biểu tượng) khi khung đang hiện → vn.conbangtv.float.reclaim → trả chỗ xem như chạm khung, không mở app.
 // Gỡ lỗi: vn.conbangtv.float.shot → ảnh toàn màn hình (cả lớp video) /var/mobile/Documents/CBFloat-shot.png; vn.conbangtv.float.tap
-// → như chạm khung (thử tự động — iOS 8 không giả được cú chạm); nhật ký CBFloat.log.
+// → như chạm khung (thử tự động — iOS 8 không giả được cú chạm); vn.conbangtv.float.size → như chạm hai lần; nhật ký CBFloat.log.
 #import <AVFoundation/AVFoundation.h>
 #import <UIKit/UIKit.h>
 #import <objc/message.h>
@@ -131,9 +131,14 @@ static const CGFloat kRim = 6, kRadius = 16;
     return s;
 }
 
-/// Cả khung = video 16:9 + viền kính hai bên
+/// Khung lớn (chạm hai lần để đổi) — nhớ tới lúc SpringBoard khởi động lại
+static BOOL gLarge;
+
+/// Cả khung = video 16:9 + viền kính hai bên. iPhone (màn 320 pt): nhỏ 192×108 (~60% bề ngang — trước 224×126 che gần 3/4
+/// màn hình chính), lớn 272×153 (vừa bề ngang, chừa lề 12 pt). iPad: 320×180 / 448×252.
 - (CGSize)boxSize {
-    CGSize v = UI_USER_INTERFACE_IDIOM() == UIUserInterfaceIdiomPad ? CGSizeMake(320, 180) : CGSizeMake(224, 126);
+    BOOL pad = UI_USER_INTERFACE_IDIOM() == UIUserInterfaceIdiomPad;
+    CGSize v = pad ? (gLarge ? CGSizeMake(448, 252) : CGSizeMake(320, 180)) : (gLarge ? CGSizeMake(272, 153) : CGSizeMake(192, 108));
     return CGSizeMake(v.width + 2 * kRim, v.height + 2 * kRim);
 }
 
@@ -258,6 +263,7 @@ static const CGFloat kRim = 6, kRadius = 16;
     [_window addSubview:_box];
     [_box addSubview:[self glassWithFrame:_box.bounds]];
     _video = [[UIView alloc] initWithFrame:CGRectInset(_box.bounds, kRim, kRim)];
+    _video.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;   // đổi cỡ khung (chạm hai lần)
     _video.backgroundColor = [UIColor blackColor];
     _video.layer.cornerRadius = kRadius - kRim;
     _video.layer.masksToBounds = YES;
@@ -271,6 +277,7 @@ static const CGFloat kRim = 6, kRadius = 16;
     [_video.layer insertSublayer:_layer atIndex:0];
 
     _message = [[UILabel alloc] initWithFrame:CGRectInset(_video.bounds, 12, 0)];
+    _message.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     _message.backgroundColor = [UIColor clearColor];
     _message.textColor = [UIColor colorWithWhite:1 alpha:0.85];
     _message.font = [UIFont systemFontOfSize:14];
@@ -282,13 +289,21 @@ static const CGFloat kRim = 6, kRadius = 16;
 
     _closeButton = [self roundButton:@"close" action:@selector(closeTapped)];
     _closeButton.center = CGPointMake(V.width - 22, 22);
+    _closeButton.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin | UIViewAutoresizingFlexibleBottomMargin;
     [_video addSubview:_closeButton];
     _playButton = [self roundButton:@"pause" action:@selector(playTapped)];
     _playButton.center = CGPointMake(22, V.height - 22);
+    _playButton.autoresizingMask = UIViewAutoresizingFlexibleRightMargin | UIViewAutoresizingFlexibleTopMargin;
     [_video addSubview:_playButton];
 
+    // Chạm hai lần = đổi cỡ nhỏ / lớn; chạm một lần (đợi xem có chạm lần hai không) = mở app
+    UITapGestureRecognizer *dbl = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(doubleTapped)];
+    dbl.numberOfTapsRequired = 2;
+    dbl.delegate = self;
+    [_box addGestureRecognizer:dbl];
     UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(tapped)];
     tap.delegate = self;
+    [tap requireGestureRecognizerToFail:dbl];
     [_box addGestureRecognizer:tap];
     UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(panned:)];
     pan.delegate = self;
@@ -394,6 +409,27 @@ static const CGFloat kRim = 6, kRadius = 16;
     [self finish:@"close" launch:NO];
 }
 
+/// Đổi cỡ khung, giữ góc đang bám
+- (void)doubleTapped {
+    if (!_window || _dragging) return;
+    gLarge = !gLarge;
+    CGSize I = [self interfaceSize:_orientation portrait:NULL];
+    _center = [self cornerCenter:_corner in:I];
+    CGSize S = [self boxSize];
+    CGRect v = CGRectMake(0, 0, S.width - 2 * kRim, S.height - 2 * kRim);
+    CBFLog(@"đổi cỡ khung → %@ %.0fx%.0f", gLarge ? @"lớn" : @"nhỏ", v.size.width, v.size.height);
+    [CATransaction begin];
+    [CATransaction setAnimationDuration:0.2];
+    _layer.frame = v;   // lớp video không tự co giãn theo view
+    for (UIView *g in _box.subviews) {   // ánh sáng của kính giả iOS 6 (CAGradientLayer) cũng vậy
+        for (CALayer *l in g.layer.sublayers) {
+            if ([l isKindOfClass:[CAGradientLayer class]]) l.frame = CGRectMake(0, 0, S.width, S.height);
+        }
+    }
+    [CATransaction commit];
+    [UIView animateWithDuration:0.2 animations:^{ [self place]; }];
+}
+
 - (void)playTapped {
     if (_player.rate > 0) [_player pause];
     else [_player play];
@@ -438,13 +474,15 @@ static void CBFNotified(CFNotificationCenterRef c, void *o, CFStringRef name, co
         else if ([n isEqualToString:@"com.apple.springboard.lockcomplete"]) [f finish:@"close" launch:NO];   // khoá máy: dừng
         else if ([n isEqualToString:@"vn.conbangtv.float.shot"]) [f shot];
         else if ([n isEqualToString:@"vn.conbangtv.float.tap"]) [f tapped];
+        else if ([n isEqualToString:@"vn.conbangtv.float.size"]) [f doubleTapped];   // gỡ lỗi: như chạm hai lần
     });
 }
 
 __attribute__((constructor)) static void CBFInit(void) {
     if (!objc_getClass("SpringBoard")) return;
     for (NSString *n in @[@"vn.conbangtv.float.show", @"vn.conbangtv.float.reclaim", @"vn.conbangtv.float.close",
-                          @"com.apple.springboard.lockcomplete", @"vn.conbangtv.float.shot", @"vn.conbangtv.float.tap"]) {
+                          @"com.apple.springboard.lockcomplete", @"vn.conbangtv.float.shot", @"vn.conbangtv.float.tap",
+                          @"vn.conbangtv.float.size"]) {
         CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL, CBFNotified, (__bridge CFStringRef)n, NULL,
                                         CFNotificationSuspensionBehaviorDeliverImmediately);
     }

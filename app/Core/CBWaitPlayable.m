@@ -2,6 +2,7 @@
 #import "CBCore.h"
 #import "CBJSON.h"
 #import "CBLog.h"
+#import "CBMiniPlayer.h"
 #import "CBPlayerViewController.h"
 #import "CBPrefs.h"
 #import "CBAlert.h"
@@ -119,7 +120,7 @@ static BOOL gPrompting;
 }
 
 + (BOOL)playing {
-    return [[self top] isKindOfClass:[CBPlayerViewController class]];
+    return [[self top] isKindOfClass:[CBPlayerViewController class]] || [CBMiniPlayer active];   // cả lúc đang xem thu nhỏ
 }
 
 + (void)checkNow {

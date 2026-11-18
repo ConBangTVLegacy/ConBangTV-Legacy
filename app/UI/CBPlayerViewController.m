@@ -282,6 +282,14 @@ static void CBForceOrientation(UIInterfaceOrientation o) {
     _floatButton = [self barButton:@"Hình nổi" action:@selector(floatOut)];
     _floatButton.hidden = ![CBFloatBridge available];
     [_top addSubview:_floatButton];
+    if (![CBTheme isPad]) {   // iPhone ngang chỉ rộng 480–568 pt: hai nút này là biểu tượng, chừa chỗ cho tên phim
+        for (UIButton *b in @[_miniButton, _floatButton]) {
+            b.accessibilityLabel = [b titleForState:UIControlStateNormal];
+            [b setTitle:nil forState:UIControlStateNormal];
+            [b setImage:[CBMiniPlayer barIcon:b == _miniButton ? @"mini" : @"float"] forState:UIControlStateNormal];
+            b.showsTouchWhenHighlighted = YES;
+        }
+    }
     _serverButton = [self barButton:@"Server" action:@selector(showServers)];
     _serverButton.titleLabel.lineBreakMode = NSLineBreakByTruncatingTail;
     _serverButton.titleLabel.adjustsFontSizeToFitWidth = YES;
@@ -368,6 +376,13 @@ static void CBForceOrientation(UIInterfaceOrientation o) {
     [_video addGestureRecognizer:tap];
     UIPinchGestureRecognizer *pinch = [[UIPinchGestureRecognizer alloc] initWithTarget:self action:@selector(pinch:)];
     [_video addGestureRecognizer:pinch];
+    // iPhone: vuốt xuống trên hình = thu nhỏ xuống thanh ở đáy (như nút ⌄)
+    if (![CBTheme isPad] && [CBMiniPlayer available]) {
+        UISwipeGestureRecognizer *down = [[UISwipeGestureRecognizer alloc] initWithTarget:self action:@selector(minimize)];
+        down.direction = UISwipeGestureRecognizerDirectionDown;
+        down.delegate = self;
+        [_video addGestureRecognizer:down];
+    }
 
     NSNotificationCenter *nc = [NSNotificationCenter defaultCenter];
     [nc addObserver:self selector:@selector(appResigning) name:UIApplicationWillResignActiveNotification object:nil];
@@ -468,7 +483,8 @@ static void CBForceOrientation(UIInterfaceOrientation o) {
     CGFloat titleX = 98, bx = 94;
     for (UIButton *b in @[_miniButton, _floatButton]) {
         if (b.hidden) continue;
-        CGFloat mw = ceil([b.titleLabel.text sizeWithFont:b.titleLabel.font].width) + 20;
+        NSString *t = [b titleForState:UIControlStateNormal];
+        CGFloat mw = t.length ? ceil([t sizeWithFont:b.titleLabel.font].width) + 20 : 40;   // iPhone: biểu tượng
         b.frame = CGRectMake(bx, 0, mw, topH);
         bx += mw;
         titleX = bx + 4;
@@ -1478,6 +1494,23 @@ static void CBForceOrientation(UIInterfaceOrientation o) {
 
 - (void)miniTogglePlay {
     [self togglePlay];
+}
+
+- (NSString *)miniTitle {
+    return CBStr(_detail, @"title") ?: _titleLabel.text;
+}
+
+/// Phần sau «Tên phim — » của tiêu đề: «Tập 167», «Mùa 2, Tập 1 · It's Alive!»…
+- (NSString *)miniSubtitle {
+    NSString *t = _titleLabel.text ?: @"";
+    NSRange r = [t rangeOfString:@" — "];
+    return r.location == NSNotFound ? @"" : [t substringFromIndex:NSMaxRange(r)];
+}
+
+- (double)miniProgress {
+    double dur = CBDuration(_item), now = CMTimeGetSeconds(_player.currentTime);
+    if (!_item || !isfinite(dur) || dur <= 0 || !isfinite(now)) return 0;
+    return MAX(0, MIN(1, now / dur));
 }
 
 #pragma mark - Hình nổi (CBFloatBridge)

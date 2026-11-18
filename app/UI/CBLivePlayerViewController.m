@@ -168,6 +168,14 @@ static void CBLiveForceOrientation(UIInterfaceOrientation o) {
     _miniButton.hidden = ![CBMiniPlayer available];
     _floatButton = [self barButton:@"Hình nổi" action:@selector(floatOut)];
     _floatButton.hidden = ![CBFloatBridge available];
+    if (!pad) {   // iPhone ngang hẹp: hai nút này là biểu tượng, chừa chỗ cho tên kênh
+        for (UIButton *b in @[_miniButton, _floatButton]) {
+            b.accessibilityLabel = [b titleForState:UIControlStateNormal];
+            [b setTitle:nil forState:UIControlStateNormal];
+            [b setImage:[CBMiniPlayer barIcon:b == _miniButton ? @"mini" : @"float"] forState:UIControlStateNormal];
+            b.showsTouchWhenHighlighted = YES;
+        }
+    }
     _guideButton = [self barButton:@"Lịch" action:@selector(openGuide)];
     _sourceButton = [self barButton:@"Nguồn 1/1" action:@selector(nextSource)];
     _channelsButton = [self barButton:@"☰ Kênh" action:@selector(toggleChannels)];
@@ -317,7 +325,7 @@ static void CBLiveForceOrientation(UIInterfaceOrientation o) {
     for (UIButton *b in @[_miniButton, _floatButton]) {
         if (b.hidden) continue;
         CGSize ms = [b sizeThatFits:CGSizeMake(200, topH)];
-        b.frame = CGRectMake(leftEnd, 0, ms.width + 16, topH);
+        b.frame = CGRectMake(leftEnd, 0, MAX(40, ms.width + 16), topH);
         leftEnd = CGRectGetMaxX(b.frame);
     }
     CGFloat right = cw - 6;
@@ -1146,6 +1154,20 @@ static void CBLiveForceOrientation(UIInterfaceOrientation o) {
 
 - (void)miniTogglePlay {
     [self togglePlay];
+}
+
+- (NSString *)miniTitle {
+    return CBStr([self channel], @"n") ?: _titleLabel.text;
+}
+
+/// Chương trình đang chiếu (có lịch phát sóng), không thì «Trực tiếp»
+- (NSString *)miniSubtitle {
+    NSDictionary *p = [CBIPTV nowFor:[self channel] at:[[NSDate date] timeIntervalSince1970]];
+    return CBStr(p, @"t") ?: @"Trực tiếp";
+}
+
+- (double)miniProgress {
+    return -1;
 }
 
 #pragma mark - Hình nổi (CBFloatBridge)

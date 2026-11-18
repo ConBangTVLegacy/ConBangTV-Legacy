@@ -2,6 +2,7 @@
 #import "CBCore.h"
 #import "CBJSON.h"
 #import "CBLog.h"
+#import "CBMiniPlayer.h"
 #import "CBParental.h"
 #import "CBPrefs.h"
 #import "CBTheme.h"
@@ -61,7 +62,7 @@ static BOOL gPrompting; // đang hiện hộp «Có bản mới» (không chồn
 + (BOOL)playing {
     UIViewController *vc = [UIApplication sharedApplication].keyWindow.rootViewController;
     while (vc.presentedViewController) vc = vc.presentedViewController;
-    return [NSStringFromClass([vc class]) isEqualToString:@"CBPlayerViewController"];
+    return [NSStringFromClass([vc class]) isEqualToString:@"CBPlayerViewController"] || [CBMiniPlayer active];   // cả lúc đang xem thu nhỏ
 }
 
 + (void)check:(BOOL)manual {
