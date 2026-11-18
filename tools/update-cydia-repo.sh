@@ -20,10 +20,13 @@ done
 dpkg-scanpackages -m debs /dev/null > Packages 2>/dev/null
 # Cydia 1.1.30 (iOS 5 / 6) hiện chữ có dấu trong Description thành «?»; gói cũ (≤ 0.5.5) mang mô tả có dấu → mọi bản dùng mô tả
 # không dấu hiện tại của app/control
-# (chỉ gói app — gói khác giữ mô tả của nó)
+# — tương tự gói «Hình nổi» lấy mô tả ở tweak/CBFloat/control (bản 0.1.0 đã dựng còn ngoặc «», cũng hiện thành «?»)
 DESC="$(sed -n 's/^Description: *//p' "$ROOT/app/control")"
-awk -v d="$DESC" '/^Package: /{app = ($2 == "vn.conbangtv.legacy")} app && /^Description: /{$0 = "Description: " d} {print}' \
-    Packages > Packages.tmp && mv Packages.tmp Packages
+FDESC="$(sed -n 's/^Description: *//p' "$ROOT/tweak/CBFloat/control")"
+awk -v d="$DESC" -v f="$FDESC" '/^Package: /{p = $2}
+    /^Description: / && p == "vn.conbangtv.legacy" {$0 = "Description: " d}
+    /^Description: / && p == "vn.conbangtv.float" {$0 = "Description: " f}
+    {print}' Packages > Packages.tmp && mv Packages.tmp Packages
 gzip -9nc Packages > Packages.gz
 bzip2 -9c Packages > Packages.bz2
 {
