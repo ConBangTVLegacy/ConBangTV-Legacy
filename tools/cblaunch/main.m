@@ -104,6 +104,8 @@ int main(int argc, char **argv) {
         return 0;
     }
     if (argc >= 3 && !strcmp(argv[1], "launch")) return launch(argv[2]);
-    fprintf(stderr, "cách dùng: cblaunch status | wake | unlock | launch <mã gói>\n");
+    // gửi thông báo Darwin (thử tinh chỉnh CBFloat trong SpringBoard…)
+    if (argc >= 3 && !strcmp(argv[1], "post")) return notify_post(argv[2]) == NOTIFY_STATUS_OK ? 0 : 1;
+    fprintf(stderr, "cách dùng: cblaunch status | wake | unlock | launch <mã gói> | post <thông báo Darwin>\n");
     return 2;
 }

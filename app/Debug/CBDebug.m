@@ -20,6 +20,7 @@
 #import "CBAlert.h"
 #import "CBFPS.h"
 #import "CBMiniPlayer.h"
+#import "CBFloatBridge.h"
 #import "CBLatency.h"
 #import "CBJSON.h"
 #import "CBIPTV.h"
@@ -678,6 +679,13 @@
             if ([p conformsToProtocol:@protocol(CBMiniPlayable)]) [CBMiniPlayer minimize:(UIViewController<CBMiniPlayable> *)p];
             else CBLog(@"[gỡ lỗi] không có trình phát nào đang mở");
         }
+    } else if ([verb isEqualToString:@"float"]) {
+        // float — trao trình phát đang mở cho khung nổi (như bấm «Hình nổi»; cần tinh chỉnh CBFloat). Chạm khung giả:
+        // cblaunch post vn.conbangtv.float.tap; mở app khi khung còn nổi: cblaunch launch vn.conbangtv.legacy
+        UIViewController *p = player ?: (UIViewController *)[self live];
+        CBLog(@"[gỡ lỗi] float: tinh chỉnh %@", [CBFloatBridge available] ? @"có" : @"không có / bị giới hạn giờ xem");
+        if ([p conformsToProtocol:@protocol(CBFloatPlayable)]) [CBFloatBridge handoff:(UIViewController<CBFloatPlayable> *)p];
+        else CBLog(@"[gỡ lỗi] không có trình phát nào đang mở");
     } else if ([verb isEqualToString:@"minitest"]) {
         // minitest 1|0 — bật thu nhỏ cả trên máy RAM thấp (iPad 1) để thử; có hiệu lực ngay (nút ẩn / hiện ở lần mở trình phát sau)
         [[NSUserDefaults standardUserDefaults] setBool:[arg boolValue] forKey:@"CBMiniTest"];

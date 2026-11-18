@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Tạo / cập nhật nguồn Cydia (APT phẳng) trong thư mục repo/ của trang giới thiệu (conbangtvlegacy.github.io):
 #   bash tools/update-cydia-repo.sh <đường dẫn tới …/conbangtvlegacy.github.io/repo> <tệp .deb mới>…
-# Chép .deb vào repo/debs (giữ 3 bản mới nhất), tạo Packages(.gz/.bz2) bằng dpkg-scanpackages và Release (MD5 + SHA256).
+# Chép .deb vào repo/debs (giữ 3 bản mới nhất mỗi gói), tạo Packages(.gz/.bz2) bằng dpkg-scanpackages và Release (MD5 + SHA256).
 # Nguồn trong Cydia: https://conbangtvlegacy.github.io/repo/  (dòng APT: deb https://conbangtvlegacy.github.io/repo/ ./)
 # Cần dpkg-dev (dpkg-scanpackages), gzip, bzip2 — chạy trên máy Linux dựng.
 set -euo pipefail
@@ -13,13 +13,17 @@ for d in "$@"; do
     cp "$d" "$REPO/debs/"
 done
 cd "$REPO"
-# Giữ 3 bản mới nhất (theo số bản trong tên tệp)
-ls debs/*.deb | sort -V | head -n -3 | xargs -r rm -f
+# Giữ 3 bản mới nhất của từng gói (theo số bản trong tên tệp; gói = phần trước dấu _ đầu tiên — app, «Hình nổi»…)
+for pkg in $(ls debs/*.deb | sed 's#^debs/##; s#_.*##' | sort -u); do
+    ls debs/"${pkg}"_*.deb | sort -V | head -n -3 | xargs -r rm -f
+done
 dpkg-scanpackages -m debs /dev/null > Packages 2>/dev/null
 # Cydia 1.1.30 (iOS 5 / 6) hiện chữ có dấu trong Description thành «?»; gói cũ (≤ 0.5.5) mang mô tả có dấu → mọi bản dùng mô tả
 # không dấu hiện tại của app/control
+# (chỉ gói app — gói khác giữ mô tả của nó)
 DESC="$(sed -n 's/^Description: *//p' "$ROOT/app/control")"
-sed -i "s#^Description: .*#Description: ${DESC}#" Packages
+awk -v d="$DESC" '/^Package: /{app = ($2 == "vn.conbangtv.legacy")} app && /^Description: /{$0 = "Description: " d} {print}' \
+    Packages > Packages.tmp && mv Packages.tmp Packages
 gzip -9nc Packages > Packages.gz
 bzip2 -9c Packages > Packages.bz2
 {

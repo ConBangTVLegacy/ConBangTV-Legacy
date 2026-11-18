@@ -1,0 +1,11 @@
+Package: vn.conbangtv.float
+Name: Côn Bằng TV Legacy — Hình nổi
+Version: 0.1.0
+Architecture: iphoneos-arm
+Description: Hinh trong hinh cho Con Bang TV Legacy tren iOS 8: dang xem phim / kenh, bam «Hinh noi» - video thanh khung nho noi tren man hinh chinh va app khac. Can khoi dong lai SpringBoard sau khi cai.
+Maintainer: Côn Bằng TV Legacy
+Author: Côn Bằng TV Legacy
+Section: Tweaks
+Depends: mobilesubstrate, firmware (>= 8.0), vn.conbangtv.legacy (>= 0.5.9)
+Homepage: https://conbangtvlegacy.github.io/
+Depiction: https://conbangtvlegacy.github.io/repo/depiction.html

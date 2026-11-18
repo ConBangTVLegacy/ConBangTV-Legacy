@@ -5,6 +5,7 @@
 #import "CBIPTV.h"
 #import "CBJSON.h"
 #import "CBLog.h"
+#import "CBFloatBridge.h"
 #import "CBMiniPlayer.h"
 #import "CBNavController.h"
 #import "CBParental.h"
@@ -34,7 +35,7 @@ static void CBLiveForceOrientation(UIInterfaceOrientation o) {
     if ([d respondsToSelector:s]) ((void (*)(id, SEL, NSInteger, BOOL))objc_msgSend)(d, s, (NSInteger)o, YES);
 }
 
-@interface CBLivePlayerViewController () <CBMiniPlayable, UITableViewDataSource, UITableViewDelegate, UIGestureRecognizerDelegate>
+@interface CBLivePlayerViewController () <CBMiniPlayable, CBFloatPlayable, UITableViewDataSource, UITableViewDelegate, UIGestureRecognizerDelegate>
 @end
 
 @implementation CBLivePlayerViewController {
@@ -47,6 +48,7 @@ static void CBLiveForceOrientation(UIInterfaceOrientation o) {
     UIView *_top, *_bottom, *_track, *_fill;
     UIButton *_closeButton, *_guideButton, *_sourceButton, *_channelsButton, *_prevButton, *_playButton, *_nextButton, *_liveButton;
     UIButton *_miniButton;   // «Thu nhỏ»: hình kênh vào khung nhỏ ở góc, xem tiếp trong lúc lướt app (CBMiniPlayer); radio thì ẩn
+    UIButton *_floatButton;  // «Hình nổi»: khung nổi trên màn hình chính / app khác (tinh chỉnh CBFloat); radio thì ẩn
     CBRoundLabel *_badge;   // «TRỰC TIẾP» / «CHẬM m:ss» — màu nền bo góc: fillColor
     UILabel *_titleLabel, *_progLabel, *_timeLabel, *_nextLabel, *_status;
     UIActivityIndicatorView *_spinner;
@@ -164,6 +166,8 @@ static void CBLiveForceOrientation(UIInterfaceOrientation o) {
     _closeButton = [self barButton:@"✕ Đóng" action:@selector(close)];
     _miniButton = [self barButton:@"Thu nhỏ" action:@selector(minimize)];
     _miniButton.hidden = ![CBMiniPlayer available];
+    _floatButton = [self barButton:@"Hình nổi" action:@selector(floatOut)];
+    _floatButton.hidden = ![CBFloatBridge available];
     _guideButton = [self barButton:@"Lịch" action:@selector(openGuide)];
     _sourceButton = [self barButton:@"Nguồn 1/1" action:@selector(nextSource)];
     _channelsButton = [self barButton:@"☰ Kênh" action:@selector(toggleChannels)];
@@ -174,7 +178,8 @@ static void CBLiveForceOrientation(UIInterfaceOrientation o) {
     _badge.font = [CBTheme bold:11];
     _badge.textAlignment = NSTextAlignmentCenter;
     _badge.textColor = [UIColor whiteColor];
-    for (UIView *v in @[_closeButton, _miniButton, _guideButton, _sourceButton, _channelsButton, _titleLabel, _badge]) [_top addSubview:v];
+    for (UIView *v in @[_closeButton, _miniButton, _floatButton, _guideButton, _sourceButton, _channelsButton, _titleLabel, _badge])
+        [_top addSubview:v];
 
     _bottom = [[UIView alloc] init];
     _bottom.backgroundColor = shade;
@@ -308,10 +313,12 @@ static void CBLiveForceOrientation(UIInterfaceOrientation o) {
     _closeButton.frame = CGRectMake(x, 0, cs.width + 16, topH);
     CGFloat leftEnd = CGRectGetMaxX(_closeButton.frame);
     _miniButton.hidden = ![CBMiniPlayer available] || _radio;   // radio: không có hình, nghe tiếp khi ra ngoài sẵn rồi
-    if (!_miniButton.hidden) {
-        CGSize ms = [_miniButton sizeThatFits:CGSizeMake(200, topH)];
-        _miniButton.frame = CGRectMake(leftEnd, 0, ms.width + 16, topH);
-        leftEnd = CGRectGetMaxX(_miniButton.frame);
+    _floatButton.hidden = ![CBFloatBridge available] || _radio;
+    for (UIButton *b in @[_miniButton, _floatButton]) {
+        if (b.hidden) continue;
+        CGSize ms = [b sizeThatFits:CGSizeMake(200, topH)];
+        b.frame = CGRectMake(leftEnd, 0, ms.width + 16, topH);
+        leftEnd = CGRectGetMaxX(b.frame);
     }
     CGFloat right = cw - 6;
     for (UIButton *b in @[_channelsButton, _sourceButton, _guideButton]) {
@@ -1023,6 +1030,8 @@ static void CBLiveForceOrientation(UIInterfaceOrientation o) {
     NSNotificationCenter *nc = [NSNotificationCenter defaultCenter];
     [nc addObserver:self selector:@selector(itemEnded:) name:AVPlayerItemDidPlayToEndTimeNotification object:_item];
     [nc addObserver:self selector:@selector(itemEnded:) name:AVPlayerItemFailedToPlayToEndTimeNotification object:_item];
+    // Kênh đang trao cho «Hình nổi» (app chạy nền nhờ âm thanh câm): mở lại nguồn thì chỉ nạp — không phát chồng tiếng khung nổi
+    if ([CBFloatBridge isFloating:self]) return;
     [_player play];
 }
 
@@ -1137,6 +1146,48 @@ static void CBLiveForceOrientation(UIInterfaceOrientation o) {
 
 - (void)miniTogglePlay {
     [self togglePlay];
+}
+
+#pragma mark - Hình nổi (CBFloatBridge)
+
+- (void)floatOut {
+    [CBFloatBridge handoff:self];
+}
+
+- (NSString *)floatURL {
+    if (!_started || !_item || _radio) return nil;
+    NSURL *u = [_item.asset isKindOfClass:[AVURLAsset class]] ? [(AVURLAsset *)_item.asset URL] : nil;
+    return u.absoluteString;
+}
+
+- (double)floatTime {
+    return 0;
+}
+
+- (NSString *)floatTitle {
+    return CBStr([self channel], @"n") ?: _titleLabel.text;
+}
+
+- (BOOL)floatLive {
+    return YES;
+}
+
+- (BOOL)floatFill {
+    return [CBPrefs videoFill];
+}
+
+- (void)floatPause {
+    [_player pause];
+}
+
+- (void)floatSaveAt:(double)time {
+}
+
+/// Kênh trực tiếp: mở lại thì về mép trực tiếp (phần đệm lúc dừng đã cũ)
+- (void)floatReturnedAt:(double)time play:(BOOL)play {
+    if (_closed) return;
+    if (play) [self goLive];
+    [self setControlsVisible:YES];
 }
 
 - (void)togglePlay {

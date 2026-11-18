@@ -4,6 +4,7 @@
 #import "CBImages.h"
 #import "CBJSON.h"
 #import "CBLog.h"
+#import "CBFloatBridge.h"
 #import "CBMiniPlayer.h"
 #import "CBParental.h"
 #import "CBPrefs.h"
@@ -121,7 +122,7 @@ static void CBForceOrientation(UIInterfaceOrientation o) {
 }
 @end
 
-@interface CBPlayerViewController () <CBMiniPlayable, UIGestureRecognizerDelegate, CBCollectionViewDataSource,
+@interface CBPlayerViewController () <CBMiniPlayable, CBFloatPlayable, UIGestureRecognizerDelegate, CBCollectionViewDataSource,
                                       CBCollectionViewDelegate>
 @end
 
@@ -163,6 +164,7 @@ static void CBForceOrientation(UIInterfaceOrientation o) {
     // Menu «⋯»
     UIButton *_moreButton;
     UIButton *_miniButton;      // «Thu nhỏ»: hình vào khung nhỏ ở góc, xem tiếp trong lúc lướt app (CBMiniPlayer)
+    UIButton *_floatButton;     // «Hình nổi»: khung nổi trên màn hình chính / app khác (tinh chỉnh CBFloat, iOS 8 đã jailbreak)
     // Bảng chọn tự vẽ (server, menu «⋯», tốc độ, hẹn giờ): UIActionSheet của iOS 6 ở iPhone ngang thành danh sách cuộn, che mục
     UIView *_menuPanel;
     UIScrollView *_menuBox;
@@ -277,6 +279,9 @@ static void CBForceOrientation(UIInterfaceOrientation o) {
     _miniButton = [self barButton:@"Thu nhỏ" action:@selector(minimize)];
     _miniButton.hidden = ![CBMiniPlayer available];
     [_top addSubview:_miniButton];
+    _floatButton = [self barButton:@"Hình nổi" action:@selector(floatOut)];
+    _floatButton.hidden = ![CBFloatBridge available];
+    [_top addSubview:_floatButton];
     _serverButton = [self barButton:@"Server" action:@selector(showServers)];
     _serverButton.titleLabel.lineBreakMode = NSLineBreakByTruncatingTail;
     _serverButton.titleLabel.adjustsFontSizeToFitWidth = YES;
@@ -460,11 +465,13 @@ static void CBForceOrientation(UIInterfaceOrientation o) {
     }
     x -= 48;
     _moreButton.frame = CGRectMake(x, 0, 44, topH);
-    CGFloat titleX = 98;
-    if (!_miniButton.hidden) {
-        CGFloat mw = ceil([_miniButton.titleLabel.text sizeWithFont:_miniButton.titleLabel.font].width) + 20;
-        _miniButton.frame = CGRectMake(94, 0, mw, topH);
-        titleX = 94 + mw + 4;
+    CGFloat titleX = 98, bx = 94;
+    for (UIButton *b in @[_miniButton, _floatButton]) {
+        if (b.hidden) continue;
+        CGFloat mw = ceil([b.titleLabel.text sizeWithFont:b.titleLabel.font].width) + 20;
+        b.frame = CGRectMake(bx, 0, mw, topH);
+        bx += mw;
+        titleX = bx + 4;
     }
     _titleLabel.frame = CGRectMake(titleX, 0, MAX(0, x - titleX - 4), topH);
     [self layoutEpisodePanel];
@@ -1192,6 +1199,12 @@ static void CBForceOrientation(UIInterfaceOrientation o) {
     __weak CBPlayerViewController *weakSelf = self;
     _timeObs = [_player addPeriodicTimeObserverForInterval:CMTimeMake(1, 4) queue:dispatch_get_main_queue()
                                                 usingBlock:^(CMTime time) { [weakSelf tick]; }];
+    // App nằm nền (vd đang trao cho «Hình nổi» — app chạy nền nhờ âm thanh câm): thử lại server thì chỉ nạp, không phát (phim
+    // có hình không phát trong nền; phát thì nghe tiếng phim trong lúc khung nổi đã đóng / máy đã khoá)
+    if ([UIApplication sharedApplication].applicationState == UIApplicationStateBackground) {
+        CBLog(@"App đang nằm nền — nạp phim, chưa phát");
+        return;
+    }
     [_player play];  // tốc độ đã chọn áp khi AVPlayer sẵn sàng (lúc này chưa biết luồng có đổi tốc độ được không)
 }
 
@@ -1465,6 +1478,56 @@ static void CBForceOrientation(UIInterfaceOrientation o) {
 
 - (void)miniTogglePlay {
     [self togglePlay];
+}
+
+#pragma mark - Hình nổi (CBFloatBridge)
+
+- (void)floatOut {
+    [CBFloatBridge handoff:self];
+}
+
+- (NSString *)floatURL {
+    if (!_started || !_item) return nil;
+    NSURL *u = [_item.asset isKindOfClass:[AVURLAsset class]] ? [(AVURLAsset *)_item.asset URL] : nil;
+    return u.absoluteString;
+}
+
+- (double)floatTime {
+    return CMTimeGetSeconds(_player.currentTime);
+}
+
+- (NSString *)floatTitle {
+    return _titleLabel.text;
+}
+
+- (BOOL)floatLive {
+    return NO;
+}
+
+- (BOOL)floatFill {
+    return [CBPrefs videoFill];
+}
+
+- (void)floatPause {
+    [_player pause];
+    [self savePosition];
+}
+
+/// Lưu chỗ xem theo giờ khung nổi (không đọc currentTime — AVPlayer của app còn ở chỗ lúc trao / đang tua)
+- (void)floatSaveAt:(double)time {
+    if (!_epUrl || _closed || !isfinite(time) || time < 1) return;
+    double dur = CBDuration(_item);
+    BOOL done = isfinite(dur) && dur > 0 && time > dur - 90;
+    [CBPrefs savePosition:_epUrl seconds:done ? 0 : (int)time film:_filmUrl];
+    _lastSave = CBNowMs();
+}
+
+- (void)floatReturnedAt:(double)time play:(BOOL)play {
+    if (!_player || _closed) return;
+    [self seekTo:time];
+    if (play) [self resume];
+    [self floatSaveAt:time];
+    [self setControlsVisible:!play];
 }
 
 - (void)togglePlay {
