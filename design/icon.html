@@ -1,12 +1,12 @@
 <!doctype html>
 <!--
-  Logo / biểu tượng Côn Bằng TV Legacy — bản 3D, nền tròn trong suốt.
+  Logo / biểu tượng Côn Bằng TV Legacy — bản 3D, nền kính trong suốt (vuông bo tròn).
   Dựng từ logo gốc của Côn Bằng TV (repo chính, design/logo.html — phương án «Ấn triện»): vòng bút ensō vàng + ấn đỏ chữ 鵬.
   Xuất PNG: node design/render.mjs <mode> [phương án] (xem đầu render.mjs).
   ?mode=variants          : mọi phương án, cỡ 1024 / 114 / 57 (để xem trước)
   ?mode=ios&v=a           : bộ Icon*.png + Default*.png cho app/Resources
   ?mode=web&v=a           : logo cho trang giới thiệu (assets/logo.png) + nguồn Cydia (repo/CydiaIcon.png)
-  Đã chọn phương án A (15/11/2026); B, C giữ lại để so.
+  Đã chọn phương án D — ô kính vuông bo tròn (18/11/2026; trước đó A — đĩa kính tròn, 15/11); A, B, C giữ lại để so.
 -->
 <html>
 <head>
@@ -167,6 +167,21 @@ function glassTile() {
   <rect x="3" y="3" width="506" height="506" rx="${rx - 3}" fill="none" stroke="url(#rim)" stroke-width="6"/>`;
 }
 
+// Ô kính vuông bo tròn 4 góc, cùng chất kính với đĩa tròn (phương án A): kính tối trong suốt, ánh sáng mép trong, vệt bóng phía
+// trên, viền sáng. Góc bo 23% cạnh — tròn hơn mặt nạ biểu tượng của iOS 6 (~17,5%) và iOS 7 / 8 (~22,4%), để mặt nạ của máy không
+// cắt mất viền sáng ở góc.
+function glassRounded() {
+  const rx = 118;
+  return `
+  <defs><clipPath id="roundClip"><rect width="512" height="512" rx="${rx}"/></clipPath></defs>
+  <rect width="512" height="512" rx="${rx}" fill="url(#glass)"/>
+  <g clip-path="url(#roundClip)">
+    <rect x="8" y="8" width="496" height="496" rx="${rx - 8}" fill="none" stroke="#ffd98a" stroke-opacity=".26" stroke-width="16" filter="url(#blur6)"/>
+    <ellipse cx="${C}" cy="96" rx="360" ry="200" fill="url(#gloss)"/>
+  </g>
+  <rect x="2.5" y="2.5" width="507" height="507" rx="${rx - 2.5}" fill="none" stroke="url(#rim)" stroke-width="5"/>`;
+}
+
 // ---------- phương án ----------
 const variants = {
   a: { name: 'Đĩa kính tròn', note: 'Nền đen thành đĩa kính tròn trong suốt, viền sáng, vòng vàng và ấn nổi khối',
@@ -180,6 +195,10 @@ const variants = {
        body: () => `${glassTile()}
          <circle cx="${C}" cy="${C}" r="160" fill="#f0b443" opacity=".16" filter="url(#glow)"/>
          ${enso(182, 42)}${seal(262, 200)}` },
+  d: { name: 'Ô kính vuông bo tròn', note: 'Nền vuông bo tròn 4 góc, cùng chất kính trong suốt với đĩa tròn A (18/11/2026)',
+       body: () => `${glassRounded()}
+         <circle cx="${C}" cy="${C}" r="165" fill="#f0b443" opacity=".16" filter="url(#glow)"/>
+         ${enso(190, 43)}${seal(264, 210)}` },
 };
 
 function iconSvg(v, px) {
