@@ -101,9 +101,13 @@ static UIInterfaceOrientation CBFOrientation(void) {
 @interface CBFloat : NSObject <UIGestureRecognizerDelegate>
 @end
 
+// Khung: bo tròn 4 góc, viền kính mờ kRim bao quanh video (bo góc nhỏ hơn)
+static const CGFloat kRim = 6, kRadius = 16;
+
 @implementation CBFloat {
     UIWindow *_window;
-    UIView *_box;
+    UIView *_box;                        // khung bo góc (cắt viền kính + video)
+    UIView *_video;                      // phần video bên trong viền kính
     AVPlayer *_player;
     AVPlayerLayer *_layer;
     UIButton *_closeButton, *_playButton;
@@ -127,8 +131,38 @@ static UIInterfaceOrientation CBFOrientation(void) {
     return s;
 }
 
+/// Cả khung = video 16:9 + viền kính hai bên
 - (CGSize)boxSize {
-    return UI_USER_INTERFACE_IDIOM() == UIUserInterfaceIdiomPad ? CGSizeMake(320, 180) : CGSizeMake(224, 126);
+    CGSize v = UI_USER_INTERFACE_IDIOM() == UIUserInterfaceIdiomPad ? CGSizeMake(320, 180) : CGSizeMake(224, 126);
+    return CGSizeMake(v.width + 2 * kRim, v.height + 2 * kRim);
+}
+
+/// Viền kính mờ. iOS 8: kính mờ thật (UIVisualEffectView — làm mờ màn hình chính / app nằm dưới khung, như Trung tâm điều khiển).
+/// iOS 6 (và 7): không làm mờ được thứ nằm dưới cửa sổ của SpringBoard (CABackdropLayer có từ iOS 7, UIVisualEffectView từ iOS 8)
+/// → kính giả: trắng trong + ánh sáng nhạt từ trên xuống.
+- (UIView *)glassWithFrame:(CGRect)r {
+    Class effectView = NSClassFromString(@"UIVisualEffectView"), blur = NSClassFromString(@"UIBlurEffect");
+    UIView *g;
+    if (effectView && blur) {
+        g = [[effectView alloc] initWithEffect:[blur effectWithStyle:1]];   // UIBlurEffectStyleLight
+        g.frame = r;
+        UIView *tint = [[UIView alloc] initWithFrame:g.bounds];
+        tint.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+        tint.backgroundColor = [UIColor colorWithWhite:1 alpha:0.08];
+        [[(id)g contentView] addSubview:tint];
+    } else {
+        g = [[UIView alloc] initWithFrame:r];
+        g.backgroundColor = [UIColor colorWithWhite:1 alpha:0.2];
+        CAGradientLayer *light = [CAGradientLayer layer];
+        light.frame = g.bounds;
+        light.colors = @[(id)[UIColor colorWithWhite:1 alpha:0.42].CGColor, (id)[UIColor colorWithWhite:1 alpha:0.06].CGColor,
+                         (id)[UIColor colorWithWhite:1 alpha:0.16].CGColor];
+        light.locations = @[@0, @0.55, @1];
+        [g.layer addSublayer:light];
+    }
+    g.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    g.userInteractionEnabled = NO;
+    return g;
 }
 
 /// Khổ màn theo giao diện hiện tại (ngang / dọc) và khổ dọc cố định
@@ -212,19 +246,31 @@ static UIInterfaceOrientation CBFOrientation(void) {
     CGSize S = [self boxSize];
     _window = [[UIWindow alloc] initWithFrame:CGRectMake(0, 0, S.width, S.height)];
     _window.windowLevel = 1050;   // trên app đang mở, như băng thông báo
-    _window.backgroundColor = [UIColor blackColor];
+    _window.backgroundColor = [UIColor clearColor];   // góc bo trong suốt
+    _window.opaque = NO;
     _box = [[UIView alloc] initWithFrame:_window.bounds];
     _box.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-    _box.backgroundColor = [UIColor blackColor];
-    _box.layer.borderColor = [UIColor colorWithWhite:1 alpha:0.3].CGColor;
+    _box.backgroundColor = [UIColor clearColor];
+    _box.layer.cornerRadius = kRadius;
+    _box.layer.masksToBounds = YES;
+    _box.layer.borderColor = [UIColor colorWithWhite:1 alpha:0.5].CGColor;   // mép kính sáng
     _box.layer.borderWidth = 1;
     [_window addSubview:_box];
+    [_box addSubview:[self glassWithFrame:_box.bounds]];
+    _video = [[UIView alloc] initWithFrame:CGRectInset(_box.bounds, kRim, kRim)];
+    _video.backgroundColor = [UIColor blackColor];
+    _video.layer.cornerRadius = kRadius - kRim;
+    _video.layer.masksToBounds = YES;
+    _video.layer.borderColor = [UIColor colorWithWhite:1 alpha:0.22].CGColor;
+    _video.layer.borderWidth = 0.5;
+    [_box addSubview:_video];
+    CGSize V = _video.bounds.size;
     _layer = [AVPlayerLayer playerLayerWithPlayer:_player];
-    _layer.frame = _box.bounds;
+    _layer.frame = _video.bounds;
     _layer.videoGravity = [info[@"fill"] boolValue] ? AVLayerVideoGravityResizeAspectFill : AVLayerVideoGravityResizeAspect;
-    [_box.layer insertSublayer:_layer atIndex:0];
+    [_video.layer insertSublayer:_layer atIndex:0];
 
-    _message = [[UILabel alloc] initWithFrame:CGRectInset(_box.bounds, 12, 0)];
+    _message = [[UILabel alloc] initWithFrame:CGRectInset(_video.bounds, 12, 0)];
     _message.backgroundColor = [UIColor clearColor];
     _message.textColor = [UIColor colorWithWhite:1 alpha:0.85];
     _message.font = [UIFont systemFontOfSize:14];
@@ -232,14 +278,14 @@ static UIInterfaceOrientation CBFOrientation(void) {
     _message.numberOfLines = 2;
     NSString *title = [info[@"title"] isKindOfClass:[NSString class]] ? info[@"title"] : @"";
     _message.text = title.length ? [NSString stringWithFormat:@"Đang tải…\n%@", title] : @"Đang tải…";
-    [_box addSubview:_message];
+    [_video addSubview:_message];
 
     _closeButton = [self roundButton:@"close" action:@selector(closeTapped)];
-    _closeButton.center = CGPointMake(S.width - 22, 22);
-    [_box addSubview:_closeButton];
+    _closeButton.center = CGPointMake(V.width - 22, 22);
+    [_video addSubview:_closeButton];
     _playButton = [self roundButton:@"pause" action:@selector(playTapped)];
-    _playButton.center = CGPointMake(22, S.height - 22);
-    [_box addSubview:_playButton];
+    _playButton.center = CGPointMake(22, V.height - 22);
+    [_video addSubview:_playButton];
 
     UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(tapped)];
     tap.delegate = self;
@@ -326,7 +372,7 @@ static UIInterfaceOrientation CBFOrientation(void) {
     _layer = nil;
     _window.hidden = YES;
     _window = nil;
-    _box = nil;
+    _box = _video = nil;
     _closeButton = _playButton = nil;
     _message = nil;
     AVAudioSession *s = [AVAudioSession sharedInstance];
