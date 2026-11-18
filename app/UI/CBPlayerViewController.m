@@ -164,7 +164,7 @@ static void CBForceOrientation(UIInterfaceOrientation o) {
     // Menu «⋯»
     UIButton *_moreButton;
     UIButton *_miniButton;      // «Thu nhỏ»: hình vào khung nhỏ ở góc, xem tiếp trong lúc lướt app (CBMiniPlayer)
-    UIButton *_floatButton;     // «Hình nổi»: khung nổi trên màn hình chính / app khác (tinh chỉnh CBFloat, iOS 8 đã jailbreak)
+    UIButton *_floatButton;     // «Hình nổi»: khung nổi trên màn hình chính / app khác (tinh chỉnh CBFloat, iOS 6 – 8 đã jailbreak)
     // Bảng chọn tự vẽ (server, menu «⋯», tốc độ, hẹn giờ): UIActionSheet của iOS 6 ở iPhone ngang thành danh sách cuộn, che mục
     UIView *_menuPanel;
     UIScrollView *_menuBox;

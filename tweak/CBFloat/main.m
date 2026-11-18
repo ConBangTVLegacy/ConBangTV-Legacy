@@ -1,4 +1,4 @@
-// CBFloat — «Hình nổi» của Côn Bằng TV Legacy, chạy trong SpringBoard iOS 8 (MobileSubstrate nạp theo CBFloat.plist).
+// CBFloat — «Hình nổi» của Côn Bằng TV Legacy, chạy trong SpringBoard iOS 6 – 8 (MobileSubstrate nạp theo CBFloat.plist).
 // Không móc hàm nào của SpringBoard: chỉ nghe thông báo Darwin, tự thêm một cửa sổ nhỏ.
 //
 // App (nút «Hình nổi» ở trình phát):
@@ -85,7 +85,7 @@ static UIImage *CBFCircle(UIColor *color, CGFloat d) {
     return img;
 }
 
-/// Hướng giao diện đang dùng (app đang mở, không thì màn hình chính) — hàm riêng của SpringBoard iOS 8, thiếu thì thanh trạng thái
+/// Hướng giao diện đang dùng (app đang mở, không thì màn hình chính) — hàm riêng của SpringBoard (iOS 6 – 8), thiếu thì thanh trạng thái
 static UIInterfaceOrientation CBFOrientation(void) {
     UIApplication *app = [UIApplication sharedApplication];
     for (NSString *name in @[@"_frontMostAppOrientation", @"activeInterfaceOrientation"]) {
@@ -248,8 +248,9 @@ static UIInterfaceOrientation CBFOrientation(void) {
     pan.delegate = self;
     [_box addGestureRecognizer:pan];
 
-    [self layoutForOrientation];
     _window.hidden = NO;   // không làm cửa sổ chính (không lấy bàn phím của app đang mở)
+    // Đặt SAU khi hiện: iOS 6 lúc hiện cửa sổ tự xoay / dời nó theo hướng của SpringBoard (khung ra góc trên thay vì góc dưới)
+    [self layoutForOrientation];
     if (_seeked) [_player play];
     _timer = [NSTimer scheduledTimerWithTimeInterval:0.5 target:self selector:@selector(tick) userInfo:nil repeats:YES];
     CGSize scr = [UIScreen mainScreen].bounds.size;
@@ -263,6 +264,15 @@ static UIInterfaceOrientation CBFOrientation(void) {
     if (o != _orientation && !_dragging) {
         CBFLog(@"đổi hướng %ld → %ld", (long)_orientation, (long)o);
         [self layoutForOrientation];
+    } else if (!_dragging) {
+        // UIKit iOS 6 xoay cửa sổ theo SpringBoard (lúc hiện, lúc màn hình chính xoay) — bị dời thì đặt lại
+        CGPoint c = _window.center;
+        CGAffineTransform t = _window.transform;
+        [self place];
+        if (fabs(c.x - _window.center.x) > 1 || fabs(c.y - _window.center.y) > 1 || !CGAffineTransformEqualToTransform(t, _window.transform)) {
+            CBFLog(@"cửa sổ bị dời (%@, %@) — đặt lại %@", NSStringFromCGPoint(c), NSStringFromCGAffineTransform(t),
+                   NSStringFromCGRect(_window.frame));
+        }
     }
     AVPlayerItem *it = _player.currentItem;
     if (!_seeked && it.status == AVPlayerItemStatusReadyToPlay) {

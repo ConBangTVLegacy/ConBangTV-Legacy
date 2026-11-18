@@ -18,11 +18,11 @@
 @end
 
 /// «Hình nổi» — hình trong hình nổi trên màn hình chính / app khác, nhờ tinh chỉnh CBFloat trong SpringBoard (gói vn.conbangtv.float,
-/// iOS 8 đã jailbreak; tweak/CBFloat). App: ghi ConBangTV-float.json (địa chỉ trên cổng phát nội bộ, chỗ đang xem), phát âm thanh câm
+/// iOS 6 – 8 đã jailbreak; tweak/CBFloat). App: ghi ConBangTV-float.json (địa chỉ trên cổng phát nội bộ, chỗ đang xem), phát âm thanh câm
 /// (trộn được) để iOS không treo app — cổng phát nội bộ (bỏ quảng cáo, đổi định dạng luồng) phải còn chạy, gửi thông báo Darwin
 /// vn.conbangtv.float.show rồi tự về màn hình chính. SpringBoard trả lại qua vn.conbangtv.float.back + ConBangTV-float-back.json.
 @interface CBFloatBridge : NSObject
-/// Đã cài tinh chỉnh (iOS 7+, tệp CBFloat.dylib)
+/// Đã cài tinh chỉnh (iOS 6+, tệp CBFloat.dylib), người xem không bị giới hạn giờ xem
 + (BOOL)available;
 /// Trao trình phát cho khung nổi
 + (void)handoff:(UIViewController<CBFloatPlayable> *)player;

@@ -1,7 +1,7 @@
-# CBFloat — «Hình nổi» của Côn Bằng TV Legacy: thư viện nạp vào SpringBoard (MobileSubstrate) cho iOS 8, hiện khung video nổi trên
+# CBFloat — «Hình nổi» của Côn Bằng TV Legacy: thư viện nạp vào SpringBoard (MobileSubstrate) cho iOS 6 – 8, hiện khung video nổi trên
 # mọi màn (màn hình chính, app khác). Không móc hàm nào của SpringBoard — chỉ nghe thông báo Darwin của app (xem main.m).
 #   make package → packages/vn.conbangtv.float_<bản>_iphoneos-arm.deb (cài xong khởi động lại SpringBoard)
-TARGET := iphone:clang:9.3:8.0
+TARGET := iphone:clang:9.3:6.0
 ARCHS = armv7
 
 # dpkg / nhân iOS cũ: gói nén gzip, chữ ký SHA-1 (như app)

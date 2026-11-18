@@ -21,7 +21,9 @@ static NSDictionary *gPending;                              // khung trả lại
 @implementation CBFloatBridge
 
 + (BOOL)available {
-    if ([[UIDevice currentDevice].systemVersion floatValue] < 7) return NO;
+    // iOS 6+: phiên âm thanh trộn được (setCategory:withOptions:) — iOS 5 thiếu, và iPad 1 (256 MB) không đủ RAM vừa giải mã trong
+    // SpringBoard vừa giữ app chạy nền
+    if ([[UIDevice currentDevice].systemVersion floatValue] < 6) return NO;
     if (![[NSFileManager defaultManager] fileExistsAtPath:kTweak]) return NO;
     // Người xem có giới hạn giờ xem: không cho ra ngoài app (khung nổi không đếm giờ xem, không dừng lúc tới giờ ngủ)
     NSString *pid = CBStr([CBPrefs currentProfile], @"id") ?: @"";
