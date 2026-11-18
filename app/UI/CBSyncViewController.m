@@ -1,4 +1,5 @@
 #import "CBSyncViewController.h"
+#import "CBAlert.h"
 #import "CBCore.h"
 #import "CBJSON.h"
 #import "CBLog.h"
@@ -259,7 +260,7 @@ static BOOL CBTrue(id v) {
         [CBCore call:@"sync.all" args:@{@"manual": @YES} done:^(id ok, NSString *err) { [self refresh]; }];
     } else if (ip.section == CBSyncFound && ip.row < (NSInteger)_found.count) {
         _target = _found[ip.row];
-        UIAlertView *a = [[UIAlertView alloc] initWithTitle:[NSString stringWithFormat:@"Ghép với %@", CBStr(_target, @"name")]
+        UIAlertView *a = [[CBAlert alloc] initWithTitle:[NSString stringWithFormat:@"Ghép với %@", CBStr(_target, @"name")]
                                                     message:@"Nhập mã ghép 4 số đang hiện trên màn Đồng bộ của máy đó." delegate:self
                                           cancelButtonTitle:@"Huỷ" otherButtonTitles:@"Ghép", nil];
         a.alertViewStyle = UIAlertViewStylePlainTextInput;
@@ -270,7 +271,7 @@ static BOOL CBTrue(id v) {
     } else if (ip.section == CBSyncFound) {
         [self browse];
     } else if (ip.section == CBSyncManual) {
-        UIAlertView *a = [[UIAlertView alloc] initWithTitle:@"Ghép bằng địa chỉ"
+        UIAlertView *a = [[CBAlert alloc] initWithTitle:@"Ghép bằng địa chỉ"
                                                     message:@"Địa chỉ IP của máy kia và mã ghép 4 số đang hiện ở máy đó."
                                                    delegate:self cancelButtonTitle:@"Huỷ" otherButtonTitles:@"Ghép", nil];
         a.alertViewStyle = UIAlertViewStyleLoginAndPasswordInput;

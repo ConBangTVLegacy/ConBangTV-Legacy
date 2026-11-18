@@ -331,7 +331,7 @@ typedef NS_ENUM(NSInteger, CBSettingsAlert) {
 }
 
 - (UIAlertView *)ask:(NSString *)title message:(NSString *)msg tag:(NSInteger)tag style:(UIAlertViewStyle)style ok:(NSString *)ok {
-    UIAlertView *a = [[UIAlertView alloc] initWithTitle:title message:msg delegate:self cancelButtonTitle:@"Huỷ" otherButtonTitles:ok, nil];
+    UIAlertView *a = [[CBAlert alloc] initWithTitle:title message:msg delegate:self cancelButtonTitle:@"Huỷ" otherButtonTitles:ok, nil];
     a.alertViewStyle = style;
     a.tag = tag;
     return a;
@@ -458,7 +458,7 @@ typedef NS_ENUM(NSInteger, CBSettingsAlert) {
                 [again textFieldAtIndex:0].keyboardType = UIKeyboardTypeNumberPad;
                 [again show];
             } else {
-                [[[UIAlertView alloc] initWithTitle:@"Mã PIN phải là 4 chữ số" message:nil delegate:nil cancelButtonTitle:@"OK"
+                [[[CBAlert alloc] initWithTitle:@"Mã PIN phải là 4 chữ số" message:nil delegate:nil cancelButtonTitle:@"OK"
                                   otherButtonTitles:nil] show];
             }
             break;
@@ -469,7 +469,7 @@ typedef NS_ENUM(NSInteger, CBSettingsAlert) {
                 [CBPrefs setProfilePin:pid pin:pin];
                 [CBTheme toast:@"Đã đặt mã PIN."];
             } else {
-                [[[UIAlertView alloc] initWithTitle:@"Hai lần nhập không khớp" message:@"Mã PIN chưa được đặt." delegate:nil
+                [[[CBAlert alloc] initWithTitle:@"Hai lần nhập không khớp" message:@"Mã PIN chưa được đặt." delegate:nil
                                   cancelButtonTitle:@"OK" otherButtonTitles:nil] show];
             }
             _pinDraft = nil;
@@ -480,7 +480,7 @@ typedef NS_ENUM(NSInteger, CBSettingsAlert) {
                 [CBPrefs setProfilePin:pid pin:nil];
                 [CBTheme toast:@"Đã bỏ mã PIN."];
             } else {
-                [[[UIAlertView alloc] initWithTitle:@"Sai mã PIN" message:nil delegate:nil cancelButtonTitle:@"OK"
+                [[[CBAlert alloc] initWithTitle:@"Sai mã PIN" message:nil delegate:nil cancelButtonTitle:@"OK"
                                   otherButtonTitles:nil] show];
             }
             break;

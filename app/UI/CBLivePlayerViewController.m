@@ -5,6 +5,7 @@
 #import "CBIPTV.h"
 #import "CBJSON.h"
 #import "CBLog.h"
+#import "CBMiniPlayer.h"
 #import "CBNavController.h"
 #import "CBParental.h"
 #import "CBPrefs.h"
@@ -33,7 +34,7 @@ static void CBLiveForceOrientation(UIInterfaceOrientation o) {
     if ([d respondsToSelector:s]) ((void (*)(id, SEL, NSInteger, BOOL))objc_msgSend)(d, s, (NSInteger)o, YES);
 }
 
-@interface CBLivePlayerViewController () <UITableViewDataSource, UITableViewDelegate, UIGestureRecognizerDelegate>
+@interface CBLivePlayerViewController () <CBMiniPlayable, UITableViewDataSource, UITableViewDelegate, UIGestureRecognizerDelegate>
 @end
 
 @implementation CBLivePlayerViewController {
@@ -45,6 +46,7 @@ static void CBLiveForceOrientation(UIInterfaceOrientation o) {
     CBLiveVideoView *_video;
     UIView *_top, *_bottom, *_track, *_fill;
     UIButton *_closeButton, *_guideButton, *_sourceButton, *_channelsButton, *_prevButton, *_playButton, *_nextButton, *_liveButton;
+    UIButton *_miniButton;   // «Thu nhỏ»: hình kênh vào khung nhỏ ở góc, xem tiếp trong lúc lướt app (CBMiniPlayer); radio thì ẩn
     CBRoundLabel *_badge;   // «TRỰC TIẾP» / «CHẬM m:ss» — màu nền bo góc: fillColor
     UILabel *_titleLabel, *_progLabel, *_timeLabel, *_nextLabel, *_status;
     UIActivityIndicatorView *_spinner;
@@ -123,6 +125,7 @@ static void CBLiveForceOrientation(UIInterfaceOrientation o) {
 
 - (void)viewDidLoad {
     [super viewDidLoad];
+    [CBMiniPlayer closeOthers:self];   // mỗi lúc chỉ phát một: đóng trình phát đang thu nhỏ (nếu có)
     [CBSync setPlaying:YES];
     BOOL pad = [CBTheme isPad];
     _video = [[CBLiveVideoView alloc] initWithFrame:self.view.bounds];
@@ -159,6 +162,8 @@ static void CBLiveForceOrientation(UIInterfaceOrientation o) {
     _top.backgroundColor = shade;
     [self.view addSubview:_top];
     _closeButton = [self barButton:@"✕ Đóng" action:@selector(close)];
+    _miniButton = [self barButton:@"Thu nhỏ" action:@selector(minimize)];
+    _miniButton.hidden = ![CBMiniPlayer available];
     _guideButton = [self barButton:@"Lịch" action:@selector(openGuide)];
     _sourceButton = [self barButton:@"Nguồn 1/1" action:@selector(nextSource)];
     _channelsButton = [self barButton:@"☰ Kênh" action:@selector(toggleChannels)];
@@ -169,7 +174,7 @@ static void CBLiveForceOrientation(UIInterfaceOrientation o) {
     _badge.font = [CBTheme bold:11];
     _badge.textAlignment = NSTextAlignmentCenter;
     _badge.textColor = [UIColor whiteColor];
-    for (UIView *v in @[_closeButton, _guideButton, _sourceButton, _channelsButton, _titleLabel, _badge]) [_top addSubview:v];
+    for (UIView *v in @[_closeButton, _miniButton, _guideButton, _sourceButton, _channelsButton, _titleLabel, _badge]) [_top addSubview:v];
 
     _bottom = [[UIView alloc] init];
     _bottom.backgroundColor = shade;
@@ -293,7 +298,7 @@ static void CBLiveForceOrientation(UIInterfaceOrientation o) {
     BOOL pad = [CBTheme isPad];
     CGFloat w = self.view.bounds.size.width, h = self.view.bounds.size.height;
     CGFloat panelW = _panelOpen ? (pad ? 300 : 230) : 0, cw = w - panelW;
-    _video.frame = CGRectMake(0, 0, cw, h);  // bảng kênh mở: hình thu vào phần còn lại, không bị che
+    if (_video.superview == self.view) _video.frame = CGRectMake(0, 0, cw, h);  // bảng kênh mở: hình thu vào phần còn lại (đang thu nhỏ: hình ở khung nhỏ)
     _panel.frame = CGRectMake(cw, 0, panelW, h);
 
     CGFloat topH = pad ? 52 : 44;
@@ -301,6 +306,13 @@ static void CBLiveForceOrientation(UIInterfaceOrientation o) {
     CGFloat x = 6;
     CGSize cs = [_closeButton sizeThatFits:CGSizeMake(200, topH)];
     _closeButton.frame = CGRectMake(x, 0, cs.width + 16, topH);
+    CGFloat leftEnd = CGRectGetMaxX(_closeButton.frame);
+    _miniButton.hidden = ![CBMiniPlayer available] || _radio;   // radio: không có hình, nghe tiếp khi ra ngoài sẵn rồi
+    if (!_miniButton.hidden) {
+        CGSize ms = [_miniButton sizeThatFits:CGSizeMake(200, topH)];
+        _miniButton.frame = CGRectMake(leftEnd, 0, ms.width + 16, topH);
+        leftEnd = CGRectGetMaxX(_miniButton.frame);
+    }
     CGFloat right = cw - 6;
     for (UIButton *b in @[_channelsButton, _sourceButton, _guideButton]) {
         if (b.hidden) continue;
@@ -308,7 +320,7 @@ static void CBLiveForceOrientation(UIInterfaceOrientation o) {
         right -= s.width + 16;
         b.frame = CGRectMake(right, 0, s.width + 16, topH);
     }
-    CGFloat titleL = CGRectGetMaxX(_closeButton.frame) + 8, titleR = right - 8;
+    CGFloat titleL = leftEnd + 8, titleR = right - 8;
     CGSize bs = [_badge.text ?: @"" sizeWithFont:_badge.font];
     CGFloat badgeW = bs.width + 12;
     CGSize ts = [_titleLabel.text ?: @"" sizeWithFont:_titleLabel.font];
@@ -1104,6 +1116,29 @@ static void CBLiveForceOrientation(UIInterfaceOrientation o) {
     });
 }
 
+#pragma mark - Thu nhỏ (CBMiniPlayer)
+
+- (void)minimize {
+    [CBMiniPlayer minimize:self];
+}
+
+- (UIView *)miniVideoView {
+    return _video;
+}
+
+- (void)miniRestoreVideo:(UIView *)video {
+    [self.view insertSubview:video atIndex:0];   // dưới thẻ radio / thanh nút như lúc đầu; khung đặt lại ở viewDidLayoutSubviews
+    [self.view setNeedsLayout];
+}
+
+- (BOOL)miniPlaying {
+    return _player.rate > 0;
+}
+
+- (void)miniTogglePlay {
+    [self togglePlay];
+}
+
 - (void)togglePlay {
     // Chưa có trình phát (lỗi / đã dừng), hoặc đài radio đang tạm dừng: mở lại — radio nghe tiếp đúng giờ phát, không phát
     // phần đệm cũ
@@ -1136,7 +1171,7 @@ static void CBLiveForceOrientation(UIInterfaceOrientation o) {
     [CBWatchLimit tick:playing];
     CBLimitBlock b = [CBWatchLimit blocked];
     if (b != CBLimitNone && _appeared) {
-        UIViewController *host = self.presentingViewController;
+        UIViewController *host = [CBMiniPlayer hostFor:self];
         [self close];
         [CBParental limitReached:b film:nil episode:nil host:host];
         return;
@@ -1254,7 +1289,8 @@ static void CBLiveForceOrientation(UIInterfaceOrientation o) {
     [CBCore sync:@"media.closeAll" args:nil];
     [CBSync setPlaying:NO];
     [MPNowPlayingInfoCenter defaultCenter].nowPlayingInfo = nil;
-    [self.presentingViewController dismissViewControllerAnimated:YES completion:nil];
+    if (self.presentingViewController) [self.presentingViewController dismissViewControllerAnimated:YES completion:nil];
+    [CBMiniPlayer playerClosed:self];
 }
 
 - (void)updateNowPlaying {

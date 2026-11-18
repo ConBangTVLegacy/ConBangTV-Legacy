@@ -4,6 +4,7 @@
 #import "CBLog.h"
 #import "CBPlayerViewController.h"
 #import "CBPrefs.h"
+#import "CBAlert.h"
 #import <UIKit/UIKit.h>
 
 static NSString *const kKey = @"wait_playable";
@@ -15,7 +16,8 @@ static BOOL gChecking;
 static NSMutableArray *gReady;   // [{detail, ep, title}] đã xem được — chờ hiện hộp (đang xem phim / đang hiện hộp khác)
 static BOOL gPrompting;
 
-@interface CBWaitPlayable () <UIAlertViewDelegate>
+@interface CBWaitPlayable ()
+- (void)promptClosed:(BOOL)watch;
 @end
 
 @implementation CBWaitPlayable
@@ -289,18 +291,20 @@ static BOOL gPrompting;
                                                group.length && CBArr(r[@"detail"], @"groups").count > 1
                                                    ? [NSString stringWithFormat:@" (%@)", group] : @""];
     gPrompting = YES;
-    UIAlertView *a = [[UIAlertView alloc] initWithTitle:@"Đã xem được" message:msg delegate:[self shared]
-                                      cancelButtonTitle:@"Để sau" otherButtonTitles:@"Xem ngay", nil];
-    [a show];
+    // Mở trình phát khi hộp đã đóng hẳn (cửa sổ chính lại là cửa sổ trên cùng)
+    [[CBAlert title:@"Đã xem được" message:msg cancel:@"Để sau" others:@[@"Xem ngay"] done:^(CBAlert *a, NSInteger index) {
+        BOOL watch = index != a.cancelButtonIndex;
+        [a afterDismiss:^{ [[CBWaitPlayable shared] promptClosed:watch]; }];
+    }] show];
 }
 
-/// Sau khi hộp thoại đóng hẳn (cửa sổ chính lại là cửa sổ trên cùng) mới mở trình phát
-- (void)alertView:(UIAlertView *)alert didDismissWithButtonIndex:(NSInteger)index {
+/// Hộp «Đã xem được» đã đóng hẳn: «Xem ngay» thì mở trình phát
+- (void)promptClosed:(BOOL)watch {
     gPrompting = NO;
     if (!gReady.count) return;
     NSDictionary *r = gReady[0];
     [gReady removeObjectAtIndex:0];
-    if (index != alert.cancelButtonIndex) {
+    if (watch) {
         NSDictionary *detail = r[@"detail"];
         CBLog(@"Báo khi xem được: mở %@ — %@", CBStr(detail, @"title"), CBStr(r[@"ep"], @"title"));
         UIViewController *top = [CBWaitPlayable top];

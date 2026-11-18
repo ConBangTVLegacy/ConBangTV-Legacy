@@ -17,7 +17,9 @@
 #import "CBSettingsViewController.h"
 #import "CBSyncViewController.h"
 #import "CBTouch.h"
+#import "CBAlert.h"
 #import "CBFPS.h"
+#import "CBMiniPlayer.h"
 #import "CBLatency.h"
 #import "CBJSON.h"
 #import "CBIPTV.h"
@@ -105,6 +107,8 @@
 
 /// Hộp thoại UIAlertView đang hiện (iOS 6 đặt trong cửa sổ riêng)
 + (UIAlertView *)visibleAlert {
+    CBAlert *own = [CBAlert visibleOwnAlert];   // iOS 7+: hộp tự vẽ (không nằm trong cây view của cửa sổ app)
+    if (own) return own;
     for (UIWindow *w in [[UIApplication sharedApplication].windows reverseObjectEnumerator]) {
         UIAlertView *a = [self alertIn:w];
         if (a) return a;
@@ -279,6 +283,8 @@
                   [CBIPTV matchLine:c at:now] ?: @"(kênh thường)", [kinds componentsJoinedByString:@","],
                   CBStr(c, @"ua") ? @" · UA riêng" : @"", [CBIPTV hasKickReminder:c] ? @" · 🔔" : @"");
         }
+    } else if ([verb isEqualToString:@"tvask"]) {
+        [CBListImport ask:nil];   // hộp «Thêm danh sách kênh» như bấm «+ Thêm danh sách»
     } else if ([verb isEqualToString:@"tvupload"]) {
         // tvupload — hộp «Gửi tệp từ máy tính» (mở trang nhận tệp trên Wi-Fi)
         [CBListImport showUpload:nil];
@@ -625,6 +631,63 @@
         walk(top.view);
         walk = nil;
         CBLog(@"[gỡ lỗi] bỏ bo góc của %lu lớp", (unsigned long)n);
+    } else if ([verb isEqualToString:@"dlg"]) {
+        // dlg long|login|pin|none|many — mở thử từng kiểu hộp thoại (bấm bằng lệnh «alert …»)
+        if ([arg isEqualToString:@"pin"]) {
+            [CBAlert askPin:@"Mã PIN (thử)" message:@"Hộp thử — bấm Huỷ" done:^(NSString *pin) { CBLog(@"[gỡ lỗi] dlg pin → %@", pin); }];
+            return;
+        }
+        NSMutableString *longText = [NSMutableString string];
+        for (int i = 1; i <= 30; i++) [longText appendFormat:@"• Dòng %d của ghi chú dài — hộp phải cuộn được khi chữ dài hơn màn hình.\n", i];
+        BOOL many = [arg isEqualToString:@"many"], none = [arg isEqualToString:@"none"];
+        CBAlert *a = [CBAlert title:@"Hộp thử" message:[arg isEqualToString:@"long"] ? longText : @"Nội dung ngắn."
+                             cancel:none ? nil : @"Huỷ" others:none ? nil : (many ? @[@"Một", @"Hai", @"Ba"] : @[@"OK"])
+                               done:^(CBAlert *x, NSInteger i) { CBLog(@"[gỡ lỗi] dlg %@ → nút %ld", arg, (long)i); }];
+        if ([arg isEqualToString:@"login"]) a.alertViewStyle = UIAlertViewStyleLoginAndPasswordInput;
+        [a show];
+        if (none) {
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                [a dismissWithClickedButtonIndex:0 animated:YES];
+            });
+        }
+    } else if ([verb isEqualToString:@"mini"]) {
+        // mini — thu nhỏ trình phát đang mở (phim / kênh); mini open — mở lại toàn màn hình; mini close — đóng khung nhỏ
+        if ([arg isEqualToString:@"status"]) {
+            // lớp hình đã hiện khung đầu chưa (readyForDisplay), đang phát không, nằm ở đâu
+            UIView *v = nil;
+            for (UIWindow *w in [UIApplication sharedApplication].windows) {
+                NSMutableArray *stack = [NSMutableArray arrayWithObject:w];
+                while (stack.count && !v) {
+                    UIView *x = stack.lastObject;
+                    [stack removeLastObject];
+                    if ([x.layer isKindOfClass:[AVPlayerLayer class]] && x.window) v = x;
+                    [stack addObjectsFromArray:x.subviews];
+                }
+                if (v) break;
+            }
+            AVPlayerLayer *pl = (AVPlayerLayer *)v.layer;
+            CBLog(@"[gỡ lỗi] mini: lớp hình %@ — readyForDisplay %d, rate %.2f, khung %@ trong %@", v ? @"có" : @"không thấy",
+                  pl.readyForDisplay, pl.player.rate, NSStringFromCGRect([v convertRect:v.bounds toView:nil]),
+                  NSStringFromClass([v.superview class]));
+        } else if ([arg isEqualToString:@"open"]) {
+            [CBMiniPlayer expand];
+        } else if ([arg isEqualToString:@"close"]) {
+            [CBMiniPlayer closeCurrent];
+        } else {
+            UIViewController *p = player ?: (UIViewController *)[self live];
+            if ([p conformsToProtocol:@protocol(CBMiniPlayable)]) [CBMiniPlayer minimize:(UIViewController<CBMiniPlayable> *)p];
+            else CBLog(@"[gỡ lỗi] không có trình phát nào đang mở");
+        }
+    } else if ([verb isEqualToString:@"minitest"]) {
+        // minitest 1|0 — bật thu nhỏ cả trên máy RAM thấp (iPad 1) để thử; có hiệu lực ngay (nút ẩn / hiện ở lần mở trình phát sau)
+        [[NSUserDefaults standardUserDefaults] setBool:[arg boolValue] forKey:@"CBMiniTest"];
+        [[NSUserDefaults standardUserDefaults] synchronize];
+        CBLog(@"[gỡ lỗi] thu nhỏ trên máy RAM thấp: %@", [arg boolValue] ? @"bật (thử)" : @"tắt");
+    } else if ([verb isEqualToString:@"owndialogs"]) {
+        // owndialogs 1|0 — iOS 5 / 6 cũng dùng hộp thoại tự vẽ (có hiệu lực khi mở lại app)
+        [[NSUserDefaults standardUserDefaults] setBool:[arg boolValue] forKey:@"CBOwnDialogs"];
+        [[NSUserDefaults standardUserDefaults] synchronize];
+        CBLog(@"[gỡ lỗi] hộp thoại tự vẽ trên mọi iOS: %@ (mở lại app)", [arg boolValue] ? @"bật" : @"tắt");
     } else if ([verb isEqualToString:@"update"]) {
         [CBUpdate checkManual];  // như chạm «Phiên bản» trong Cài đặt
     } else if ([verb isEqualToString:@"sheet"]) {
@@ -788,6 +851,7 @@ static AVPlayerLayer *gRawLayer;
     UIImage *img = nil;
     UIWindow *key = [UIApplication sharedApplication].keyWindow;
     CGImageRef (*grab)(void) = (CGImageRef (*)(void))dlsym(RTLD_DEFAULT, "UIGetScreenImage");
+    // (iOS 7+: lớp video — AVPlayerLayer — không vào ảnh; xem hình có hiện không bằng «mini status» → readyForDisplay)
     if ([key respondsToSelector:@selector(drawViewHierarchyInRect:afterScreenUpdates:)]) {
         // iOS 7+: UIGetScreenImage trả ảnh trắng (iOS 8) — vẽ lại các cửa sổ của app (cả cửa sổ hộp thoại)
         UIGraphicsBeginImageContextWithOptions(key.bounds.size, YES, 0);

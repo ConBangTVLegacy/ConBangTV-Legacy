@@ -150,7 +150,7 @@ static const NSUInteger CBMaxProfiles = 8;
 - (void)tapped:(UIButton *)b {
     if (b.tag < 0) {
         void (^ask)(void) = ^{
-            UIAlertView *a = [[UIAlertView alloc] initWithTitle:@"Thêm người xem" message:@"Tên người xem" delegate:self
+            UIAlertView *a = [[CBAlert alloc] initWithTitle:@"Thêm người xem" message:@"Tên người xem" delegate:self
                                               cancelButtonTitle:@"Huỷ" otherButtonTitles:@"Thêm", nil];
             a.tag = CBAskAdd;
             a.alertViewStyle = UIAlertViewStylePlainTextInput;
@@ -172,7 +172,7 @@ static const NSUInteger CBMaxProfiles = 8;
         return;
     }
     _pending = p;
-    UIAlertView *a = [[UIAlertView alloc] initWithTitle:CBStr(p, @"name") message:@"Nhập mã PIN" delegate:self
+    UIAlertView *a = [[CBAlert alloc] initWithTitle:CBStr(p, @"name") message:@"Nhập mã PIN" delegate:self
                                       cancelButtonTitle:@"Huỷ" otherButtonTitles:@"Vào", nil];
     a.tag = CBAskPin;
     a.alertViewStyle = UIAlertViewStyleSecureTextInput;
@@ -196,7 +196,7 @@ static const NSUInteger CBMaxProfiles = 8;
     if ([CBPrefs checkPin:text profile:_pending]) {
         [self choose:_pending];
     } else {
-        [[[UIAlertView alloc] initWithTitle:@"Sai mã PIN" message:nil delegate:nil cancelButtonTitle:@"OK" otherButtonTitles:nil] show];
+        [[[CBAlert alloc] initWithTitle:@"Sai mã PIN" message:nil delegate:nil cancelButtonTitle:@"OK" otherButtonTitles:nil] show];
     }
     _pending = nil;
 }

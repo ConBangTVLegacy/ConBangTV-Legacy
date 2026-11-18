@@ -302,11 +302,6 @@ static void CBServe(int fd) {
     return l;
 }
 
-/// Mở hộp sau khi hộp vừa bấm đã đóng hẳn (iOS 5 / 6: mở hộp mới lúc hộp cũ đang đóng thì hộp mới không hiện)
-static void CBAfterAlert(dispatch_block_t b) {
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.45 * NSEC_PER_SEC)), dispatch_get_main_queue(), b);
-}
-
 + (void)ask:(void (^)(NSDictionary *))done {
     [[CBAlert title:@"Thêm danh sách kênh" message:@"Danh sách M3U / M3U8 mà anh có quyền xem — app không kèm sẵn kênh." cancel:@"Huỷ"
              others:@[@"Nhập địa chỉ (http…)", @"Gửi tệp từ máy tính (Wi-Fi)", @"Chọn tệp .m3u trên máy này"]
@@ -314,11 +309,12 @@ static void CBAfterAlert(dispatch_block_t b) {
         NSInteger k = [a otherIndex:index];
         if (k < 0) return;
         CBLog(@"Truyền hình: thêm danh sách — chọn «%@»", [a buttonTitleAtIndex:index]);
-        CBAfterAlert(^{
+        // Hộp sau mở khi hộp này đã đóng hẳn (iOS 5 / 6: mở hộp mới lúc hộp cũ đang đóng thì hộp mới không hiện)
+        [a afterDismiss:^{
             if (k == 0) [self askURL:done];
             else if (k == 1) [self showUpload:done];
             else [self pickLocal:done];
-        });
+        }];
     }] show];
 }
 
@@ -338,7 +334,7 @@ static void CBAfterAlert(dispatch_block_t b) {
         }
         NSString *url = [CBIPTV listURLFrom:input];
         CBLog(@"Truyền hình: thêm danh sách «%@» → %@", input, url ?: @"địa chỉ không đúng");
-        CBAfterAlert(^{
+        [alert afterDismiss:^{
             if (!url) {
                 [self failURL:input why:@"Địa chỉ chưa đúng — cần dạng http://tên-miền/danh-sach.m3u (hoặc https://…)." done:done];
                 return;
@@ -355,7 +351,7 @@ static void CBAfterAlert(dispatch_block_t b) {
                 return;
             }
             [self checkURL:url done:done];
-        });
+        }];
     }];
     a.alertViewStyle = UIAlertViewStylePlainTextInput;
     UITextField *f = [a textFieldAtIndex:0];
@@ -383,11 +379,9 @@ static void CBAfterAlert(dispatch_block_t b) {
             if (over) return;
             over = YES;
             // Đóng bằng mã thì CBAlert không gọi khối done
+            if (!parsed) [wait afterDismiss:^{ [self failURL:url why:why done:done]; }];
             [wait dismissWithClickedButtonIndex:wait.cancelButtonIndex animated:YES];
-            if (!parsed) {
-                CBAfterAlert(^{ [self failURL:url why:why done:done]; });
-                return;
-            }
+            if (!parsed) return;
             NSDictionary *l = [CBIPTV addList:url parsed:parsed];
             [CBTheme toast:[NSString stringWithFormat:@"Đã thêm «%@» — %lu kênh.", CBStr(l, @"name"),
                                                       (unsigned long)CBArr(parsed, @"channels").count]];
@@ -400,7 +394,7 @@ static void CBAfterAlert(dispatch_block_t b) {
     [[CBAlert title:@"Chưa thêm được danh sách" message:[NSString stringWithFormat:@"%@\n\n%@", why ?: @"Không đọc được danh sách.", url]
              cancel:@"Đóng" others:@[@"Sửa địa chỉ"] done:^(CBAlert *a, NSInteger index) {
         if ([a otherIndex:index] != 0) return;
-        CBAfterAlert(^{ [self askURL:done text:url]; });
+        [a afterDismiss:^{ [self askURL:done text:url]; }];
     }] show];
 }
 

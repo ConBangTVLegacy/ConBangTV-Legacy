@@ -240,9 +240,8 @@ static BOOL gPrompting; // đang hiện hộp «Có bản mới» (không chồn
         return;
     }
     // cbupdate đã tách nền: sắp đóng app, cài, rồi mở lại
-    [[[UIAlertView alloc] initWithTitle:[NSString stringWithFormat:@"Đang cài bản %@…", version]
-                                message:@"App sẽ tự đóng rồi mở lại sau vài giây." delegate:nil cancelButtonTitle:nil
-                      otherButtonTitles:nil] show];
+    [[CBAlert title:[NSString stringWithFormat:@"Đang cài bản %@…", version] message:@"App sẽ tự đóng rồi mở lại sau vài giây."
+             cancel:nil others:nil done:nil] show];
 }
 
 @end

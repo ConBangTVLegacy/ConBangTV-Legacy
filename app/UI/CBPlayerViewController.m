@@ -4,6 +4,7 @@
 #import "CBImages.h"
 #import "CBJSON.h"
 #import "CBLog.h"
+#import "CBMiniPlayer.h"
 #import "CBParental.h"
 #import "CBPrefs.h"
 #import "CBSync.h"
@@ -120,7 +121,7 @@ static void CBForceOrientation(UIInterfaceOrientation o) {
 }
 @end
 
-@interface CBPlayerViewController () <UIGestureRecognizerDelegate, CBCollectionViewDataSource,
+@interface CBPlayerViewController () <CBMiniPlayable, UIGestureRecognizerDelegate, CBCollectionViewDataSource,
                                       CBCollectionViewDelegate>
 @end
 
@@ -161,6 +162,7 @@ static void CBForceOrientation(UIInterfaceOrientation o) {
     NSUInteger _tickCount;
     // Menu «⋯»
     UIButton *_moreButton;
+    UIButton *_miniButton;      // «Thu nhỏ»: hình vào khung nhỏ ở góc, xem tiếp trong lúc lướt app (CBMiniPlayer)
     // Bảng chọn tự vẽ (server, menu «⋯», tốc độ, hẹn giờ): UIActionSheet của iOS 6 ở iPhone ngang thành danh sách cuộn, che mục
     UIView *_menuPanel;
     UIScrollView *_menuBox;
@@ -257,6 +259,7 @@ static void CBForceOrientation(UIInterfaceOrientation o) {
 
 - (void)viewDidLoad {
     [super viewDidLoad];
+    [CBMiniPlayer closeOthers:self];   // mỗi lúc chỉ phát một: đóng trình phát đang thu nhỏ (nếu có)
     [CBSync setPlaying:YES];
     _video = [[CBVideoView alloc] initWithFrame:self.view.bounds];
     _video.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
@@ -271,6 +274,9 @@ static void CBForceOrientation(UIInterfaceOrientation o) {
     [self.view addSubview:_top];
     _closeButton = [self barButton:@"✕ Đóng" action:@selector(close)];
     [_top addSubview:_closeButton];
+    _miniButton = [self barButton:@"Thu nhỏ" action:@selector(minimize)];
+    _miniButton.hidden = ![CBMiniPlayer available];
+    [_top addSubview:_miniButton];
     _serverButton = [self barButton:@"Server" action:@selector(showServers)];
     _serverButton.titleLabel.lineBreakMode = NSLineBreakByTruncatingTail;
     _serverButton.titleLabel.adjustsFontSizeToFitWidth = YES;
@@ -454,7 +460,13 @@ static void CBForceOrientation(UIInterfaceOrientation o) {
     }
     x -= 48;
     _moreButton.frame = CGRectMake(x, 0, 44, topH);
-    _titleLabel.frame = CGRectMake(98, 0, MAX(0, x - 102), topH);
+    CGFloat titleX = 98;
+    if (!_miniButton.hidden) {
+        CGFloat mw = ceil([_miniButton.titleLabel.text sizeWithFont:_miniButton.titleLabel.font].width) + 20;
+        _miniButton.frame = CGRectMake(94, 0, mw, topH);
+        titleX = 94 + mw + 4;
+    }
+    _titleLabel.frame = CGRectMake(titleX, 0, MAX(0, x - titleX - 4), topH);
     [self layoutEpisodePanel];
     CGFloat bottomH = 88;
     _bottom.frame = CGRectMake(0, h - bottomH, w, bottomH);
@@ -545,6 +557,7 @@ static void CBForceOrientation(UIInterfaceOrientation o) {
 /// Báo lỗi / trạng thái giữa màn kèm một nút (nil = không nút): «Thử lại», «Chọn server», «Tập sau »»…
 - (void)showError:(NSString *)text button:(NSString *)title action:(SEL)action {
     CBLog(@"Trình phát: %@", [text stringByReplacingOccurrencesOfString:@"\n" withString:@" "]);
+    if ([CBMiniPlayer isMini:self]) [CBMiniPlayer expand];   // đang thu nhỏ mà lỗi: mở lại cho thấy lỗi / nút
     [_spinner stopAnimating];
     _status.text = text;
     _status.hidden = NO;
@@ -1406,7 +1419,7 @@ static void CBForceOrientation(UIInterfaceOrientation o) {
         _blockedEp = ep;
         return;
     }
-    UIViewController *host = self.presentingViewController;
+    UIViewController *host = [CBMiniPlayer hostFor:self];
     NSString *film = _filmUrl;
     [self close];
     [CBParental limitReached:b film:film episode:ep host:host];
@@ -1429,6 +1442,30 @@ static void CBForceOrientation(UIInterfaceOrientation o) {
 }
 
 #pragma mark - Điều khiển
+
+#pragma mark - Thu nhỏ (CBMiniPlayer)
+
+- (void)minimize {
+    [CBMiniPlayer minimize:self];
+}
+
+- (UIView *)miniVideoView {
+    return _video;
+}
+
+- (void)miniRestoreVideo:(UIView *)video {
+    video.frame = self.view.bounds;
+    video.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    [self.view insertSubview:video atIndex:0];   // dưới các thanh nút / phụ đề như lúc đầu
+}
+
+- (BOOL)miniPlaying {
+    return _player.rate > 0;
+}
+
+- (void)miniTogglePlay {
+    [self togglePlay];
+}
 
 - (void)togglePlay {
     if (!_player) return;
@@ -2254,7 +2291,8 @@ NSString *CBPlaylistUndecodable(NSString *m3u8) {
     [CBCore sync:@"media.closeAll" args:nil];
     [CBSync setPlaying:NO];
     [MPNowPlayingInfoCenter defaultCenter].nowPlayingInfo = nil;
-    [self.presentingViewController dismissViewControllerAnimated:YES completion:nil];
+    if (self.presentingViewController) [self.presentingViewController dismissViewControllerAnimated:YES completion:nil];
+    [CBMiniPlayer playerClosed:self];
     [CBWaitPlayable playerClosed];
 }
 

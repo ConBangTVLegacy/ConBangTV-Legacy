@@ -5,46 +5,6 @@
 #import "CBPrefs.h"
 #import "CBTheme.h"
 
-@implementation CBAlert {
-    void (^_done)(CBAlert *, NSInteger);
-    NSInteger _firstOther;
-}
-
-+ (CBAlert *)title:(NSString *)title message:(NSString *)message cancel:(NSString *)cancel others:(NSArray *)others
-              done:(void (^)(CBAlert *, NSInteger))done {
-    CBAlert *a = [[CBAlert alloc] initWithTitle:title message:message delegate:nil cancelButtonTitle:cancel otherButtonTitles:nil];
-    a->_firstOther = a.numberOfButtons;   // các nút «others» đứng sau nút huỷ (nếu có)
-    for (NSString *o in others) [a addButtonWithTitle:o];
-    a.delegate = a;
-    a->_done = [done copy];
-    return a;
-}
-
-- (NSInteger)otherIndex:(NSInteger)index {
-    return index >= _firstOther && index < self.numberOfButtons ? index - _firstOther : -1;
-}
-
-- (void)alertView:(UIAlertView *)alertView clickedButtonAtIndex:(NSInteger)index {
-    void (^done)(CBAlert *, NSInteger) = _done;
-    _done = nil;  // bỏ vòng giữ nhau (khối giữ hộp thoại)
-    if (done) done(self, index);
-}
-
-+ (void)askPin:(NSString *)title message:(NSString *)message done:(void (^)(NSString *))done {
-    CBAlert *a = [self title:title message:message cancel:@"Huỷ" others:@[@"OK"] done:^(CBAlert *alert, NSInteger index) {
-        if (index == alert.cancelButtonIndex) {
-            done(nil);
-            return;
-        }
-        done([[alert textFieldAtIndex:0].text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]] ?: @"");
-    }];
-    a.alertViewStyle = UIAlertViewStyleSecureTextInput;
-    [a textFieldAtIndex:0].keyboardType = UIKeyboardTypeNumberPad;
-    [a show];
-}
-
-@end
-
 static BOOL CBIsPin(NSString *s) {
     return s.length == 4 && [s rangeOfCharacterFromSet:[[NSCharacterSet decimalDigitCharacterSet] invertedSet]].location == NSNotFound;
 }

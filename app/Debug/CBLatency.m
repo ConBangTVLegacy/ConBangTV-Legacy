@@ -1,4 +1,5 @@
 #import "CBLatency.h"
+#import "CBAlert.h"
 #import "CBCollectionView.h"
 #import "CBFPS.h"
 #import "CBLog.h"
@@ -111,6 +112,22 @@ static void CBDidAppear(UIViewController *vc, SEL cmd, BOOL animated) {
     gOpenAt = 0;
 }
 
+// ---- Hộp thoại: hiện mất bao lâu, bao nhiêu khung/s lúc đang hiện
+
+static IMP gAlertShow;
+static void CBAlertShow(UIAlertView *a, SEL cmd) {
+    CFTimeInterval t0 = CACurrentMediaTime(), up = gUpAt;
+    uint32_t f0 = CBRenderFrames();
+    ((void (*)(id, SEL))gAlertShow)(a, cmd);
+    CFTimeInterval spent = CACurrentMediaTime() - t0;
+    NSString *title = a.title ?: @"";
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        CFTimeInterval dur = CACurrentMediaTime() - t0;
+        CBLog(@"[chạm] hộp thoại «%@»: show %@, %.0f khung/s lúc hiện%@", title, CBMs(spent), (CBRenderFrames() - f0) / dur,
+              up && t0 - up < 3 ? [NSString stringWithFormat:@" (nhấc tay → show %@)", CBMs(t0 - up)] : @"");
+    });
+}
+
 // ---- Canh luồng chính: bận liền > 100 ms thì ghi ngăn xếp lúc đang nghẽn
 
 enum { kShots = 3, kDepth = 48 };
@@ -178,6 +195,7 @@ static void CBRunLoop(CFRunLoopObserverRef o, CFRunLoopActivity a, void *info) {
     gPop = CBSwap([UINavigationController class], @selector(popViewControllerAnimated:), (IMP)CBPop);
     gPresent = CBSwap([UIViewController class], @selector(presentViewController:animated:completion:), (IMP)CBPresent);
     gDidAppear = CBSwap([UIViewController class], @selector(viewDidAppear:), (IMP)CBDidAppear);
+    gAlertShow = CBSwap([CBAlert class], @selector(show), (IMP)CBAlertShow);
 
     gMain = mach_thread_self();
     gHi = (uintptr_t)pthread_get_stackaddr_np(pthread_self());
