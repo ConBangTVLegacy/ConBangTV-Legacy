@@ -645,18 +645,23 @@ static UIImage *CBScrim(BOOL top) {
     _retryButton.hidden = YES;
     _waitButton.hidden = YES;
     _venetiumButton.hidden = YES;
-    _center.hidden = YES;   // chữ trạng thái nằm giữa màn — chỗ của hàng nút tròn
+    [self updateCenter];
     [_spinner startAnimating];
     [self.view setNeedsLayout];
 }
 
 - (void)hideStatus {
     _status.hidden = YES;
-    _center.hidden = NO;
     _retryButton.hidden = YES;
     _waitButton.hidden = YES;
     _venetiumButton.hidden = YES;
     [_spinner stopAnimating];
+    [self updateCenter];
+}
+
+/// Hàng nút tròn giữa hình: ẩn khi chữ trạng thái (đang tải / lỗi) hay bảng chọn tập đang chiếm giữa màn
+- (void)updateCenter {
+    _center.hidden = !_status.hidden || _epPanel != nil;
 }
 
 - (void)showError:(NSString *)text retry:(BOOL)retry {
@@ -670,7 +675,7 @@ static UIImage *CBScrim(BOOL top) {
     [_spinner stopAnimating];
     _status.text = text;
     _status.hidden = NO;
-    _center.hidden = YES;
+    [self updateCenter];
     [_retryButton removeTarget:nil action:NULL forControlEvents:UIControlEventAllEvents];
     if (title && action) {
         [_retryButton setTitle:title forState:UIControlStateNormal];
@@ -817,6 +822,7 @@ static UIImage *CBScrim(BOOL top) {
     [_epGrid reloadData];
     [self scrollPanelToCurrent];
     [(CBPillButton *)_episodesButton setIcon:@"close" size:13];
+    [self updateCenter];
 }
 
 - (void)hideEpisodes {
@@ -826,6 +832,7 @@ static UIImage *CBScrim(BOOL top) {
     _epGroups = nil;
     _epGroupsStrip = nil;
     [(CBPillButton *)_episodesButton setIcon:@"list" size:15];
+    [self updateCenter];
     [self setControlsVisible:YES];
 }
 
@@ -879,7 +886,7 @@ static UIImage *CBScrim(BOOL top) {
     BOOL current = _panelGroup == _groupIndex && ip.item == _index;
     BOOL watched = [[CBPrefs watchedEpisodes] containsObject:CBStr(ep, @"url") ?: @""];
     cell.label.text = CBStr(ep, @"title");
-    cell.label.textColor = current ? [CBTheme focus] : (watched ? [UIColor colorWithWhite:1 alpha:0.45] : [UIColor whiteColor]);
+    cell.label.textColor = current ? CBRGB(0x5FDAAE) : (watched ? [UIColor colorWithWhite:1 alpha:0.45] : [UIColor whiteColor]);
     [cell setCurrent:current];
     return cell;
 }

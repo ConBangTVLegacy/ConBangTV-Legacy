@@ -185,6 +185,7 @@
     for (UIViewController *vc in nav.viewControllers.reverseObjectEnumerator) {
         if ([vc isKindOfClass:[CBTVViewController class]]) {
             if (nav.topViewController != vc) [nav popToViewController:vc animated:NO];
+            [vc view];   // màn gốc của tab có thể chưa dựng view
             return (CBTVViewController *)vc;
         }
     }
@@ -341,7 +342,9 @@
         nav = [self nav];
     }
     if ([self runTV:verb arg:arg]) return;
-    if ([verb isEqualToString:@"shot"]) {
+    if ([verb isEqualToString:@"appshot"]) {
+        [self appShot:arg.length ? arg : @"app"];
+    } else if ([verb isEqualToString:@"shot"]) {
         [self shot:arg.length ? arg : @"shot"];
     } else if ([verb isEqualToString:@"film"]) {
         [nav pushViewController:[[CBDetailViewController alloc] initWithItem:@{@"url": arg}] animated:YES];
@@ -881,6 +884,34 @@ static AVPlayerLayer *gRawLayer;
 }
 
 /// Chụp màn hình: UIGetScreenImage (API riêng, chụp được cả hình video) — không có thì vẽ lại cửa sổ
+/// appshot <tên> — chụp riêng các cửa sổ của app (vẽ lại cây view): không thanh trạng thái, không nút AssistiveTouch của
+/// SpringBoard — ảnh cho trang giới thiệu. Lớp video (AVPlayerLayer) không vào ảnh (đen) — màn có video thì ghép với cbscreen.
++ (void)appShot:(NSString *)name {
+    NSString *dir = [CBDocumentsDir() stringByAppendingPathComponent:@"shots"];
+    [[NSFileManager defaultManager] createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:NULL];
+    NSString *path = [dir stringByAppendingPathComponent:[name stringByAppendingPathExtension:@"png"]];
+    CGSize size = [UIScreen mainScreen].bounds.size;
+    UIGraphicsBeginImageContextWithOptions(size, YES, 0);
+    CGContextRef ctx = UIGraphicsGetCurrentContext();
+    [[UIColor blackColor] setFill];
+    UIRectFill(CGRectMake(0, 0, size.width, size.height));
+    for (UIWindow *w in [UIApplication sharedApplication].windows) {
+        if (w.hidden || w.alpha < 0.01) continue;
+        if ([w respondsToSelector:@selector(drawViewHierarchyInRect:afterScreenUpdates:)]) {
+            [w drawViewHierarchyInRect:w.frame afterScreenUpdates:NO];
+        } else {
+            CGContextSaveGState(ctx);
+            CGContextTranslateCTM(ctx, w.frame.origin.x, w.frame.origin.y);
+            [w.layer renderInContext:ctx];
+            CGContextRestoreGState(ctx);
+        }
+    }
+    UIImage *img = UIGraphicsGetImageFromCurrentImageContext();
+    UIGraphicsEndImageContext();
+    [UIImagePNGRepresentation(img) writeToFile:path atomically:YES];
+    CBLog(@"[gỡ lỗi] appshot → %@ (%.0f×%.0f)", path, img.size.width * img.scale, img.size.height * img.scale);
+}
+
 + (void)shot:(NSString *)name {
     NSString *dir = [CBDocumentsDir() stringByAppendingPathComponent:@"shots"];
     [[NSFileManager defaultManager] createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:NULL];

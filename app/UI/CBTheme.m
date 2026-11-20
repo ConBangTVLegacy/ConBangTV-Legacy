@@ -131,8 +131,11 @@ static NSString *CBColorKey(UIColor *color) {
     // Thanh chọn (Vietsub / Thuyết minh, nhóm kênh…): rãnh viên thuốc trắng mờ, mục đang chọn sáng hơn, không vạch chia
     UISegmentedControl *seg = [UISegmentedControl appearance];
     [seg setTintColor:[self surface2]];
+    // Vạch chia cùng màu rãnh (1 điểm) — rãnh liền một dải, không lộ khe tối giữa các mục
     UIGraphicsBeginImageContextWithOptions(CGSizeMake(1, 1), NO, 0);
-    UIImage *clear = UIGraphicsGetImageFromCurrentImageContext();   // vạch chia trong suốt 1 điểm
+    [[UIColor colorWithWhite:1 alpha:0.08] setFill];
+    UIRectFill(CGRectMake(0, 0, 1, 1));
+    UIImage *clear = UIGraphicsGetImageFromCurrentImageContext();
     UIGraphicsEndImageContext();
     UIImage *track = [CBGlass pill:16 color:[UIColor colorWithWhite:1 alpha:0.08] sheen:NO];
     UIImage *on = [CBGlass pill:16 color:[UIColor colorWithWhite:1 alpha:0.2] sheen:NO];

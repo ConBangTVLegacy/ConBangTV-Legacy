@@ -275,7 +275,9 @@ static NSString *CBTabIcon(NSInteger i) {
     CGFloat _kbTop;
     UIImageView *_fadeBottom, *_fadeTop;
     BOOL _compact;
-    __weak UIScrollView *_watched;
+    // Danh sách đang theo dõi cuộn (KVO contentOffset). Giữ CHẶT: danh sách bị giải phóng lúc còn bị theo dõi thì KVO của
+    // iOS 5 / 6 hỏng → văng khi bố cục (đã gặp: popToRoot từ trang phim, 20/11/2026). Gỡ ngay khi thanh điều hướng đổi màn.
+    UIScrollView *_watched;
     CGFloat _lastY;
     BOOL _padBarHidden;
 }
@@ -523,6 +525,11 @@ static NSString *CBTabIcon(NSInteger i) {
 /// Màn sắp bỏ đi (thanh điều hướng báo trước khi đổi màn): thôi theo dõi danh sách của nó trước khi nó bị giải phóng
 - (void)willLeave:(UIViewController *)vc {
     if (_watched && [self mainScrollOf:vc] == _watched) [self unwatch];
+}
+
+/// Thanh điều hướng sắp hiện `vc` (đẩy, lùi, lùi về gốc…): danh sách đang theo dõi không phải của `vc` thì gỡ ngay
+- (void)navWillShow:(UIViewController *)vc {
+    if (_watched && [self mainScrollOf:vc] != _watched) [self unwatch];
 }
 
 - (void)observeValueForKeyPath:(NSString *)keyPath ofObject:(id)object change:(NSDictionary *)change context:(void *)context {

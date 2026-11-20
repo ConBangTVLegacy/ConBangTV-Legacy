@@ -9,6 +9,7 @@ static char kGlassedKey;
 @interface CBRootViewController (CBNav)
 - (void)topChanged:(UINavigationController *)nav animated:(BOOL)animated;
 - (void)willLeave:(UIViewController *)vc;
+- (void)navWillShow:(UIViewController *)vc;
 @end
 
 @implementation CBNavController
@@ -66,11 +67,9 @@ static char kGlassedKey;
     BOOL hide = self.tabRoot && vc == self.viewControllers.firstObject;
     if (self.navigationBarHidden != hide) [self setNavigationBarHidden:hide animated:animated];
     [CBNavController glassify:vc inNav:self];
+    // Màn đang rời (bị lùi ra thì sắp giải phóng): bỏ theo dõi danh sách của nó — mọi kiểu đổi màn (đẩy, lùi, lùi về gốc…)
     CBRootViewController *root = [CBRootViewController current];
-    UIViewController *leaving = self.topViewController != vc ? self.topViewController : nil;
-    // Màn đang rời (bị lùi ra thì sắp giải phóng): bỏ theo dõi danh sách của nó; khi lùi, topViewController đã là màn mới
-    for (UIViewController *c in self.viewControllers) if (c != vc) [root willLeave:c];
-    if (leaving) [root willLeave:leaving];
+    if (root.content == self) [root navWillShow:vc];
 }
 
 - (void)navigationController:(UINavigationController *)nav didShowViewController:(UIViewController *)vc animated:(BOOL)animated {
@@ -80,6 +79,19 @@ static char kGlassedKey;
 - (UIViewController *)popViewControllerAnimated:(BOOL)animated {
     [[CBRootViewController current] willLeave:self.topViewController];
     return [super popViewControllerAnimated:animated];
+}
+
+- (NSArray *)popToRootViewControllerAnimated:(BOOL)animated {
+    for (UIViewController *c in self.viewControllers) if (c != self.viewControllers.firstObject) [[CBRootViewController current] willLeave:c];
+    return [super popToRootViewControllerAnimated:animated];
+}
+
+- (NSArray *)popToViewController:(UIViewController *)target animated:(BOOL)animated {
+    NSUInteger i = [self.viewControllers indexOfObject:target];
+    if (i != NSNotFound) {
+        for (NSUInteger k = i + 1; k < self.viewControllers.count; k++) [[CBRootViewController current] willLeave:self.viewControllers[k]];
+    }
+    return [super popToViewController:target animated:animated];
 }
 
 - (void)backTapped {

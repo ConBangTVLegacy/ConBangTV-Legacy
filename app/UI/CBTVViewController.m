@@ -514,6 +514,7 @@
 }
 
 - (void)buildChips {
+    if (!_chips) return;   // view chưa dựng (màn vừa tạo ở tab mới) — iOS 5 văng khi objc_setAssociatedObject(nil, …)
     for (UIView *v in _chips.subviews) [v removeFromSuperview];
     NSMutableArray *chips = [NSMutableArray array];
     [chips addObject:@{@"id": @"*fav", @"title": [NSString stringWithFormat:@"★ Yêu thích  %lu", (unsigned long)[self favorites].count]}];

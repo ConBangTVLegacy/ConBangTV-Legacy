@@ -83,6 +83,7 @@
     UIImageView *_backdrop;   // nền đầu trang: ảnh bìa thu nhỏ rồi phóng to (mờ) — máy yếu (CBTheme lite) không có
     UIImageView *_backdropFade;
     UIImage *_backdropFrom;   // ảnh bìa đã làm nền (đổi ảnh thì làm lại)
+    BOOL _backdropWaiting;    // đang chờ ảnh bìa về để làm nền
     UILabel *_titleLabel, *_otherLabel, *_infoLabel, *_countLabel, *_messageLabel;
     UIButton *_playButton, *_followButton;
     // Hàng nút phụ: «Mới nhất: Tập N», «Từ tập đầu» (khi đang xem dở), «⇄ <trang> ▾» (phim có ở nhiều trang — từ trang chủ tổng hợp)
@@ -242,6 +243,7 @@
     if (![CBTheme lite]) {
         _backdrop = [[UIImageView alloc] init];
         _backdrop.contentMode = UIViewContentModeScaleAspectFill;
+        _backdrop.clipsToBounds = YES;   // phóng đầy khung thì tràn ra ngoài — cắt đúng khung (không lộ mép ở cuối đầu trang)
         _backdrop.alpha = 0.85;
         [_header addSubview:_backdrop];
         _backdropFade = [[UIImageView alloc] initWithImage:[self fadeImage]];
@@ -439,17 +441,32 @@
     return img;
 }
 
+- (void)waitBackdrop:(NSInteger)left {
+    __weak CBDetailViewController *weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        CBDetailViewController *s = weakSelf;
+        if (!s) return;
+        if (s->_poster.image) {
+            s->_backdropWaiting = NO;
+            [s updateBackdrop];
+        } else if (left > 1 && s.view.window) {
+            [s waitBackdrop:left - 1];
+        } else {
+            s->_backdropWaiting = NO;
+        }
+    });
+}
+
 /// Ảnh bìa đã về: thu về 12 × 18 điểm ảnh (gộp màu) — UIImageView phóng to bằng nội suy tuyến tính thành nền mờ. Một lần mỗi ảnh,
 /// rẻ hơn làm mờ thật (vImage) nhiều; máy yếu bỏ hẳn
 - (void)updateBackdrop {
     if (!_backdrop) return;
     UIImage *src = _poster.image;
     if (!src || src == _backdropFrom) {
-        if (!src) {
-            // ảnh bìa nạp không đồng bộ — hỏi lại sau
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                if (self->_poster.image && self->_poster.image != self->_backdropFrom) [self updateBackdrop];
-            });
+        // Ảnh bìa nạp không đồng bộ (mạng chậm có khi vài giây) — hỏi lại mỗi 0,4 s, tối đa ~12 s
+        if (!src && !_backdropWaiting) {
+            _backdropWaiting = YES;
+            [self waitBackdrop:30];
         }
         return;
     }
@@ -459,7 +476,13 @@
     [src drawInRect:CGRectMake(-1, -1, 14, 20)];   // bỏ mép bo góc
     UIImage *tiny = UIGraphicsGetImageFromCurrentImageContext();
     UIGraphicsEndImageContext();
-    _backdrop.image = tiny;
+    // Phóng ảnh nhỏ lên 120 × 180 bằng nội suy mịn (CoreGraphics) — mịn sẵn, không trông vỡ ô khi phóng tiếp
+    UIGraphicsBeginImageContextWithOptions(CGSizeMake(120, 180), YES, 1);
+    CGContextSetInterpolationQuality(UIGraphicsGetCurrentContext(), kCGInterpolationHigh);
+    [tiny drawInRect:CGRectMake(-10, -15, 140, 210)];
+    UIImage *soft = UIGraphicsGetImageFromCurrentImageContext();
+    UIGraphicsEndImageContext();
+    _backdrop.image = soft;
     _backdrop.alpha = 0;
     [UIView animateWithDuration:0.3 animations:^{ self->_backdrop.alpha = 0.85; }];
 }
