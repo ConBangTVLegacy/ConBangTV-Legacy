@@ -34,7 +34,7 @@ NSDictionary *CBItemFromFilm(NSDictionary *film) {
         layout.scrollDirection = CBCollectionViewScrollDirectionHorizontal;
         layout.itemSize = [CBPosterCell sizeForWidth:[CBPosterCell defaultWidth]];
         layout.minimumLineSpacing = 10;
-        layout.sectionInset = UIEdgeInsetsMake(0, 12, 0, 12);
+        layout.sectionInset = [CBTheme isPad] ? UIEdgeInsetsMake(0, 20, 0, 20) : UIEdgeInsetsMake(0, 16, 0, 16);
         _cv = [[CBCollectionView alloc] initWithFrame:self.contentView.bounds collectionViewLayout:layout];
         _cv.backgroundColor = [CBTheme bg];
         _cv.showsHorizontalScrollIndicator = NO;

@@ -40,6 +40,28 @@ Cổng phát nội bộ 127.0.0.1 (media_proxy: bỏ quảng cáo, cắt PNG ng�
 
 ## App (`app/`)
 
+**Giao diện kiểu iOS 26 «Liquid Glass» (từ 0.6.0):**
+
+- **Thanh tab nổi** (`UI/CBRootViewController.m`): Trang chủ / Truyền hình / Theo dõi / Cài đặt + Tìm kiếm, mỗi tab một thanh
+  điều hướng. iPhone: viên kính ở đáy + nút tìm tròn tách riêng; cuộn xuống thu thành một nút tròn, cuộn lên mở lại (theo dõi
+  `contentOffset` của danh sách chính, bỏ đoạn nảy ở hai đầu); thanh thu nhỏ của trình phát là viên kính ngay trên thanh tab
+  (thanh tab thu gọn thì nằm giữa nút tab và nút tìm). iPad: thanh tab giữa mép trên, ẩn ở màn đẩy vào. Nội dung tràn dưới thanh
+  tab; danh sách chính của màn đang hiện được đặt lề dưới (`applyInsetsTo:`). Màn gốc của tab ẩn thanh điều hướng và tự vẽ tiêu
+  đề lớn (`UI/CBTabHeader.m`); màn đẩy vào có thanh liền màu nền + nút quay lại tròn kính (`UI/CBNavController.m` đổi nút
+  chữ của màn sang kính). `CBAppDelegate.nav` = thanh điều hướng của tab đang chọn.
+- **Kính** (`UI/CBGlass.m`): iOS 5 / 6 không làm mờ được thứ nằm dưới → «kính giả» là ảnh kéo giãn vẽ sẵn (nền tối 94 % + ánh
+  bóng + viền sáng mảnh + vệt sáng mép trên + bóng đổ), nhớ đệm theo bán kính — không lớp bo góc / bóng tính lại mỗi khung.
+  Máy RAM < 400 MB (`CBTheme lite` — iPad 1): không bóng đổ, trang phim không có nền ảnh bìa mờ. Kính chỉ cho lớp nổi (thanh
+  tab, nút trên đầu màn, trình phát, menu, hộp thoại); nội dung dùng nền phẳng. `CBPillButton` (viên thuốc / nút tròn: kính,
+  xanh, đỏ, trắng mờ), `CBGlassView`, `CBSwitch` (công tắc mới thay UISwitch bóng của iOS 6).
+- **Biểu tượng** (`UI/CBIcon.m`): đường vẽ SVG khung 24 (đọc lệnh M L H V C S Q T A Z), vẽ ra ảnh theo cỡ / màu, nhớ đệm; «back5»,
+  «fwd30»… theo bước tua. Không còn ký tự ☰ ► ⌄ ★ (thiếu / khác nhau giữa các bản iOS).
+- **Hộp thoại** (`UI/CBAlert.m`) tự vẽ trên mọi bản iOS: chữ canh trái, nút viên thuốc, nút chính «Xoá… / Bỏ…» màu đỏ.
+  **Bảng chọn** (`UI/CBSheet.m`, lớp con UIActionSheet — chỗ gọi chỉ đổi tên lớp): thẻ kính ở đáy (iPhone) / cạnh nút gọi
+  (iPad), mục «✓ …» vẽ dấu kiểm.
+- Ô / chip / thanh chọn / thanh tua / ô tìm theo cùng kiểu (`CBTheme apply`, `CBGroupedTableViewController` — ô nhóm bo 18 theo
+  vị trí, biểu tượng màu đầu dòng ở Cài đặt).
+
 | Màn | Có gì |
 | --- | --- |
 | Trang chủ | «Có tập mới» (phim theo dõi + phim đang xem dở có tập mới ở bất kỳ nguồn nào — `fresh` của lõi, lọc theo `seen_eps`), «Xem tiếp», các hàng của trang chủ tổng hợp (`home.load` / `home.late`); dải nút đầu trang: ★ Điểm IMDb cao (`imdb.page`), Thể loại… / Quốc gia… (`api.filters` / `next.filters`), danh mục của trang; quay lại app sau ≥ 20 phút thì tải lại; trang phim đổi tên miền (`movedTo`) thì đổi theo |
@@ -156,6 +178,10 @@ sử, vuốt ngang hàng phim, kéo xuống để tải lại, cuộn tự tải
 6 đã rẽ nhánh (`UIRefreshControl`, `UITableViewHeaderFooterView` — gắn yếu, không dùng trên iOS 5).
 
 ## Bẫy của iOS 6 đã gặp (và cách xử lý)
+
+- **`UISearchBar` của iOS 5 / 6 chưa có `keyboardAppearance`** (iOS 7 mới có) — gán thẳng là văng «unrecognized selector» lúc
+  mở màn có ô tìm. Bàn phím tối: đặt cho ô chữ bên trong (`CBTheme darkKeyboard:`). Bàn phím che thanh tab nổi → ô tìm có nút
+  «Hủy» khi đang gõ, cuộn kết quả cũng cất bàn phím.
 
 - **Cuộn giật vì bo góc** (đo bằng lệnh `fps`, 18/11/2026): `layer.cornerRadius` + `clipsToBounds` bắt GPU vẽ lớp ngoài màn hình ở
   mọi khung hình; iOS 5 tốn cả khi chỉ bo nền không cắt. iPad mini 1 iOS 8: trang chủ cuộn dọc 14 → 50 khung/s, hàng ngang 45 → 59;

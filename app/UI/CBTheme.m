@@ -1,19 +1,34 @@
+#import "CBIcon.h"
 #import "CBTheme.h"
 #import "CBCompat.h"
+#import "CBGlass.h"
+#import "CBRootViewController.h"
 #import "CBPrefs.h"
 #import "CBJSON.h"
 
 @implementation CBTheme
 
-+ (UIColor *)bg { return CBRGB(0x0E1014); }
-+ (UIColor *)surface { return CBRGB(0x171A21); }
-+ (UIColor *)surface2 { return CBRGB(0x232833); }
+// Bảng màu kiểu iOS 26 (bản mẫu duyệt 20/11/2026): nền gần đen, mặt nhóm / thẻ sáng hơn một bậc
++ (UIColor *)bg { return CBRGB(0x0A0B0E); }
++ (UIColor *)surface { return CBRGB(0x16191F); }
++ (UIColor *)surface2 { return CBRGB(0x22262E); }
 + (UIColor *)text { return CBRGB(0xF2F4F8); }
 + (UIColor *)dim { return CBRGB(0x9AA3B2); }
 + (UIColor *)brand { return CBRGB(0x2BAF85); }
 + (UIColor *)onBrand { return CBRGB(0x07140F); }
 + (UIColor *)focus { return CBRGB(0xFFB020); }
 + (UIColor *)watched { return CBRGB(0x3A6B5C); }
++ (UIColor *)accent { return CBRGB(0x41C99B); }
++ (UIColor *)danger { return CBRGB(0xC9372A); }
++ (UIColor *)dangerText { return CBRGB(0xFF7A6B); }
++ (UIColor *)fill { return [UIColor colorWithWhite:1 alpha:0.09]; }
++ (UIColor *)separator { return [UIColor colorWithWhite:1 alpha:0.08]; }
+
++ (BOOL)lite {
+    static int lite = -1;
+    if (lite < 0) lite = [NSProcessInfo processInfo].physicalMemory < 400ull * 1024 * 1024;
+    return lite == 1;
+}
 
 + (UIColor *)profileColor:(NSInteger)index {
     // Prefs.ProfileColors của bản Windows / TV
@@ -32,6 +47,10 @@
 
 + (UIFont *)bold:(CGFloat)size {
     return [UIFont boldSystemFontOfSize:size];
+}
+
++ (UIFont *)medium:(CGFloat)size {
+    return [UIFont fontWithName:@"HelveticaNeue-Medium" size:size] ?: [UIFont boldSystemFontOfSize:size];
 }
 
 + (UIImage *)imageWithColor:(UIColor *)color {
@@ -87,33 +106,83 @@ static NSString *CBColorKey(UIColor *color) {
 }
 
 + (void)apply {
+    // Kiểu iOS 26: thanh liền màu nền (không viền dưới, không bóng) — nút trên thanh là kính (CBNavController)
     UINavigationBar *bar = [UINavigationBar appearance];
-    [bar setBackgroundImage:[self imageWithColor:[self surface]] forBarMetrics:UIBarMetricsDefault];
+    [bar setBackgroundImage:[self imageWithColor:[self bg]] forBarMetrics:UIBarMetricsDefault];
+    if ([bar respondsToSelector:@selector(setShadowImage:)]) [bar setShadowImage:[[UIImage alloc] init]];
+    if ([bar respondsToSelector:@selector(setBarTintColor:)]) [bar setBarTintColor:[self bg]];
     [bar setTitleTextAttributes:@{UITextAttributeTextColor: [self text], UITextAttributeTextShadowColor: [UIColor clearColor],
-                                  UITextAttributeFont: [self bold:18]}];
+                                  UITextAttributeFont: [self bold:17]}];
     [bar setTintColor:[self surface2]];
     [[UIBarButtonItem appearance] setTintColor:[self surface2]];
     [[UIBarButtonItem appearance] setTitleTextAttributes:@{UITextAttributeTextColor: [self text],
                                                            UITextAttributeTextShadowColor: [UIColor clearColor]}
                                                 forState:UIControlStateNormal];
-    [[UISearchBar appearance] setTintColor:[self surface2]];
+    // Ô tìm: viên thuốc trắng mờ trên nền trong suốt (kiểu iOS 26), chữ trắng, kính lúp vẽ bằng CBIcon
+    UISearchBar *sb = [UISearchBar appearance];
+    [sb setTintColor:[self surface2]];
+    [sb setBackgroundImage:[[UIImage alloc] init]];
+    [sb setSearchFieldBackgroundImage:[CBGlass pill:18 color:[UIColor colorWithWhite:1 alpha:0.11] sheen:NO] forState:UIControlStateNormal];
+    [sb setImage:[CBIcon named:@"search" size:15 color:[self dim]] forSearchBarIcon:UISearchBarIconSearch state:UIControlStateNormal];
+    [[UITextField appearanceWhenContainedIn:[UISearchBar class], nil] setTextColor:[self text]];
+    [[UIBarButtonItem appearanceWhenContainedIn:[UISearchBar class], nil] setBackgroundImage:[CBGlass pill:15 color:[UIColor colorWithWhite:1 alpha:0.12] sheen:NO]
+                                                                                    forState:UIControlStateNormal barMetrics:UIBarMetricsDefault];
     [[UISwitch appearance] setOnTintColor:[self brand]];
-    [[UISegmentedControl appearance] setTintColor:[self surface2]];
-    [[UISlider appearance] setMinimumTrackTintColor:[self brand]];
+    // Thanh chọn (Vietsub / Thuyết minh, nhóm kênh…): rãnh viên thuốc trắng mờ, mục đang chọn sáng hơn, không vạch chia
+    UISegmentedControl *seg = [UISegmentedControl appearance];
+    [seg setTintColor:[self surface2]];
+    UIGraphicsBeginImageContextWithOptions(CGSizeMake(1, 1), NO, 0);
+    UIImage *clear = UIGraphicsGetImageFromCurrentImageContext();   // vạch chia trong suốt 1 điểm
+    UIGraphicsEndImageContext();
+    UIImage *track = [CBGlass pill:16 color:[UIColor colorWithWhite:1 alpha:0.08] sheen:NO];
+    UIImage *on = [CBGlass pill:16 color:[UIColor colorWithWhite:1 alpha:0.2] sheen:NO];
+    UIImage *down = [CBGlass pill:16 color:[UIColor colorWithWhite:1 alpha:0.14] sheen:NO];
+    [seg setBackgroundImage:track forState:UIControlStateNormal barMetrics:UIBarMetricsDefault];
+    [seg setBackgroundImage:on forState:UIControlStateSelected barMetrics:UIBarMetricsDefault];
+    [seg setBackgroundImage:down forState:UIControlStateHighlighted barMetrics:UIBarMetricsDefault];
+    UIControlState states[] = {UIControlStateNormal, UIControlStateSelected, UIControlStateHighlighted};
+    for (int i = 0; i < 3; i++) for (int j = 0; j < 3; j++) {
+        [seg setDividerImage:clear forLeftSegmentState:states[i] rightSegmentState:states[j] barMetrics:UIBarMetricsDefault];
+    }
+    [seg setTitleTextAttributes:@{UITextAttributeFont: [self medium:13], UITextAttributeTextColor: CBRGB(0xB8BFCA),
+                                  UITextAttributeTextShadowColor: [UIColor clearColor]} forState:UIControlStateNormal];
+    [seg setTitleTextAttributes:@{UITextAttributeFont: [self bold:13], UITextAttributeTextColor: [UIColor whiteColor],
+                                  UITextAttributeTextShadowColor: [UIColor clearColor]} forState:UIControlStateSelected];
+    // Thanh tua: rãnh mảnh 4 điểm bo tròn, núm tròn trắng có bóng
+    UISlider *sl = [UISlider appearance];
+    [sl setMinimumTrackImage:[[CBGlass pill:2 color:[self accent] sheen:NO] resizableImageWithCapInsets:UIEdgeInsetsMake(0, 2, 0, 2)]
+                    forState:UIControlStateNormal];
+    [sl setMaximumTrackImage:[[CBGlass pill:2 color:[UIColor colorWithWhite:1 alpha:0.25] sheen:NO]
+                                 resizableImageWithCapInsets:UIEdgeInsetsMake(0, 2, 0, 2)] forState:UIControlStateNormal];
+    UIGraphicsBeginImageContextWithOptions(CGSizeMake(26, 26), NO, 0);
+    CGContextSetShadowWithColor(UIGraphicsGetCurrentContext(), CGSizeMake(0, 1.5), 3, [UIColor colorWithWhite:0 alpha:0.4].CGColor);
+    [[UIColor whiteColor] setFill];
+    [[UIBezierPath bezierPathWithOvalInRect:CGRectMake(4, 3, 18, 18)] fill];
+    UIImage *thumb = UIGraphicsGetImageFromCurrentImageContext();
+    UIGraphicsEndImageContext();
+    [sl setThumbImage:thumb forState:UIControlStateNormal];
+    [sl setThumbImage:thumb forState:UIControlStateHighlighted];
+}
+
++ (void)darkKeyboard:(UISearchBar *)bar {
+    if ([bar respondsToSelector:@selector(setKeyboardAppearance:)]) {
+        [(id)bar setKeyboardAppearance:UIKeyboardAppearanceAlert];
+        return;
+    }
+    NSMutableArray *stack = [NSMutableArray arrayWithObject:bar];
+    while (stack.count) {
+        UIView *v = stack.lastObject;
+        [stack removeLastObject];
+        if ([v isKindOfClass:[UITextField class]]) {
+            [(UITextField *)v setKeyboardAppearance:UIKeyboardAppearanceAlert];
+            return;
+        }
+        [stack addObjectsFromArray:v.subviews];
+    }
 }
 
 + (UIButton *)button:(NSString *)title primary:(BOOL)primary {
-    UIButton *b = [UIButton buttonWithType:UIButtonTypeCustom];
-    [b setTitle:title forState:UIControlStateNormal];
-    b.titleLabel.font = [self bold:15];
-    UIColor *bg = primary ? [self brand] : [self surface2];
-    UIColor *down = primary ? CBRGB(0x1F8A68) : CBRGB(0x343B48);
-    [b setBackgroundImage:[self imageWithColor:bg radius:8] forState:UIControlStateNormal];
-    [b setBackgroundImage:[self imageWithColor:down radius:8] forState:UIControlStateHighlighted];
-    [b setTitleColor:primary ? [self onBrand] : [self text] forState:UIControlStateNormal];
-    [b setTitleColor:[self dim] forState:UIControlStateDisabled];
-    b.contentEdgeInsets = UIEdgeInsetsMake(8, 14, 8, 14);
-    return b;
+    return [CBPillButton pill:title style:primary ? CBPillProminent : CBPillSubtle];
 }
 
 + (UIView *)avatarFor:(NSDictionary *)profile size:(CGFloat)size {
@@ -197,17 +266,20 @@ static UILabel *gToast;
     UIView *w = [self toastHost];
     if (!w || !text.length) return;
     [gToast removeFromSuperview];
-    UILabel *l = [self roundLabel:[UIColor colorWithWhite:0.12 alpha:0.94] radius:10];
+    UILabel *l = [self roundLabel:[UIColor colorWithRed:33 / 255.0 green:37 / 255.0 blue:45 / 255.0 alpha:0.96] radius:22];
     l.textColor = [UIColor whiteColor];
     l.font = [self font:15];
     l.numberOfLines = 0;
     l.textAlignment = NSTextAlignmentCenter;
     l.text = text;
     CGFloat maxW = MIN(w.bounds.size.width - 40, 420);
-    CGFloat h = [self heightOf:text font:l.font width:maxW - 24] + 20;
+    CGFloat h = MAX(44, [self heightOf:text font:l.font width:maxW - 36] + 22);
     CGSize one = [text sizeWithFont:l.font];
-    CGFloat lw = MIN(maxW, one.width + 32);
-    l.frame = CGRectMake((w.bounds.size.width - lw) / 2, w.bounds.size.height - h - 100, lw, h);
+    CGFloat lw = MIN(maxW, one.width + 40);
+    // Trên thanh tab nổi (+ thanh thu nhỏ) của màn gốc
+    CBRootViewController *root = [CBRootViewController current];
+    CGFloat gap = root && w == root.view ? MAX(100, root.overlayBottom + 16) : 100;
+    l.frame = CGRectMake((w.bounds.size.width - lw) / 2, w.bounds.size.height - h - gap, lw, h);
     l.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin | UIViewAutoresizingFlexibleRightMargin | UIViewAutoresizingFlexibleTopMargin;
     l.alpha = 0;
     [w addSubview:l];

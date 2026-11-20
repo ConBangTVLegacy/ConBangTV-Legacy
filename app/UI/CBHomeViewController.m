@@ -13,6 +13,11 @@
 #import "CBSync.h"
 #import "CBIPTV.h"
 #import "CBTVViewController.h"
+#import "CBGlass.h"
+#import "CBIcon.h"
+#import "CBRootViewController.h"
+#import "CBSheet.h"
+#import "CBTabHeader.h"
 #import "CBTheme.h"
 
 @interface CBHomeViewController () <UIActionSheetDelegate>
@@ -22,6 +27,8 @@
     NSArray *_headRows;     // «Có tập mới», «Xem tiếp» (từ dữ liệu người xem)
     NSArray *_feedRows;     // hàng của trang chủ: {id, title, items, more}
     NSArray *_categories;   // danh mục (dải nút đầu trang): {title, url} hoặc {title, kind: genres|countries} (xem menuWith:)
+    UIView *_head;          // đầu trang (tableHeaderView): tiêu đề lớn + nút người xem (CBTabHeader), dải nút danh mục
+    CBTabHeader *_titleRow;
     UIScrollView *_chips;   // dải nút danh mục cuộn ngang ở đầu trang chủ
     NSArray *_chipTitles;   // chữ trên các nút lần dựng trước — giống thì khỏi dựng lại
     BOOL _refreshOnAppear;  // quay về trang chủ: làm mới «Xem tiếp» / «Có tập mới» sau khi cú trượt xong
@@ -63,28 +70,20 @@
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(syncDataChanged) name:CBSyncDataChanged object:nil];
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(appActive)
                                                  name:UIApplicationDidBecomeActiveNotification object:nil];
-    UIBarButtonItem *search = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemSearch target:self
-                                                                            action:@selector(openSearch)];
-    UIBarButtonItem *settings = [[UIBarButtonItem alloc] initWithTitle:@"Cài đặt" style:UIBarButtonItemStyleBordered target:self
-                                                                action:@selector(openSettings)];
-    self.navigationItem.rightBarButtonItems = @[settings, search];
-    self.navigationItem.backBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"Trang chủ" style:UIBarButtonItemStyleBordered
-                                                                            target:nil action:nil];
-    // Tên app dài: tự thu nhỏ chữ cho vừa thanh tiêu đề (iPhone dọc bị cắt «Côn Bằng TV Le…»)
-    UILabel *title = [[UILabel alloc] initWithFrame:CGRectMake(0, 0, 200, 30)];
-    title.backgroundColor = [UIColor clearColor];
-    title.textColor = [CBTheme text];
-    title.font = [CBTheme bold:18];
-    title.textAlignment = NSTextAlignmentCenter;
-    title.adjustsFontSizeToFitWidth = YES;
-    title.minimumScaleFactor = 0.6;
-    title.text = self.title;
-    self.navigationItem.titleView = title;
-    _chips = [[UIScrollView alloc] initWithFrame:CGRectMake(0, 0, self.view.bounds.size.width, 0)];
-    _chips.backgroundColor = [CBTheme bg];
+    // Tìm kiếm / Cài đặt / Truyền hình / Theo dõi là tab (CBRootViewController); thanh điều hướng ẩn ở màn này — tiêu đề lớn
+    // nằm trong đầu trang (cuộn đi cùng nội dung)
+    _head = [[UIView alloc] initWithFrame:CGRectMake(0, 0, self.view.bounds.size.width, [CBTabHeader height])];
+    _head.backgroundColor = [UIColor clearColor];
+    _titleRow = [[CBTabHeader alloc] initWithTitle:self.title];
+    _titleRow.frame = _head.bounds;
+    [_head addSubview:_titleRow];
+    _chips = [[UIScrollView alloc] initWithFrame:CGRectMake(0, [CBTabHeader height], self.view.bounds.size.width, 0)];
+    _chips.backgroundColor = [UIColor clearColor];
     _chips.showsHorizontalScrollIndicator = NO;
     _chips.scrollsToTop = NO;
     _chips.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    [_head addSubview:_chips];
+    self.tableView.tableHeaderView = _head;
     [self reload];
 }
 
@@ -121,7 +120,8 @@
     _pullLoading = YES;
     _pullLabel.text = @"Đang tải lại…";
     [_pullSpin startAnimating];
-    [UIView animateWithDuration:0.2 animations:^{ sv.contentInset = UIEdgeInsetsMake(60, 0, 0, 0); }];
+    CGFloat bottom = sv.contentInset.bottom;   // lề dưới của thanh tab (CBRootViewController)
+    [UIView animateWithDuration:0.2 animations:^{ sv.contentInset = UIEdgeInsetsMake(60, 0, bottom, 0); }];
     [self reload];
 }
 
@@ -135,7 +135,8 @@
     _pullLoading = NO;
     [_pullSpin stopAnimating];
     _pullLabel.text = @"↓ Kéo xuống để tải lại";
-    [UIView animateWithDuration:0.25 animations:^{ self.tableView.contentInset = UIEdgeInsetsZero; }];
+    CGFloat bottom = self.tableView.contentInset.bottom;
+    [UIView animateWithDuration:0.25 animations:^{ self.tableView.contentInset = UIEdgeInsetsMake(0, 0, bottom, 0); }];
 }
 
 #pragma mark - Danh mục
@@ -158,35 +159,41 @@
         }
         [titles addObject:t];
     }
+    // Chấm báo ở tab «Theo dõi»: có phim theo dõi ra tập mới
+    NSInteger freshFollows = 0;
+    for (NSDictionary *f in [CBPrefs follows]) freshFollows += CBNum(f, @"count", 0) > CBNum(f, @"seen", 0);
+    [[CBRootViewController current] setBadge:freshFollows > 0 forTab:CBTabFollows];
     if (titles.count && [titles isEqualToArray:_chipTitles ?: @[]]) return;
     _chipTitles = titles;
     for (UIView *v in _chips.subviews) [v removeFromSuperview];
-    CGFloat x = 12, h = 34;
-    UIFont *font = [CBTheme font:[CBTheme isPad] ? 15 : 14];
+    BOOL pad = [CBTheme isPad];
+    CGFloat x = pad ? 20 : 16, h = pad ? 36 : 32;
+    UIFont *font = [CBTheme medium:pad ? 14 : 13];
     for (NSUInteger i = 0; i < _categories.count; i++) {
         NSString *t = titles[i];
-        UIButton *b = [UIButton buttonWithType:UIButtonTypeCustom];
+        BOOL star = [t hasPrefix:@"★ "] || [t hasPrefix:@"☆ "];
+        if (star) t = [t substringFromIndex:2];
+        CBPillButton *b = [CBPillButton pill:t style:CBPillSubtle];
         b.tag = (NSInteger)i;
         b.titleLabel.font = font;
-        [b setTitle:t forState:UIControlStateNormal];
-        BOOL star = [t hasPrefix:@"★"] || [t hasPrefix:@"☆"];
-        BOOL tv = [CBStr(_categories[i], @"kind") isEqualToString:@"tv"];
-        [b setTitleColor:star ? [CBTheme focus] : (tv ? [CBTheme brand] : [CBTheme text]) forState:UIControlStateNormal];
-        if (tv) b.titleLabel.font = [CBTheme bold:font.pointSize];
-        [b setBackgroundImage:[CBTheme imageWithColor:[CBTheme surface] radius:h / 2] forState:UIControlStateNormal];
-        [b setBackgroundImage:[CBTheme imageWithColor:[CBTheme surface2] radius:h / 2] forState:UIControlStateHighlighted];
+        b.contentEdgeInsets = UIEdgeInsetsMake(0, star ? 12 : 14, 0, 14);
         CGFloat w = ceil([t sizeWithFont:font].width) + 28;
-        b.frame = CGRectMake(x, 10, w, h);
+        if (star) {
+            [b setImage:[CBIcon named:@"star" size:13 color:[CBTheme focus] filled:YES] forState:UIControlStateNormal];
+            b.imageEdgeInsets = UIEdgeInsetsMake(0, -2, 0, 2);
+            b.titleEdgeInsets = UIEdgeInsetsMake(0, 3, 0, -3);
+            w += 18;
+        }
+        b.frame = CGRectMake(x, 0, w, h);
         [b addTarget:self action:@selector(chipTapped:) forControlEvents:UIControlEventTouchUpInside];
         [_chips addSubview:b];
         x += w + 8;
     }
-    _chips.contentSize = CGSizeMake(x + 4, h + 14);
-    CGRect f = _chips.frame;
-    f.size.height = _categories.count ? h + 14 : 0;
-    f.size.width = self.tableView.bounds.size.width;
-    _chips.frame = f;
-    self.tableView.tableHeaderView = _categories.count ? _chips : nil;
+    _chips.contentSize = CGSizeMake(x + 8, h);
+    CGFloat headH = [CBTabHeader height];
+    _chips.frame = CGRectMake(0, headH, self.tableView.bounds.size.width, _categories.count ? h : 0);
+    _head.frame = CGRectMake(0, 0, self.tableView.bounds.size.width, headH + (_categories.count ? h + 4 : 0));
+    self.tableView.tableHeaderView = _head;   // gán lại cho bảng đọc chiều cao mới
 }
 
 - (void)chipTapped:(UIButton *)b {
@@ -201,7 +208,7 @@
 - (void)openCategory:(NSDictionary *)cat {
     NSString *kind = CBStr(cat, @"kind");
     if ([kind isEqualToString:@"tv"]) {
-        [self.navigationController pushViewController:[[CBTVViewController alloc] init] animated:YES];
+        [[CBRootViewController current] selectTab:CBTabTV];
         return;
     }
     if ([kind isEqualToString:@"follows"]) {
@@ -266,14 +273,12 @@
 
 - (void)updateProfileButton {
     NSDictionary *p = [CBPrefs currentProfile];
-    UIButton *b = [UIButton buttonWithType:UIButtonTypeCustom];
-    b.frame = CGRectMake(0, 0, 30, 30);
-    UIView *avatar = [CBTheme avatarFor:p size:28];
-    avatar.frame = CGRectMake(1, 1, 28, 28);
-    avatar.userInteractionEnabled = NO;
-    [b addSubview:avatar];
-    [b addTarget:self action:@selector(openProfiles) forControlEvents:UIControlEventTouchUpInside];
-    self.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc] initWithCustomView:b];
+    NSString *sig = [NSString stringWithFormat:@"%@|%@|%@", CBStr(p, @"id"), CBStr(p, @"name"), p[@"color"]];
+    if ([sig isEqualToString:_titleRow.accessibilityHint ?: @""]) return;
+    _titleRow.accessibilityHint = sig;
+    UIButton *b = [CBTabHeader avatarButton:p target:self action:@selector(openProfiles)];
+    if ([CBTheme isPad]) _titleRow.leftItems = @[b];
+    else _titleRow.rightItems = @[b];
 }
 
 #pragma mark - Dữ liệu
@@ -493,9 +498,8 @@
 
 /// Danh mục (dải nút đầu trang, giống menu bản Windows): Điểm IMDb cao, Thể loại… / Quốc gia… (trang có bộ lọc), danh mục của trang
 - (NSArray *)menuWith:(id)cats {
-    NSMutableArray *m = [NSMutableArray arrayWithObjects:@{@"title": @"☆ Theo dõi", @"kind": @"follows"},
-                                                         @{@"title": @"Truyền hình", @"kind": @"tv"},
-                                                         @{@"title": @"★ Điểm IMDb cao", @"url": @"imdb:top"}, nil];
+    // «Theo dõi», «Truyền hình» là tab (CBRootViewController) — không còn nút ở đây
+    NSMutableArray *m = [NSMutableArray arrayWithObjects:@{@"title": @"★ Điểm IMDb cao", @"url": @"imdb:top"}, nil];
     if ([CBFilterViewController available]) {
         [m addObject:@{@"title": @"Thể loại…", @"kind": @"genres"}];
         [m addObject:@{@"title": [[CBFilterViewController secondName] stringByAppendingString:@"…"], @"kind": @"countries"}];
@@ -541,35 +545,43 @@
 }
 
 - (CGFloat)tableView:(UITableView *)tableView heightForHeaderInSection:(NSInteger)section {
-    if (section < (NSInteger)[self allRows].count) return 40;
+    if (section < (NSInteger)[self allRows].count) return [CBTheme isPad] ? 50 : 46;
     return 0;
 }
 
 - (UIView *)tableView:(UITableView *)tableView viewForHeaderInSection:(NSInteger)section {
     NSArray *rows = [self allRows];
-    UIView *v = [[UIView alloc] initWithFrame:CGRectMake(0, 0, tableView.bounds.size.width, 40)];
+    // Kiểu iOS 26: tiêu đề hàng đậm + «›» liền sau chữ, chạm cả tiêu đề = xem thêm (thay nút «Xem thêm ›» bên phải)
+    BOOL pad = [CBTheme isPad];
+    CGFloat h = pad ? 50 : 46, x = pad ? 20 : 16;
+    UIView *v = [[UIView alloc] initWithFrame:CGRectMake(0, 0, tableView.bounds.size.width, h)];
     v.backgroundColor = [CBTheme bg];
-    UILabel *l = [[UILabel alloc] initWithFrame:CGRectMake(12, 10, v.bounds.size.width - 120, 26)];
-    l.backgroundColor = [UIColor clearColor];
-    l.textColor = [CBTheme text];
-    l.font = [CBTheme bold:17];
-    [v addSubview:l];
     if (section >= (NSInteger)rows.count) return nil;
     NSDictionary *row = rows[section];
-    l.text = CBStr(row, @"title");
-    if (CBArr(row, @"items").count > 4 || CBStr(row, @"more")) {
-        UIButton *more = [UIButton buttonWithType:UIButtonTypeCustom];
-        [more setTitle:@"Xem thêm ›" forState:UIControlStateNormal];
-        [more setTitleColor:[CBTheme brand] forState:UIControlStateNormal];
-        [more setTitleColor:[CBTheme dim] forState:UIControlStateHighlighted];
-        more.titleLabel.font = [CBTheme font:14];
-        more.frame = CGRectMake(v.bounds.size.width - 104, 8, 96, 30);
-        more.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin;
-        more.contentHorizontalAlignment = UIControlContentHorizontalAlignmentRight;
-        more.tag = section;
-        [more addTarget:self action:@selector(moreTapped:) forControlEvents:UIControlEventTouchUpInside];
-        [v addSubview:more];
+    UIFont *font = [CBTheme bold:pad ? 22 : 19];
+    NSString *title = CBStr(row, @"title") ?: @"";
+    BOOL more = CBArr(row, @"items").count > 4 || CBStr(row, @"more");
+    CGFloat maxW = v.bounds.size.width - x * 2 - (more ? 22 : 0);
+    CGFloat tw = MIN(maxW, ceil([title sizeWithFont:font].width));
+    UIButton *b = [UIButton buttonWithType:UIButtonTypeCustom];
+    b.frame = CGRectMake(x, h - 36, tw + (more ? 22 : 0), 32);
+    b.titleLabel.font = font;
+    b.titleLabel.lineBreakMode = NSLineBreakByTruncatingTail;
+    [b setTitle:title forState:UIControlStateNormal];
+    [b setTitleColor:[CBTheme text] forState:UIControlStateNormal];
+    [b setTitleColor:[CBTheme dim] forState:UIControlStateHighlighted];
+    b.contentHorizontalAlignment = UIControlContentHorizontalAlignmentLeft;
+    b.userInteractionEnabled = more;
+    b.tag = section;
+    if (more) {
+        [b setImage:[CBIcon named:@"forward" size:17 color:[CBTheme dim]] forState:UIControlStateNormal];
+        // ảnh sau chữ: đổi chỗ ảnh / chữ bằng lề
+        b.titleEdgeInsets = UIEdgeInsetsMake(0, -17, 0, 17);
+        b.imageEdgeInsets = UIEdgeInsetsMake(1, tw + 2, 0, -tw - 2);
+        b.accessibilityLabel = [title stringByAppendingString:@" — xem thêm"];
+        [b addTarget:self action:@selector(moreTapped:) forControlEvents:UIControlEventTouchUpInside];
     }
+    [v addSubview:b];
     return v;
 }
 
@@ -653,7 +665,7 @@
     if (b.tag >= (NSInteger)rows.count) return;
     NSDictionary *row = rows[b.tag];
     if ([CBStr(row, @"more") isEqualToString:@"tv:"]) {
-        [self.navigationController pushViewController:[[CBTVViewController alloc] init] animated:YES];
+        [[CBRootViewController current] selectTab:CBTabTV];
         return;
     }
     if ([CBStr(row, @"more") isEqualToString:@"follows:"] || [CBStr(row, @"more") isEqualToString:@"history:"]) {
@@ -673,7 +685,7 @@
     NSString *kind = CBStr(item, @"kind");
     if (!kind) return;
     _longItem = item;
-    UIActionSheet *sheet = [[UIActionSheet alloc] initWithTitle:CBStr(item, @"title") delegate:self cancelButtonTitle:@"Huỷ"
+    UIActionSheet *sheet = [[CBSheet alloc] initWithTitle:CBStr(item, @"title") delegate:self cancelButtonTitle:@"Huỷ"
                                          destructiveButtonTitle:[kind isEqualToString:@"continue"] ? @"Xoá khỏi lịch sử"
                                                                                                     : @"Bỏ theo dõi"
                                               otherButtonTitles:nil];
@@ -691,11 +703,11 @@
 }
 
 - (void)openSearch {
-    [self.navigationController pushViewController:[[CBGridViewController alloc] initSearch] animated:YES];
+    [[CBRootViewController current] selectTab:CBTabSearch];
 }
 
 - (void)openSettings {
-    [self.navigationController pushViewController:[[CBSettingsViewController alloc] init] animated:YES];
+    [[CBRootViewController current] selectTab:CBTabSettings];
 }
 
 - (void)openProfiles {

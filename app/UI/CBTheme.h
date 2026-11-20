@@ -15,10 +15,25 @@
 + (UIColor *)onBrand;
 + (UIColor *)focus;
 + (UIColor *)watched;
+/// Chữ màu nhấn trên nền tối (xanh sáng hơn brand — đủ tương phản cho chữ nhỏ)
++ (UIColor *)accent;
+/// Đỏ của nút xoá / chữ cảnh báo
++ (UIColor *)danger;
++ (UIColor *)dangerText;
+/// Nền mờ của nút / chip trong nội dung (trắng 9 %)
++ (UIColor *)fill;
+/// Đường kẻ mảnh giữa các dòng
++ (UIColor *)separator;
+/// Máy yếu (RAM < 400 MB — iPad 1): bỏ bóng đổ của kính, bỏ nền ảnh bìa làm mờ ở trang phim
++ (BOOL)lite;
 + (UIColor *)profileColor:(NSInteger)index;
 + (BOOL)isPad;
 + (UIFont *)font:(CGFloat)size;
 + (UIFont *)bold:(CGFloat)size;
+/// Chữ đậm vừa (Helvetica Neue Medium — có từ iOS 5)
++ (UIFont *)medium:(CGFloat)size;
+/// Bàn phím tối cho ô tìm (UISearchBar của iOS 5 / 6 chưa có keyboardAppearance — đặt cho ô chữ bên trong)
++ (void)darkKeyboard:(UISearchBar *)bar;
 /// Giao diện iOS 6 theo màu tối của app (thanh điều hướng, nút, bảng)
 + (void)apply;
 + (UIImage *)imageWithColor:(UIColor *)color;
@@ -30,7 +45,7 @@
 + (UIImage *)imageWithColor:(UIColor *)color radius:(CGFloat)radius border:(UIColor *)border width:(CGFloat)width;
 ///  • nhãn có màu nền: CBRoundLabel (dưới)
 + (CBRoundLabel *)roundLabel:(UIColor *)fill radius:(CGFloat)radius;
-/// Nút bo góc: primary = nền xanh của app, còn lại nền xám
+/// Nút viên thuốc (CBPillButton): primary = nền xanh của app (chữ tối), còn lại nền trắng mờ
 + (UIButton *)button:(NSString *)title primary:(BOOL)primary;
 /// Vòng tròn màu có chữ cái đầu tên người xem
 + (UIView *)avatarFor:(NSDictionary *)profile size:(CGFloat)size;

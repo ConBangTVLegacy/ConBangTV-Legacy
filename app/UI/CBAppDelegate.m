@@ -23,7 +23,11 @@
 #endif
 
 @implementation CBAppDelegate {
-    CBHomeViewController *_home;
+    CBRootViewController *_root;
+}
+
+- (CBNavController *)nav {
+    return (CBNavController *)_root.content;
 }
 
 - (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)launchOptions {
@@ -41,10 +45,9 @@
 
     self.window = [[UIWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
     self.window.backgroundColor = [CBTheme bg];
-    _home = [[CBHomeViewController alloc] init];
-    self.nav = [[CBNavController alloc] initWithRootViewController:_home];
-    // iPhone: màn gốc bọc thanh điều hướng, chừa chỗ cho thanh thu nhỏ ở đáy (CBMiniPlayer); iPad: khung thu nhỏ nổi ở góc
-    self.window.rootViewController = [CBTheme isPad] ? self.nav : [[CBRootViewController alloc] initWithContent:self.nav];
+    // Màn gốc: các tab (thanh tab nổi kiểu iOS 26) — mỗi tab một thanh điều hướng
+    _root = [[CBRootViewController alloc] init];
+    self.window.rootViewController = _root;
     [self.window makeKeyAndVisible];
     dispatch_async(dispatch_get_main_queue(), ^{ [self gates]; });
     // Mở app bằng thông báo «Nhắc tôi» của lịch phát sóng: phát kênh đó (sau màn miễn trừ / chọn người xem)
@@ -52,7 +55,7 @@
     NSString *tvKey = CBIsStr(ln.userInfo[@"iptv"]) ? ln.userInfo[@"iptv"] : nil;
     if (tvKey.length) {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            if (!self.nav.presentedViewController) [CBTVViewController playKey:tvKey from:self.nav];
+            if (!self->_root.presentedViewController) [CBTVViewController playKey:tvKey from:self.nav];
         });
     }
 #ifdef DEBUG
@@ -67,7 +70,7 @@
         CBDisclaimerViewController *d = [[CBDisclaimerViewController alloc] initGate:YES];
         __weak CBAppDelegate *weakSelf = self;
         d.onAccept = ^{ [weakSelf askProfile]; };
-        [self.nav presentViewController:d animated:NO completion:nil];
+        [_root presentViewController:d animated:NO completion:nil];
         return;
     }
     [self askProfile];
@@ -77,7 +80,7 @@
     if ([CBPrefs profiles].count < 2 || ![CBPrefs askProfile]) return;
     // Chọn xong: trang chủ tự tải lại ở viewWillAppear nếu người xem đổi (trước đây tải thêm một lần nữa ở đây)
     CBProfilesViewController *p = [[CBProfilesViewController alloc] init];
-    [self.nav presentViewController:p animated:NO completion:nil];
+    [_root presentViewController:p animated:NO completion:nil];
 }
 
 /// Thông báo «Nhắc tôi» (lịch phát sóng): app đang mở thì hỏi; chạm thông báo khi app nằm nền thì phát luôn

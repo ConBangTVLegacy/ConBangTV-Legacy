@@ -1,4 +1,6 @@
 #import "CBDebug.h"
+#import "CBSheet.h"
+#import "CBRootViewController.h"
 #import "CBAppDelegate.h"
 #import "CBCore.h"
 #import "CBImages.h"
@@ -159,8 +161,10 @@
 }
 
 + (UIViewController *)top {
-    UIViewController *vc = [self nav];
+    UIViewController *vc = [UIApplication sharedApplication].delegate.window.rootViewController ?: [self nav];
     while (vc.presentedViewController) vc = vc.presentedViewController;
+    // Không có màn trình bày đè: thanh điều hướng của tab đang chọn (như trước khi có thanh tab)
+    if ([vc isKindOfClass:[CBRootViewController class]]) vc = [(CBRootViewController *)vc content];
     return vc;
 }
 
@@ -176,6 +180,7 @@
 
 /// Màn «Truyền hình» trên cùng của thanh điều hướng (mở nếu chưa có)
 + (CBTVViewController *)tvScreen:(BOOL)open {
+    [[CBRootViewController current] selectTab:CBTabTV];   // tab Truyền hình (màn gốc của tab)
     CBNavController *nav = [self nav];
     for (UIViewController *vc in nav.viewControllers.reverseObjectEnumerator) {
         if ([vc isKindOfClass:[CBTVViewController class]]) {
@@ -329,6 +334,12 @@
     NSArray *args = [arg componentsSeparatedByString:@" "];
     CBNavController *nav = [self nav];
     CBPlayerViewController *player = [self player];
+    // Lệnh của trang chủ: sang tab Trang chủ trước (màn gốc của tab là CBHomeViewController)
+    CBRootViewController *rootVC = [CBRootViewController current];
+    if (rootVC && [@[@"home", @"rows", @"row", @"reload", @"more", @"chip", @"pull", @"memwarn", @"film"] containsObject:verb]) {
+        [rootVC selectTab:CBTabHome];
+        nav = [self nav];
+    }
     if ([self runTV:verb arg:arg]) return;
     if ([verb isEqualToString:@"shot"]) {
         [self shot:arg.length ? arg : @"shot"];
@@ -346,8 +357,16 @@
             [[self top] presentViewController:p animated:YES completion:nil];
         });
     } else if ([verb isEqualToString:@"search"]) {
-        CBGridViewController *g = [[CBGridViewController alloc] initSearch];
-        [nav pushViewController:g animated:YES];
+        CBGridViewController *g;
+        if (rootVC) {
+            [rootVC selectTab:CBTabSearch];
+            nav = [self nav];
+            [nav popToRootViewControllerAnimated:NO];
+            g = (CBGridViewController *)nav.viewControllers[0];
+        } else {
+            g = [[CBGridViewController alloc] initSearch];
+            [nav pushViewController:g animated:YES];
+        }
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.6 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ [g search:arg]; });
     } else if ([verb isEqualToString:@"home"]) {
         if (player) [player close];
@@ -357,7 +376,12 @@
         else if (nav.presentedViewController) [nav dismissViewControllerAnimated:YES completion:nil];
         else [nav popViewControllerAnimated:YES];
     } else if ([verb isEqualToString:@"settings"]) {
-        [nav pushViewController:[[CBSettingsViewController alloc] init] animated:YES];
+        if (rootVC) {
+            [rootVC selectTab:CBTabSettings];
+            [[self nav] popToRootViewControllerAnimated:NO];
+        } else {
+            [nav pushViewController:[[CBSettingsViewController alloc] init] animated:YES];
+        }
     } else if ([verb isEqualToString:@"profiles"]) {
         CBProfilesViewController *p = [[CBProfilesViewController alloc] init];
         p.closable = YES;  // như bấm ảnh người xem ở trang chủ
@@ -704,13 +728,18 @@
             CBLog(@"[gỡ lỗi] bảng chọn của trình phát: bấm mục %@", arg);
             return;
         }
-        UIActionSheet *s = [self visibleSheet];
+        CBSheet *own = [CBSheet visibleSheet];
+        UIActionSheet *s = own ?: [self visibleSheet];
         if (!s) {
             CBLog(@"[gỡ lỗi] không có bảng chọn nào");
             return;
         }
         NSInteger i = [arg integerValue] < 0 ? s.cancelButtonIndex : [arg integerValue];
         CBLog(@"[gỡ lỗi] bảng chọn «%@»: bấm nút %ld «%@»", s.title, (long)i, [s buttonTitleAtIndex:i]);
+        if (own) {
+            [own tapIndex:i];
+            return;
+        }
         [s.delegate actionSheet:s clickedButtonAtIndex:i];
         [s dismissWithClickedButtonIndex:i animated:NO];
     } else if ([verb isEqualToString:@"tap"]) {

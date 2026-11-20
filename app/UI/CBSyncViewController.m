@@ -5,6 +5,8 @@
 #import "CBLog.h"
 #import "CBPrefs.h"
 #import "CBSync.h"
+#import "CBSheet.h"
+#import "CBGlass.h"
 #import "CBTheme.h"
 
 typedef NS_ENUM(NSInteger, CBSyncSec) { CBSyncMe, CBSyncPeers, CBSyncFound, CBSyncManual, CBSyncSecCount };
@@ -207,7 +209,7 @@ static BOOL CBTrue(id v) {
                 return c;
             }
             UITableViewCell *c = [self cell:tv text:@"Tự đồng bộ" detail:nil subtitle:NO];
-            UISwitch *sw = [[UISwitch alloc] init];
+            UISwitch *sw = (UISwitch *)[[CBSwitch alloc] init];   // công tắc kiểu iOS 26 (CBGlass)
             id v = [CBPrefs get:@"sync_auto"];
             sw.on = ![v respondsToSelector:@selector(boolValue)] || [v boolValue];  // lõi: chưa đặt = bật
             [sw addTarget:self action:@selector(autoSwitched:) forControlEvents:UIControlEventValueChanged];
@@ -249,7 +251,7 @@ static BOOL CBTrue(id v) {
     if (ip.section == CBSyncPeers && ip.row < n) {
         _target = _peers[ip.row];
         NSString *title = [NSString stringWithFormat:@"Bỏ ghép với %@? Hai máy thôi đồng bộ (dữ liệu đã có vẫn giữ).", CBStr(_target, @"name")];
-        UIActionSheet *s = [[UIActionSheet alloc] initWithTitle:title delegate:self cancelButtonTitle:@"Huỷ"
+        UIActionSheet *s = [[CBSheet alloc] initWithTitle:title delegate:self cancelButtonTitle:@"Huỷ"
                                          destructiveButtonTitle:@"Bỏ ghép" otherButtonTitles:nil];
         [s showInView:self.view];
     } else if (ip.section == CBSyncPeers && n > 0 && ip.row == n) {

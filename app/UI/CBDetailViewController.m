@@ -7,6 +7,9 @@
 #import "CBPlayerViewController.h"
 #import "CBPrefs.h"
 #import "CBRowCell.h"
+#import "CBSheet.h"
+#import "CBGlass.h"
+#import "CBIcon.h"
 #import "CBTheme.h"
 
 #pragma mark - Ô tập
@@ -28,7 +31,7 @@
         _label.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
         _label.backgroundColor = [UIColor clearColor];
         _label.textAlignment = NSTextAlignmentCenter;
-        _label.font = [CBTheme font:13];
+        _label.font = [CBTheme medium:14];
         _label.adjustsFontSizeToFitWidth = YES;
         _label.minimumScaleFactor = 0.6;
         [self.contentView addSubview:_label];
@@ -41,9 +44,11 @@
     NSString *t = title ?: @"";
     if ([t hasPrefix:@"Tập "] && t.length <= 9) t = [t substringFromIndex:4];
     _label.text = t;
-    _bg.image = [CBTheme imageWithColor:watched ? [CBTheme watched] : [CBTheme surface2] radius:6 border:current ? [CBTheme focus] : nil
-                                  width:2];
-    _label.textColor = [CBTheme text];
+    // Kiểu iOS 26: viên thuốc; đã xem = xanh nhạt, đang xem dở = viền xanh, còn lại xám
+    UIColor *fill = current ? [UIColor colorWithRed:0.25 green:0.79 blue:0.61 alpha:0.14]
+                  : watched ? [UIColor colorWithRed:0.17 green:0.69 blue:0.52 alpha:0.13] : [UIColor colorWithWhite:1 alpha:0.08];
+    _bg.image = [CBTheme imageWithColor:fill radius:20 border:current ? [CBTheme accent] : nil width:1.5];
+    _label.textColor = current ? CBRGB(0x5FDAAE) : watched ? CBRGB(0x8CCDB6) : [CBTheme text];
 }
 
 - (void)setHighlighted:(BOOL)highlighted {
@@ -75,6 +80,9 @@
     UIView *_header;
     CBCoverView *_poster;
     UIImageView *_posterBg;   // nền xám bo góc lúc chưa có ảnh (ảnh kéo giãn — không layer.cornerRadius)
+    UIImageView *_backdrop;   // nền đầu trang: ảnh bìa thu nhỏ rồi phóng to (mờ) — máy yếu (CBTheme lite) không có
+    UIImageView *_backdropFade;
+    UIImage *_backdropFrom;   // ảnh bìa đã làm nền (đổi ảnh thì làm lại)
     UILabel *_titleLabel, *_otherLabel, *_infoLabel, *_countLabel, *_messageLabel;
     UIButton *_playButton, *_followButton;
     // Hàng nút phụ: «Mới nhất: Tập N», «Từ tập đầu» (khi đang xem dở), «⇄ <trang> ▾» (phim có ở nhiều trang — từ trang chủ tổng hợp)
@@ -216,7 +224,8 @@
 
 - (UIButton *)smallButton:(SEL)action {
     UIButton *b = [CBTheme button:@"" primary:NO];
-    b.titleLabel.font = [CBTheme font:[CBTheme isPad] ? 15 : 13];
+    b.titleLabel.font = [CBTheme medium:[CBTheme isPad] ? 15 : 13];
+    b.contentEdgeInsets = UIEdgeInsetsMake(0, 10, 0, 10);
     b.titleLabel.adjustsFontSizeToFitWidth = YES;
     b.titleLabel.minimumScaleFactor = 0.7;
     b.titleLabel.lineBreakMode = NSLineBreakByTruncatingTail;
@@ -229,27 +238,40 @@
 - (void)buildHeader {
     _header = [[UIView alloc] init];
     _header.backgroundColor = [CBTheme bg];
-    _posterBg = [[UIImageView alloc] initWithImage:[CBTheme imageWithColor:[CBTheme surface2] radius:8]];
+    _header.clipsToBounds = YES;
+    if (![CBTheme lite]) {
+        _backdrop = [[UIImageView alloc] init];
+        _backdrop.contentMode = UIViewContentModeScaleAspectFill;
+        _backdrop.alpha = 0.85;
+        [_header addSubview:_backdrop];
+        _backdropFade = [[UIImageView alloc] initWithImage:[self fadeImage]];
+        [_header addSubview:_backdropFade];
+    }
+    _posterBg = [[UIImageView alloc] initWithImage:[CBTheme imageWithColor:[CBTheme surface2] radius:12]];
     [_header addSubview:_posterBg];
     _poster = [[CBCoverView alloc] init];
     _poster.placeholder = _posterBg;
     _poster.contentMode = UIViewContentModeScaleToFill;  // ảnh đã cắt đúng khổ + bo góc sẵn (CBImages … radius:)
     [_header addSubview:_poster];
-    _titleLabel = [self label:[CBTheme bold:[CBTheme isPad] ? 22 : 18] color:[CBTheme text]];
-    _otherLabel = [self label:[CBTheme font:14] color:[CBTheme dim]];
-    _infoLabel = [self label:[CBTheme font:13] color:[CBTheme dim]];
-    _countLabel = [self label:[CBTheme bold:16] color:[CBTheme text]];
+    _titleLabel = [self label:[CBTheme bold:[CBTheme isPad] ? 26 : 21] color:[CBTheme text]];
+    _otherLabel = [self label:[CBTheme font:14] color:CBRGB(0xB8BFCA)];
+    _infoLabel = [self label:[CBTheme font:13] color:CBRGB(0xB8BFCA)];
+    _countLabel = [self label:[CBTheme bold:17] color:[CBTheme text]];
     _messageLabel = [self label:[CBTheme font:15] color:[CBTheme dim]];
     _messageLabel.textAlignment = NSTextAlignmentCenter;
-    _playButton = [CBTheme button:[CBPlayIcon() stringByAppendingString:@" Xem"] primary:YES];
+    _playButton = [CBTheme button:@"Xem" primary:YES];
+    [(CBPillButton *)_playButton setIcon:@"play" size:15];
     [_playButton addTarget:self action:@selector(playTapped) forControlEvents:UIControlEventTouchUpInside];
     [_header addSubview:_playButton];
-    _followButton = [CBTheme button:@"Theo dõi" primary:NO];
+    // Theo dõi: nút tròn biểu tượng dấu trang (tô kín khi đang theo dõi)
+    _followButton = [CBPillButton pill:nil style:CBPillSubtle];
+    _followButton.contentEdgeInsets = UIEdgeInsetsZero;
+    _followButton.accessibilityLabel = @"Theo dõi";
     [_followButton addTarget:self action:@selector(followTapped) forControlEvents:UIControlEventTouchUpInside];
     [_header addSubview:_followButton];
     _latestButton = [self smallButton:@selector(latestTapped)];
     _firstButton = [self smallButton:@selector(firstTapped)];
-    [_firstButton setTitle:@"« Từ tập đầu" forState:UIControlStateNormal];  // phông iOS 6 không có ⏮ / ⏭
+    [_firstButton setTitle:@"Từ tập đầu" forState:UIControlStateNormal];
     _sourceButton = [self smallButton:@selector(sourceTapped)];
     _spinner = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleWhite];
     _spinner.hidesWhenStopped = YES;
@@ -268,7 +290,8 @@
 - (void)relayout {
     NSString *poster = CBStr(_detail, @"poster") ?: CBStr(_item, @"poster");
     CGFloat pw = [CBTheme isPad] ? 170 : 110;   // như layoutHeader:
-    [CBImages load:poster size:CGSizeMake(pw, ceil(pw * 1.5)) radius:8 into:_poster];
+    [CBImages load:poster size:CGSizeMake(pw, ceil(pw * 1.5)) radius:12 into:_poster];
+    [self updateBackdrop];
     _titleLabel.text = CBStr(_detail, @"title") ?: CBStr(_item, @"title");
     _otherLabel.text = CBStr(_detail, @"otherTitle");
     _infoLabel.text = CBStr(_detail, @"info");
@@ -295,18 +318,22 @@
     // Nút Xem: xem tiếp tập trong lịch sử, hoặc tập đầu của bản (mùa) đang chọn. Phim chia mùa ghi kèm mùa.
     BOOL seasons = CBDetailSeasons(_detail);
     NSString *histEp = CBStr(_hist, @"epTitle") ? CBDetailEpisodeLabel(_detail, CBStr(_hist, @"epUrl"), CBStr(_hist, @"epTitle")) : nil;
-    NSString *play = histEp ? [NSString stringWithFormat:@"%@ Xem tiếp: %@", CBPlayIcon(), histEp] : [CBPlayIcon() stringByAppendingString:eps.count > 1 ? @" Xem từ tập đầu" : @" Xem"];
+    NSString *play = histEp ? [NSString stringWithFormat:@"Xem tiếp · %@", histEp] : (eps.count > 1 ? @"Xem từ tập đầu" : @"Xem");
     if (!histEp && seasons && _group < (NSInteger)groups.count) {
-        play = [NSString stringWithFormat:@"%@ Xem %@", CBPlayIcon(), CBStr(groups[_group], @"name") ?: @"từ tập đầu"];
+        play = [NSString stringWithFormat:@"Xem %@", CBStr(groups[_group], @"name") ?: @"từ tập đầu"];
     }
     [_playButton setTitle:play forState:UIControlStateNormal];
+    [(CBPillButton *)_playButton setIcon:@"play" size:15];
     _playButton.enabled = _detail && (eps.count || histEp);
     if (!_detail && _error) {  // tải lỗi: nút Xem thành «Thử lại» (trước phải lùi ra rồi vào lại)
-        [_playButton setTitle:@"↻ Thử lại" forState:UIControlStateNormal];
+        [_playButton setTitle:@"Thử lại" forState:UIControlStateNormal];
+        [(CBPillButton *)_playButton setIcon:@"reload" size:16];
         _playButton.enabled = YES;
     }
     BOOL following = [CBPrefs followOf:CBStr(_detail, @"url") ?: CBStr(_item, @"url") ?: @""] != nil;
-    [_followButton setTitle:following ? @"Đang theo dõi" : @"Theo dõi" forState:UIControlStateNormal];
+    [_followButton setImage:[CBIcon named:@"bookmark" size:20 color:following ? [CBTheme accent] : [CBTheme text] filled:following]
+                   forState:UIControlStateNormal];
+    _followButton.accessibilityLabel = following ? @"Đang theo dõi — chạm để bỏ" : @"Theo dõi";
     _followButton.enabled = _detail != nil;
     // Đang xem dở phim nhiều tập: thêm «Mới nhất» (tập cuối của bản đang chọn) và «Từ tập đầu» (như bản Windows / iPad)
     // Phim chia mùa: «Mới nhất» = tập cuối của mùa cuối, «Từ tập đầu» = Mùa 1, Tập 1 (không theo mùa đang chọn)
@@ -316,14 +343,14 @@
     BOOL showLatest = histUrl && total > 1 && CBStr(last, @"url") && ![CBStr(last, @"url") isEqualToString:histUrl];
     _latestEp = showLatest ? CBStr(last, @"url") : nil;
     NSString *lastLabel = seasons ? CBDetailEpisodeLabel(_detail, CBStr(last, @"url"), CBStr(last, @"title")) : CBStr(last, @"title");
-    [_latestButton setTitle:[NSString stringWithFormat:@"Mới nhất: %@ »", lastLabel ?: @""] forState:UIControlStateNormal];
+    [_latestButton setTitle:[NSString stringWithFormat:@"Mới nhất: %@", lastLabel ?: @""] forState:UIControlStateNormal];
     _latestButton.hidden = !showLatest;
     NSString *firstUrl = CBStr([self firstEpisode], @"url");
     _firstButton.hidden = !(histUrl && total > 1 && firstUrl && ![firstUrl isEqualToString:histUrl]);
     NSArray *links = CBArr(_item, @"links");
     _sourceButton.hidden = links.count < 2;
-    [_sourceButton setTitle:[NSString stringWithFormat:@"⇄ %@ ▾", [self hostOf:CBStr(_detail, @"url") ?: CBStr(_item, @"url")]]
-                   forState:UIControlStateNormal];
+    [_sourceButton setTitle:[self hostOf:CBStr(_detail, @"url") ?: CBStr(_item, @"url")] forState:UIControlStateNormal];
+    [(CBPillButton *)_sourceButton setIcon:@"swap" size:15];
     _descLabel.text = CBStr(_detail, @"description");
     _headerHeight = [self layoutHeader:_cv.bounds.size.width];
     [_cv reloadData];
@@ -332,10 +359,10 @@
 /// Đặt khung các phần của đầu trang theo bề ngang w, trả chiều cao
 - (CGFloat)layoutHeader:(CGFloat)w {
     BOOL pad = [CBTheme isPad];
-    CGFloat pw = pad ? 170 : 110;
-    _poster.frame = CGRectMake(12, 12, pw, ceil(pw * 1.5));
+    CGFloat pw = pad ? 170 : 110, m = pad ? 20 : 16;
+    _poster.frame = CGRectMake(m, 14, pw, ceil(pw * 1.5));
     _posterBg.frame = _poster.frame;
-    CGFloat x = 12 + pw + 12, cw = w - x - 12, y = 12;
+    CGFloat x = m + pw + 16, cw = w - x - m, y = 18;
     _titleLabel.frame = CGRectMake(x, y, cw, [CBTheme heightOf:_titleLabel.text font:_titleLabel.font width:cw]);
     y = CGRectGetMaxY(_titleLabel.frame) + 4;
     _otherLabel.frame = CGRectMake(x, y, cw, [CBTheme heightOf:_otherLabel.text font:_otherLabel.font width:cw]);
@@ -344,22 +371,32 @@
     CGFloat maxInfo = CGRectGetMaxY(_poster.frame) - y;
     _infoLabel.frame = CGRectMake(x, y, cw, MIN(infoH, MAX(maxInfo, 0)));
     _spinner.center = CGPointMake(x + 14, y + 14);
-    y = MAX(CGRectGetMaxY(_poster.frame), CGRectGetMaxY(_infoLabel.frame)) + 14;
-    CGSize fs = [_followButton sizeThatFits:CGSizeMake(200, 40)];
-    CGFloat fw = MAX(fs.width, 110);
-    _followButton.frame = CGRectMake(w - 12 - fw, y, fw, 40);
-    _playButton.frame = CGRectMake(12, y, w - 36 - fw, 40);
-    y += 52;
+    // Nền mờ đầu trang phủ tới dưới ảnh bìa
+    CGFloat backH = CGRectGetMaxY(_poster.frame) + 40;
+    _backdrop.frame = CGRectMake(0, 0, w, backH);
+    _backdropFade.frame = _backdrop.frame;
+    y = MAX(CGRectGetMaxY(_poster.frame), CGRectGetMaxY(_infoLabel.frame)) + 18;
+    // Nút chính viên thuốc + nút tròn «Theo dõi» (iPad: nút chính không dài quá 360)
+    CGFloat bh = 46;
+    _followButton.frame = CGRectMake(w - m - bh, y, bh, bh);
+    CGFloat pw2 = w - m * 2 - bh - 10;
+    if (pad) {
+        pw2 = MIN(pw2, 360);
+        _followButton.frame = CGRectMake(m + pw2 + 10, y, bh, bh);
+    }
+    _playButton.frame = CGRectMake(m, y, pw2, bh);
+    y += bh + 10;
     NSMutableArray *extra = [NSMutableArray array];
     for (UIButton *b in @[_latestButton, _firstButton, _sourceButton]) if (!b.hidden) [extra addObject:b];
     if (extra.count) {
-        CGFloat gap = 8, bw = floor((w - 24 - gap * (extra.count - 1)) / extra.count);
-        for (NSUInteger i = 0; i < extra.count; i++) [extra[i] setFrame:CGRectMake(12 + i * (bw + gap), y, bw, 34)];
-        y += 44;
+        CGFloat gap = 10, bw = floor((w - m * 2 - gap * (extra.count - 1)) / extra.count);
+        if (pad) bw = MIN(bw, 200);
+        for (NSUInteger i = 0; i < extra.count; i++) [extra[i] setFrame:CGRectMake(m + i * (bw + gap), y, bw, 36)];
+        y += 48;
     }
     if (_groups) {
-        [CBTheme layoutSegments:_groups inStrip:_groupsStrip frame:CGRectMake(12, y, w - 24, 32)];
-        y += 44;
+        [CBTheme layoutSegments:_groups inStrip:_groupsStrip frame:CGRectMake(m, y, w - m * 2, 34)];
+        y += 46;
     }
     if (_messageLabel.text) {
         CGFloat mh = [CBTheme heightOf:_messageLabel.text font:_messageLabel.font width:w - 40];
@@ -368,8 +405,8 @@
     } else {
         _messageLabel.frame = CGRectZero;
     }
-    _countLabel.frame = CGRectMake(12, y, w - 24, _countLabel.text ? 22 : 0);
-    y += _countLabel.text ? 30 : 0;
+    _countLabel.frame = CGRectMake(m, y, w - m * 2, _countLabel.text ? 22 : 0);
+    y += _countLabel.text ? 32 : 0;
     _header.frame = CGRectMake(0, 0, w, y);
     return y;
 }
@@ -383,11 +420,55 @@
     }
 }
 
+#pragma mark - Nền mờ đầu trang
+
+/// Dải phủ màu nền: trong suốt phía trên → đặc ở mép dưới (nền mờ tan vào trang)
+- (UIImage *)fadeImage {
+    CGFloat r = 0, g = 0, b = 0, a = 1;
+    [[CBTheme bg] getRed:&r green:&g blue:&b alpha:&a];
+    UIGraphicsBeginImageContextWithOptions(CGSizeMake(1, 64), NO, 1);
+    CGColorSpaceRef space = CGColorSpaceCreateDeviceRGB();
+    CGFloat comps[] = {r, g, b, 0.25, r, g, b, 0.62, r, g, b, 1};
+    CGFloat locs[] = {0, 0.55, 1};
+    CGGradientRef grad = CGGradientCreateWithColorComponents(space, comps, locs, 3);
+    CGContextDrawLinearGradient(UIGraphicsGetCurrentContext(), grad, CGPointZero, CGPointMake(0, 64), 0);
+    CGGradientRelease(grad);
+    CGColorSpaceRelease(space);
+    UIImage *img = UIGraphicsGetImageFromCurrentImageContext();
+    UIGraphicsEndImageContext();
+    return img;
+}
+
+/// Ảnh bìa đã về: thu về 12 × 18 điểm ảnh (gộp màu) — UIImageView phóng to bằng nội suy tuyến tính thành nền mờ. Một lần mỗi ảnh,
+/// rẻ hơn làm mờ thật (vImage) nhiều; máy yếu bỏ hẳn
+- (void)updateBackdrop {
+    if (!_backdrop) return;
+    UIImage *src = _poster.image;
+    if (!src || src == _backdropFrom) {
+        if (!src) {
+            // ảnh bìa nạp không đồng bộ — hỏi lại sau
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                if (self->_poster.image && self->_poster.image != self->_backdropFrom) [self updateBackdrop];
+            });
+        }
+        return;
+    }
+    _backdropFrom = src;
+    UIGraphicsBeginImageContextWithOptions(CGSizeMake(12, 18), YES, 1);
+    CGContextSetInterpolationQuality(UIGraphicsGetCurrentContext(), kCGInterpolationHigh);
+    [src drawInRect:CGRectMake(-1, -1, 14, 20)];   // bỏ mép bo góc
+    UIImage *tiny = UIGraphicsGetImageFromCurrentImageContext();
+    UIGraphicsEndImageContext();
+    _backdrop.image = tiny;
+    _backdrop.alpha = 0;
+    [UIView animateWithDuration:0.3 animations:^{ self->_backdrop.alpha = 0.85; }];
+}
+
 #pragma mark - Lưới tập
 
 - (CGSize)epSize {
-    CGFloat w = _cv.bounds.size.width - 24;
-    NSInteger cols = MAX(4, (NSInteger)floor((w + 8) / ([CBTheme isPad] ? 96 : 72)));
+    CGFloat m = [CBTheme isPad] ? 20 : 16, w = _cv.bounds.size.width - m * 2;
+    NSInteger cols = MAX(4, (NSInteger)floor((w + 8) / ([CBTheme isPad] ? 96 : 66)));
     return CGSizeMake(floor((w - 8 * (cols - 1)) / cols), 40);
 }
 
@@ -400,7 +481,8 @@
 }
 
 - (UIEdgeInsets)collectionView:(CBCollectionView *)cv layout:(CBCollectionViewFlowLayout *)l insetForSectionAtIndex:(NSInteger)s {
-    return UIEdgeInsetsMake(0, 12, 12, 12);
+    CGFloat m = [CBTheme isPad] ? 20 : 16;
+    return UIEdgeInsetsMake(0, m, 16, m);
 }
 
 - (CGSize)collectionView:(CBCollectionView *)cv layout:(CBCollectionViewFlowLayout *)l referenceSizeForHeaderInSection:(NSInteger)s {
@@ -483,7 +565,7 @@
         UILabel *t = [[UILabel alloc] init];
         t.backgroundColor = [UIColor clearColor];
         t.textColor = [CBTheme text];
-        t.font = [CBTheme bold:[CBTheme isPad] ? 20 : 17];
+        t.font = [CBTheme bold:[CBTheme isPad] ? 22 : 19];
         t.text = CBStr(row, @"title");
         CBRowCell *cell = [[CBRowCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:nil];
         cell.onSelect = ^(NSDictionary *item) {
@@ -504,14 +586,15 @@
 - (CGFloat)layoutFooter:(CGFloat)w {
     CGFloat y = 0;
     if (_descLabel.text.length) {
-        CGFloat dh = [CBTheme heightOf:_descLabel.text font:_descLabel.font width:w - 24];
-        _descLabel.frame = CGRectMake(12, 12, w - 24, dh);
+        CGFloat m = [CBTheme isPad] ? 20 : 16;
+        CGFloat dh = [CBTheme heightOf:_descLabel.text font:_descLabel.font width:w - m * 2];
+        _descLabel.frame = CGRectMake(m, 12, w - m * 2, dh);
         y = 12 + dh + 20;
     } else {
         _descLabel.frame = CGRectZero;
     }
     for (NSArray *pair in _relatedViews) {
-        [pair[0] setFrame:CGRectMake(12, y, w - 24, 24)];
+        [pair[0] setFrame:CGRectMake([CBTheme isPad] ? 20 : 16, y, w - 32, 26)];
         y += 32;
         CGRect f = CGRectMake(0, y, w, [CBRowCell height]);
         if (!CGRectEqualToRect([pair[1] frame], f)) [pair[1] setFrame:f];
@@ -583,7 +666,7 @@
     NSArray *links = CBArr(_item, @"links");
     if (links.count < 2) return;
     NSString *cur = [self hostOf:CBStr(_detail, @"url") ?: CBStr(_item, @"url")];
-    UIActionSheet *sheet = [[UIActionSheet alloc] initWithTitle:@"Xem ở trang" delegate:self cancelButtonTitle:nil
+    UIActionSheet *sheet = [[CBSheet alloc] initWithTitle:@"Xem ở trang" delegate:self cancelButtonTitle:nil
                                          destructiveButtonTitle:nil otherButtonTitles:nil];
     for (id l in links) {
         NSString *host = [self hostOf:CBStr(l, @"url")];

@@ -4,6 +4,8 @@
 #import "CBLog.h"
 #import "CBParental.h"
 #import "CBTVViewController.h"
+#import "CBSheet.h"
+#import "CBGlass.h"
 #import "CBTheme.h"
 
 enum { CBTVSecLists = 0, CBTVSecGuide, CBTVSecPlay, CBTVSecCount };
@@ -68,7 +70,7 @@ enum { CBTVSecLists = 0, CBTVSecGuide, CBTVSecPlay, CBTVSecCount };
 
 - (UITableViewCell *)switchCell:(UITableView *)tv text:(NSString *)text on:(BOOL)on tag:(NSInteger)tag {
     UITableViewCell *c = [self cell:tv text:text detail:nil];
-    UISwitch *sw = [[UISwitch alloc] init];
+    UISwitch *sw = (UISwitch *)[[CBSwitch alloc] init];   // công tắc kiểu iOS 26 (CBGlass)
     sw.on = on;
     sw.tag = tag;
     [sw addTarget:self action:@selector(switched:) forControlEvents:UIControlEventValueChanged];
@@ -166,7 +168,7 @@ enum { CBTVSecLists = 0, CBTVSecGuide, CBTVSecPlay, CBTVSecCount };
         }
         _sheetList = lists[ip.row];
         NSString *from = CBStr(_sheetList, @"url") ?: [NSString stringWithFormat:@"Tệp «%@»", CBStr(_sheetList, @"src") ?: @"?"];
-        UIActionSheet *sheet = [[UIActionSheet alloc] initWithTitle:[NSString stringWithFormat:@"%@\n%@", CBStr(_sheetList, @"name"), from]
+        UIActionSheet *sheet = [[CBSheet alloc] initWithTitle:[NSString stringWithFormat:@"%@\n%@", CBStr(_sheetList, @"name"), from]
                                                            delegate:self cancelButtonTitle:nil destructiveButtonTitle:nil
                                                   otherButtonTitles:nil];
         [sheet addButtonWithTitle:@"Dùng danh sách này"];

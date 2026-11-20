@@ -3,6 +3,7 @@
 #import "CBLog.h"
 #import "CBParental.h"
 #import "CBPrefs.h"
+#import "CBGlass.h"
 #import "CBTheme.h"
 
 enum { CBAskPin = 1, CBAskAdd = 2 };
@@ -28,18 +29,17 @@ static const NSUInteger CBMaxProfiles = 8;
     _scroll.alwaysBounceVertical = YES;
     [self.view addSubview:_scroll];
     if (self.closable) {
-        _closeButton = [UIButton buttonWithType:UIButtonTypeCustom];
-        [_closeButton setTitle:@"✕ Đóng" forState:UIControlStateNormal];
-        [_closeButton setTitleColor:[CBTheme dim] forState:UIControlStateNormal];
-        [_closeButton setTitleColor:[CBTheme text] forState:UIControlStateHighlighted];
-        _closeButton.titleLabel.font = [CBTheme bold:16];
+        // Nút đóng tròn kính (kiểu iOS 26)
+        _closeButton = [CBPillButton circle:@"close" diameter:40];
+        [(CBPillButton *)_closeButton setIcon:@"close" size:16];
+        _closeButton.accessibilityLabel = @"Đóng";
         [_closeButton addTarget:self action:@selector(closeTapped) forControlEvents:UIControlEventTouchUpInside];
         [self.view addSubview:_closeButton];
     }
     _title = [[UILabel alloc] init];
     _title.backgroundColor = [UIColor clearColor];
     _title.textColor = [CBTheme text];
-    _title.font = [CBTheme bold:24];
+    _title.font = [CBTheme bold:30];
     _title.textAlignment = NSTextAlignmentCenter;
     _title.text = @"Ai đang xem?";
     [_scroll addSubview:_title];
@@ -99,7 +99,7 @@ static const NSUInteger CBMaxProfiles = 8;
         NSDictionary *p = _profiles[i];
         UIView *avatar = [CBTheme avatarFor:p size:80];
         if ([(CBStr(p, @"id") ?: @"") isEqualToString:current]) {
-            avatar.layer.borderColor = [CBTheme focus].CGColor;
+            avatar.layer.borderColor = [CBTheme accent].CGColor;
             avatar.layer.borderWidth = 3;
             avatar.layer.cornerRadius = 40;   // viền tròn theo ảnh (màn tĩnh — không ngại bo góc lớp)
         }
@@ -128,7 +128,7 @@ static const NSUInteger CBMaxProfiles = 8;
 - (void)viewDidLayoutSubviews {
     [super viewDidLayoutSubviews];
     CGFloat w = self.view.bounds.size.width, h = self.view.bounds.size.height;
-    _closeButton.frame = CGRectMake(8, 20, 90, 44);
+    _closeButton.frame = CGRectMake(14, 24, 40, 40);
     // iPhone dọc: 3 cột (ô 100 điểm) — trước 2 cột, 6 người xem trở lên tràn khỏi màn
     CGFloat tw = [CBTheme isPad] ? 110 : MIN(110, floor((w - 12) / 3)), th = 120;
     NSInteger cols = MAX(1, MIN((NSInteger)_tiles.count, (NSInteger)floor((w - 12) / tw)));

@@ -4,6 +4,7 @@
 #import "CBJSON.h"
 #import "CBLivePlayerViewController.h"
 #import "CBLog.h"
+#import "CBGlass.h"
 #import "CBTheme.h"
 
 @implementation CBTVGuideViewController {
@@ -58,7 +59,7 @@
     h.backgroundColor = [CBTheme bg];
     h.autoresizingMask = UIViewAutoresizingFlexibleWidth;
     // Nền bo góc là ảnh kéo giãn (không layer.cornerRadius — bảng lịch cuộn bên dưới, xem CBTheme imageWithColor:radius:)
-    UIImageView *logoBox = [[UIImageView alloc] initWithImage:[CBTheme imageWithColor:CBRGB(0x262B32) radius:8]];
+    UIImageView *logoBox = [[UIImageView alloc] initWithImage:[CBTheme imageWithColor:CBRGB(0x262B32) radius:14]];
     logoBox.frame = CGRectMake(14, 12, 84, 56);
     UILabel *abbr = [[UILabel alloc] initWithFrame:logoBox.bounds];
     abbr.backgroundColor = [UIColor clearColor];
@@ -89,7 +90,8 @@
     sub.text = [NSString stringWithFormat:@"Kênh %@ · %@%@", CBStr(_channel, @"num") ?: @"", CBStr(_channel, @"g") ?: @"",
                                           [CBIPTV isFavorite:_channel] ? @" · ★ Yêu thích" : @""];
     [h addSubview:sub];
-    UIButton *watch = [CBTheme button:[NSString stringWithFormat:@"%@ Xem trực tiếp", CBPlayIcon()] primary:YES];
+    UIButton *watch = [CBTheme button:@"Xem trực tiếp" primary:YES];
+    [(CBPillButton *)watch setIcon:@"play" size:15];
     watch.frame = CGRectMake(w - 170, 18, 156, 44);
     watch.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin;
     [watch addTarget:self action:@selector(watch) forControlEvents:UIControlEventTouchUpInside];

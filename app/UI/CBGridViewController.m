@@ -8,6 +8,9 @@
 #import "CBPosterCell.h"
 #import "CBPrefs.h"
 #import "CBRowCell.h"
+#import "CBSheet.h"
+#import "CBTabHeader.h"
+#import "CBGlass.h"
 #import "CBTheme.h"
 
 @interface CBGridHeader : CBCollectionReusableView
@@ -17,11 +20,11 @@
 @implementation CBGridHeader
 - (instancetype)initWithFrame:(CGRect)frame {
     if ((self = [super initWithFrame:frame])) {
-        _label = [[UILabel alloc] initWithFrame:CGRectInset(self.bounds, 12, 0)];
+        _label = [[UILabel alloc] initWithFrame:CGRectInset(self.bounds, [CBTheme isPad] ? 20 : 16, 0)];
         _label.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
         _label.backgroundColor = [UIColor clearColor];
         _label.textColor = [CBTheme text];
-        _label.font = [CBTheme bold:17];
+        _label.font = [CBTheme bold:19];
         [self addSubview:_label];
     }
     return self;
@@ -49,6 +52,7 @@
     UIButton *_retryButton;
     NSString *_lastQuery;
     long long _pageFailedAt;  // trang sau vừa tải lỗi (ms) — chờ 5 giây mới tự thử lại khi cuộn
+    CBTabHeader *_header;     // màn gốc của tab (Theo dõi / Tìm kiếm): tiêu đề lớn
 }
 
 - (instancetype)initWithListUrl:(NSString *)url title:(NSString *)title {
@@ -78,7 +82,7 @@
 - (instancetype)initFollows {
     if ((self = [super initWithNibName:nil bundle:nil])) {
         _special = @"follows";
-        self.title = @"Phim theo dõi";
+        self.title = @"Theo dõi";
     }
     return self;
 }
@@ -89,6 +93,10 @@
         self.title = @"Xem tiếp / Lịch sử";
     }
     return self;
+}
+
+- (void)openHistory {
+    [self.navigationController pushViewController:[[CBGridViewController alloc] initHistory] animated:YES];
 }
 
 - (void)viewWillAppear:(BOOL)animated {
@@ -181,7 +189,7 @@
 - (void)askRemove:(NSDictionary *)item {
     _longItem = item;
     BOOL follows = [_special isEqualToString:@"follows"];
-    UIActionSheet *sheet = [[UIActionSheet alloc] initWithTitle:CBStr(item, @"title") delegate:self cancelButtonTitle:@"Huỷ"
+    UIActionSheet *sheet = [[CBSheet alloc] initWithTitle:CBStr(item, @"title") delegate:self cancelButtonTitle:@"Huỷ"
                                          destructiveButtonTitle:follows ? @"Bỏ theo dõi" : @"Xoá khỏi lịch sử" otherButtonTitles:nil];
     [sheet showInView:self.view];
 }
@@ -213,6 +221,19 @@
     [_cv registerClass:[CBGridHeader class] forSupplementaryViewOfKind:CBCollectionElementKindSectionHeader
                    withReuseIdentifier:@"head"];
     [self.view addSubview:_cv];
+    if (self.navigationController.viewControllers.firstObject == self) {
+        _header = [[CBTabHeader alloc] initWithTitle:_searchMode ? @"Tìm kiếm" : self.title];
+        if ([_special isEqualToString:@"follows"]) {
+            CBPillButton *hist = [CBPillButton pill:@"Lịch sử" style:CBPillGlass];
+            hist.titleLabel.font = [CBTheme medium:15];
+            hist.contentEdgeInsets = UIEdgeInsetsMake(0, 12, 0, 14);
+            [hist setIcon:@"history" size:17];
+            hist.frame = CGRectMake(0, 0, [hist sizeThatFits:CGSizeMake(200, 40)].width + 6, [CBTheme isPad] ? 46 : 40);
+            [hist addTarget:self action:@selector(openHistory) forControlEvents:UIControlEventTouchUpInside];
+            _header.rightItems = @[hist];
+        }
+        [self.view addSubview:_header];
+    }
 
     _message = [CBTheme messageLabel];
     _message.autoresizingMask = UIViewAutoresizingFlexibleWidth;
@@ -227,16 +248,15 @@
     [self.view addSubview:_retryButton];
 
     if (_searchMode) {
-        _searchBar = [[UISearchBar alloc] initWithFrame:CGRectMake(0, 0, self.view.bounds.size.width, 44)];
+        _searchBar = [[UISearchBar alloc] initWithFrame:CGRectMake(0, _header ? [CBTabHeader height] : 0, self.view.bounds.size.width, 44)];
         _searchBar.autoresizingMask = UIViewAutoresizingFlexibleWidth;
         _searchBar.placeholder = @"Tên phim (tìm trên mọi trang)";
         _searchBar.delegate = self;
-        _searchBar.tintColor = [CBTheme surface];
+        [CBTheme darkKeyboard:_searchBar];
         // Tên phim gõ không dấu / tên riêng: không để bàn phím tự sửa / tự viết hoa
         _searchBar.autocorrectionType = UITextAutocorrectionTypeNo;
         _searchBar.autocapitalizationType = UITextAutocapitalizationTypeNone;
         [self.view addSubview:_searchBar];
-        _cv.frame = CGRectMake(0, 44, self.view.bounds.size.width, self.view.bounds.size.height - 44);
         [self showMessage:@"Gõ tên phim rồi bấm Tìm."];
     } else if (_listUrl) {
         [self loadPage:_listUrl];
@@ -255,7 +275,11 @@
 
 - (void)viewDidLayoutSubviews {
     [super viewDidLayoutSubviews];
-    CGFloat top = _searchBar ? 44 : 0;
+    CGFloat w = self.view.bounds.size.width, head = _header ? [CBTabHeader height] : 0;
+    _header.frame = CGRectMake(0, 0, w, head);
+    _searchBar.frame = CGRectMake(0, head, w, 44);
+    CGFloat top = head + (_searchBar ? 44 : 0);
+    _cv.frame = CGRectMake(0, top, w, self.view.bounds.size.height - top);
     _message.frame = CGRectMake(20, top + 30, self.view.bounds.size.width - 40, 100);
     _spinner.center = CGPointMake(self.view.bounds.size.width / 2, top + 40);
     CGSize rs = [_retryButton sizeThatFits:CGSizeMake(300, 44)];
@@ -426,6 +450,19 @@ static NSString *CBFold(NSString *s) {
 
 - (void)scrollViewWillBeginDragging:(UIScrollView *)sv {
     [_searchBar resignFirstResponder];  // cuộn kết quả thì cất bàn phím
+}
+
+// Đang gõ: nút Huỷ để cất bàn phím (bàn phím che thanh tab — không có Huỷ thì kẹt ở tab Tìm kiếm)
+- (void)searchBarTextDidBeginEditing:(UISearchBar *)bar {
+    [bar setShowsCancelButton:YES animated:YES];
+}
+
+- (void)searchBarTextDidEndEditing:(UISearchBar *)bar {
+    [bar setShowsCancelButton:NO animated:YES];
+}
+
+- (void)searchBarCancelButtonClicked:(UISearchBar *)bar {
+    [bar resignFirstResponder];
 }
 
 - (void)searchBarSearchButtonClicked:(UISearchBar *)searchBar {

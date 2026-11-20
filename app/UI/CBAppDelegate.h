@@ -4,5 +4,6 @@
 
 @interface CBAppDelegate : UIResponder <UIApplicationDelegate>
 @property (nonatomic, strong) UIWindow *window;
-@property (nonatomic, strong) CBNavController *nav;
+/// Thanh điều hướng của tab đang chọn (CBRootViewController) — chỗ đẩy / trình bày màn mới
+@property (nonatomic, readonly) CBNavController *nav;
 @end

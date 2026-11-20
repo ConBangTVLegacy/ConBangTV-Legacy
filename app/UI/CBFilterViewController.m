@@ -82,13 +82,13 @@
     for (NSUInteger i = 0; i < items.count; i++) {
         UIButton *b = [UIButton buttonWithType:UIButtonTypeCustom];
         b.tag = (NSInteger)i;
-        b.titleLabel.font = [CBTheme font:[CBTheme isPad] ? 17 : 15];
+        b.titleLabel.font = [CBTheme medium:[CBTheme isPad] ? 16 : 15];
         b.titleLabel.adjustsFontSizeToFitWidth = YES;
         b.titleLabel.minimumScaleFactor = 0.7;
         [b setTitle:CBStr(items[i], @"title") forState:UIControlStateNormal];
         [b setTitleColor:[CBTheme text] forState:UIControlStateNormal];
-        [b setBackgroundImage:[CBTheme imageWithColor:[CBTheme surface] radius:10] forState:UIControlStateNormal];
-        [b setBackgroundImage:[CBTheme imageWithColor:[CBTheme surface2] radius:10] forState:UIControlStateHighlighted];
+        [b setBackgroundImage:[CBTheme imageWithColor:[CBTheme surface] radius:16] forState:UIControlStateNormal];
+        [b setBackgroundImage:[CBTheme imageWithColor:CBRGB(0x262A33) radius:16] forState:UIControlStateHighlighted];
         [b addTarget:self action:@selector(tapped:) forControlEvents:UIControlEventTouchUpInside];
         [_scroll addSubview:b];
         [_buttons addObject:b];

@@ -1,4 +1,6 @@
 #import "CBMiniPlayer.h"
+#import "CBGlass.h"
+#import "CBIcon.h"
 #import "CBLog.h"
 #import "CBRootViewController.h"
 #import "CBTheme.h"
@@ -11,14 +13,16 @@ static UIViewController<CBMiniPlayable> *gPlayer;       // trình phát đang th
 static UIView *gBox, *gVideo;                            // khung nổi ở góc (iPad; iPhone khi kéo thanh lên)
 static UIView *gBar, *gSlot;                             // iPhone: thanh ở đáy (nằm trong CBRootViewController) + ô hình bên trái
 static UILabel *gTitle, *gSubtitle;
-static UIView *gProgress;
+static UIView *gProgress, *gTrack;
 static UIButton *gPlayButton;
 static NSTimer *gTimer;
 static NSInteger gCorner;                                // 0 dưới phải, 1 dưới trái, 2 trên phải, 3 trên trái
 static BOOL gDragging;
 
-// Thanh thu nhỏ của iPhone: cao 64 pt, hình 16:9 bên trái (114×64), hai nút 44 pt bên phải
-static const CGFloat kBarH = 64, kBarVideoW = 114, kBarButtonW = 44;
+// Thanh thu nhỏ của iPhone: viên kính cao 52 pt nằm trên thanh tab, hình 16:9 bên trái (71×40), hai nút 44 pt bên phải
+static const CGFloat kBarH = 52, kBarVideoW = 71, kBarVideoH = 40, kBarButtonW = 44;
+// Khung nổi: viền kính 6 pt quanh hình, góc ngoài bo 22
+static const CGFloat kBoxPad = 6, kBoxRadius = 22;
 // iPhone: lần trước anh kéo thanh lên thành khung nổi → lần thu nhỏ sau ra khung nổi luôn (kéo khung xuống mép dưới = về thanh)
 static NSString *const kPhoneBoxKey = @"CBMiniPhoneBox";
 
@@ -33,35 +37,58 @@ static UIViewController *CBTopVC(void) {
     return vc;
 }
 
-/// Biểu tượng vẽ bằng CoreGraphics (khỏi phụ thuộc phông chữ: iOS 5 vẽ ▶ thành emoji, thiếu ❚)
+/// Biểu tượng (CBIcon): pause / play / close
 static UIImage *CBMiniIcon(NSString *kind) {
-    CGFloat s = 20;
-    UIGraphicsBeginImageContextWithOptions(CGSizeMake(s, s), NO, 0);
-    [[UIColor whiteColor] set];
-    if ([kind isEqualToString:@"pause"]) {
-        UIRectFill(CGRectMake(s * 0.26, s * 0.2, s * 0.17, s * 0.6));
-        UIRectFill(CGRectMake(s * 0.57, s * 0.2, s * 0.17, s * 0.6));
-    } else if ([kind isEqualToString:@"play"]) {
-        UIBezierPath *p = [UIBezierPath bezierPath];
-        [p moveToPoint:CGPointMake(s * 0.3, s * 0.18)];
-        [p addLineToPoint:CGPointMake(s * 0.3, s * 0.82)];
-        [p addLineToPoint:CGPointMake(s * 0.82, s * 0.5)];
-        [p closePath];
-        [p fill];
-    } else {
-        UIBezierPath *p = [UIBezierPath bezierPath];
-        [p moveToPoint:CGPointMake(s * 0.26, s * 0.26)];
-        [p addLineToPoint:CGPointMake(s * 0.74, s * 0.74)];
-        [p moveToPoint:CGPointMake(s * 0.74, s * 0.26)];
-        [p addLineToPoint:CGPointMake(s * 0.26, s * 0.74)];
-        p.lineWidth = 2.5;
-        p.lineCapStyle = kCGLineCapRound;
-        [p stroke];
-    }
-    UIImage *img = UIGraphicsGetImageFromCurrentImageContext();
+    return [CBIcon named:kind size:[kind isEqualToString:@"close"] ? 16 : 18 color:[UIColor whiteColor]];
+}
+
+/// Ảnh che 4 góc của hình (màu kính, giữa trong suốt): hình vuông góc trông như bo tròn mà không cần layer.cornerRadius
+/// (bo góc lớp video bắt GPU vẽ ngoài màn hình mỗi khung — xem CBTheme imageWithColor:radius:)
+static UIImage *CBCornerMask(CGFloat r) {
+    static NSMutableDictionary *cache;
+    if (!cache) cache = [NSMutableDictionary dictionary];
+    UIImage *img = cache[@(r)];
+    if (img) return img;
+    CGFloat side = r * 2 + 1;
+    UIGraphicsBeginImageContextWithOptions(CGSizeMake(side, side), NO, 0);
+    UIBezierPath *p = [UIBezierPath bezierPathWithRect:CGRectMake(0, 0, side, side)];
+    [p appendPath:[UIBezierPath bezierPathWithRoundedRect:CGRectMake(0, 0, side, side) cornerRadius:r]];
+    p.usesEvenOddFillRule = YES;
+    [[UIColor colorWithRed:36 / 255.0 green:40 / 255.0 blue:48 / 255.0 alpha:1] setFill];
+    [p fill];
+    img = [UIGraphicsGetImageFromCurrentImageContext() resizableImageWithCapInsets:UIEdgeInsetsMake(r, r, r, r)];
     UIGraphicsEndImageContext();
+    cache[@(r)] = img;
     return img;
 }
+
+/// Thanh thu nhỏ iPhone (viên kính): hẹp (thanh tab thu gọn — nằm giữa nút tab và nút tìm) thì bỏ nút ✕, chữ co lại
+@interface CBMiniBar : CBGlassView
+@property (nonatomic, weak) UIView *slot, *title, *subtitle, *play, *close, *track;
+@end
+
+@implementation CBMiniBar
+- (void)layoutSubviews {
+    [super layoutSubviews];
+    CGSize s = self.bounds.size;
+    BOOL narrow = s.width < 250;
+    CGFloat right = s.width - 4;
+    self.close.hidden = narrow;
+    if (!narrow) {
+        self.close.frame = CGRectMake(right - kBarButtonW, (s.height - 44) / 2, kBarButtonW, 44);
+        right -= kBarButtonW;
+    }
+    self.play.frame = CGRectMake(right - kBarButtonW, (s.height - 44) / 2, kBarButtonW, 44);
+    right -= kBarButtonW;
+    // Hẹp: ô hình nhỏ lại cho chữ còn chỗ
+    CGFloat vw = narrow ? 50 : kBarVideoW, vh = narrow ? 28 : kBarVideoH;
+    if (CGAffineTransformIsIdentity(self.slot.transform)) self.slot.frame = CGRectMake(narrow ? 10 : 6, (s.height - vh) / 2, vw, vh);
+    CGFloat x = (narrow ? 10 : 6) + vw + (narrow ? 8 : 10);
+    self.title.frame = CGRectMake(x, s.height / 2 - 18, MAX(10, right - x), 18);
+    self.subtitle.frame = CGRectMake(x, s.height / 2 + 1, MAX(10, right - x), 16);
+    self.track.frame = CGRectMake(24, s.height - 4, s.width - 48, 2);
+}
+@end
 
 @implementation CBMiniPlayer
 
@@ -121,21 +148,24 @@ static UIImage *CBMiniIcon(NSString *kind) {
     return player.presentingViewController ?: CBTopVC();
 }
 
-/// Khổ khung nổi: iPad 320×180; iPhone 192×108 (~60% bề ngang màn 320 pt — như «Hình nổi»)
+/// Khổ khung nổi (cả viền kính): hình iPad 320×180; iPhone 192×108 (~60% bề ngang màn 320 pt — như «Hình nổi»)
 + (CGSize)boxSize {
-    return [CBTheme isPad] ? CGSizeMake(320, 180) : CGSizeMake(192, 108);
+    CGSize v = [CBTheme isPad] ? CGSizeMake(320, 180) : CGSizeMake(192, 108);
+    return CGSizeMake(v.width + kBoxPad * 2, v.height + kBoxPad * 2);
 }
 
 /// Khung ở góc `corner` trong `host`: dưới thanh điều hướng, trên bàn phím (iPhone)
 + (CGRect)frameForCorner:(NSInteger)corner in:(UIView *)host {
     CGRect b = host.bounds;
     CGSize s = [self boxSize];
-    CGFloat m = 12, top = 64 + m, bottom = b.size.height;   // iPad: dưới thanh trạng thái + thanh điều hướng
+    CGFloat m = 12, top = 64 + m, bottom = b.size.height;   // dưới thanh trạng thái + thanh điều hướng / thanh tab
     CBRootViewController *root = [CBRootViewController current];
     if (root && host == root.view) {
-        UIViewController *c = root.content;
-        UINavigationBar *nb = [c isKindOfClass:[UINavigationController class]] ? [(UINavigationController *)c navigationBar] : nil;
-        if (nb.window) top = CGRectGetMaxY([host convertRect:nb.bounds fromView:nb]) + m;
+        UINavigationController *c = (UINavigationController *)root.content;
+        UINavigationBar *nb = [c isKindOfClass:[UINavigationController class]] ? c.navigationBar : nil;
+        top = root.overlayTop + m;
+        if (nb.window && !c.navigationBarHidden) top = MAX(top, CGRectGetMaxY([host convertRect:nb.bounds fromView:nb]) + m);
+        bottom -= root.overlayBottom - (root.bottomBar ? kBarH + 8 : 0);   // trên thanh tab
         if (root.keyboardTop > 0) bottom = MIN(bottom, root.keyboardTop);
     }
     CGFloat x = corner == 1 || corner == 3 ? m : b.size.width - s.width - m;
@@ -149,22 +179,18 @@ static UIImage *CBMiniIcon(NSString *kind) {
 }
 
 + (UIButton *)roundButton:(NSString *)icon action:(SEL)action {
-    UIButton *b = [UIButton buttonWithType:UIButtonTypeCustom];
-    b.frame = CGRectMake(0, 0, 34, 34);
-    // Nền tròn là ảnh (không layer.cornerRadius — xem CBTheme imageWithColor:radius:)
-    [b setBackgroundImage:[CBTheme imageWithColor:[UIColor colorWithWhite:0 alpha:0.6] radius:17] forState:UIControlStateNormal];
-    [b setBackgroundImage:[CBTheme imageWithColor:[UIColor colorWithWhite:0.25 alpha:0.8] radius:17] forState:UIControlStateHighlighted];
-    [b setImage:CBMiniIcon(icon) forState:UIControlStateNormal];
+    CBPillButton *b = [CBPillButton circle:icon diameter:32];
+    [b setIcon:icon size:[icon isEqualToString:@"close"] ? 13 : 15];
     [b addTarget:gMini action:action forControlEvents:UIControlEventTouchUpInside];
     return b;
 }
 
-/// Nút phẳng của thanh iPhone (cao bằng thanh — dễ bấm một tay)
+/// Nút phẳng của thanh iPhone (cao gần bằng thanh — dễ bấm một tay)
 + (UIButton *)barButton:(NSString *)icon action:(SEL)action {
     UIButton *b = [UIButton buttonWithType:UIButtonTypeCustom];
-    b.frame = CGRectMake(0, 0, kBarButtonW, kBarH);
+    b.frame = CGRectMake(0, 0, kBarButtonW, 44);
     [b setImage:CBMiniIcon(icon) forState:UIControlStateNormal];
-    [b setBackgroundImage:[CBTheme imageWithColor:[UIColor colorWithWhite:1 alpha:0.08]] forState:UIControlStateHighlighted];
+    [b setBackgroundImage:[CBGlass pill:22 color:[UIColor colorWithWhite:1 alpha:0.12] sheen:NO] forState:UIControlStateHighlighted];
     b.accessibilityLabel = [icon isEqualToString:@"close"] ? @"Đóng" : @"Phát / tạm dừng";
     [b addTarget:gMini action:action forControlEvents:UIControlEventTouchUpInside];
     return b;
@@ -203,26 +229,39 @@ static UIImage *CBMiniIcon(NSString *kind) {
         return;
     }
     CGRect end = [self frameForCorner:gCorner in:host];
-    gBox = [[UIView alloc] initWithFrame:CGRectIsNull(start) ? end : start];
-    gBox.backgroundColor = [UIColor blackColor];
+    // Viền kính bo tròn quanh hình (hình vuông góc + ảnh che góc cùng màu kính)
+    gBox = [[CBGlassView alloc] initWithFrame:CGRectIsNull(start) ? end : start radius:kBoxRadius style:CBGlassHeavy];
     gBox.autoresizingMask = [self maskForCorner:gCorner];
-    video.frame = gBox.bounds;
+    UIView *inner = [[UIView alloc] initWithFrame:CGRectInset(gBox.bounds, kBoxPad, kBoxPad)];
+    inner.backgroundColor = [UIColor blackColor];
+    inner.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    inner.userInteractionEnabled = NO;
+    [gBox addSubview:inner];
+    video.frame = inner.bounds;
     video.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     video.userInteractionEnabled = NO;   // chạm vào khung (cử chỉ của màn phát nằm yên tới khi mở lại)
-    [gBox addSubview:video];
-    UIImageView *border = [[UIImageView alloc] initWithImage:[CBTheme imageWithColor:[UIColor clearColor] radius:0
-                                                                             border:[UIColor colorWithWhite:1 alpha:0.3] width:1]];
-    border.frame = gBox.bounds;
-    border.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-    [gBox addSubview:border];
+    [inner addSubview:video];
+    UIImageView *corners = [[UIImageView alloc] initWithImage:CBCornerMask(kBoxRadius - kBoxPad)];
+    corners.frame = inner.frame;
+    corners.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    [gBox addSubview:corners];
 
     UIButton *close = [self roundButton:@"close" action:@selector(closeTapped)];
-    close.center = CGPointMake(gBox.bounds.size.width - 22, 22);
-    close.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin | UIViewAutoresizingFlexibleBottomMargin;
+    close.center = CGPointMake(kBoxPad + 22, kBoxPad + 22);
+    close.autoresizingMask = UIViewAutoresizingFlexibleRightMargin | UIViewAutoresizingFlexibleBottomMargin;
+    close.accessibilityLabel = @"Đóng";
+    UIButton *open = [self roundButton:@"expand" action:@selector(tapped)];
+    open.center = CGPointMake(gBox.bounds.size.width - kBoxPad - 22, kBoxPad + 22);
+    open.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin | UIViewAutoresizingFlexibleBottomMargin;
+    open.accessibilityLabel = @"Mở lại toàn màn hình";
     gPlayButton = [self roundButton:@"pause" action:@selector(playTapped)];
-    gPlayButton.center = CGPointMake(22, gBox.bounds.size.height - 22);
-    gPlayButton.autoresizingMask = UIViewAutoresizingFlexibleRightMargin | UIViewAutoresizingFlexibleTopMargin;
+    gPlayButton.bounds = CGRectMake(0, 0, 44, 44);
+    [(CBPillButton *)gPlayButton setIcon:@"pause" size:18];
+    gPlayButton.center = CGPointMake(gBox.bounds.size.width / 2, gBox.bounds.size.height / 2);
+    gPlayButton.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin | UIViewAutoresizingFlexibleRightMargin |
+                                   UIViewAutoresizingFlexibleTopMargin | UIViewAutoresizingFlexibleBottomMargin;
     [gBox addSubview:close];
+    [gBox addSubview:open];
     [gBox addSubview:gPlayButton];
 
     UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc] initWithTarget:gMini action:@selector(tapped)];
@@ -235,13 +274,14 @@ static UIImage *CBMiniIcon(NSString *kind) {
     [self watchKeyboard];
     [self startRefresh];
     if (CGRectIsNull(start)) return;
-    close.alpha = gPlayButton.alpha = 0;
+    close.alpha = open.alpha = gPlayButton.alpha = 0;
     UIView *box = gBox, *playButton = gPlayButton;
     [UIView animateWithDuration:0.3 delay:0 options:UIViewAnimationOptionCurveEaseInOut animations:^{
         box.frame = end;
     } completion:^(BOOL finished) {
         [UIView animateWithDuration:0.15 animations:^{
             close.alpha = 1;
+            open.alpha = 1;
             playButton.alpha = 1;
         }];
     }];
@@ -256,45 +296,48 @@ static UIImage *CBMiniIcon(NSString *kind) {
         [self closeCurrent];
         return;
     }
-    CGFloat W = root.view.bounds.size.width;
-    UIView *bar = [[UIView alloc] initWithFrame:CGRectMake(0, root.view.bounds.size.height - kBarH, W, kBarH)];
-    bar.backgroundColor = [CBTheme surface];
-    UIView *slot = [[UIView alloc] initWithFrame:CGRectMake(0, 0, kBarVideoW, kBarH)];
+    CGFloat W = root.view.bounds.size.width - 20;
+    CBMiniBar *bar = [[CBMiniBar alloc] initWithFrame:CGRectMake(10, root.view.bounds.size.height - 120, W, kBarH) radius:-1 style:CBGlassBar];
+    UIView *slot = [[UIView alloc] initWithFrame:CGRectMake(6, (kBarH - kBarVideoH) / 2, kBarVideoW, kBarVideoH)];
     slot.backgroundColor = [UIColor blackColor];
     [bar addSubview:slot];
     video.frame = slot.bounds;
     video.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     video.userInteractionEnabled = NO;
     [slot addSubview:video];
+    UIImageView *corners = [[UIImageView alloc] initWithImage:CBCornerMask(9)];
+    corners.frame = slot.bounds;
+    corners.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    [slot addSubview:corners];
 
-    CGFloat textX = kBarVideoW + 10, textW = W - textX - 2 * kBarButtonW - 4;
-    gTitle = [[UILabel alloc] initWithFrame:CGRectMake(textX, 13, textW, 19)];
-    gTitle.font = [CBTheme bold:14];
-    gSubtitle = [[UILabel alloc] initWithFrame:CGRectMake(textX, 33, textW, 17)];
+    gTitle = [[UILabel alloc] init];
+    gTitle.font = [CBTheme medium:14];
+    gSubtitle = [[UILabel alloc] init];
     gSubtitle.font = [CBTheme font:12];
     for (UILabel *l in @[gTitle, gSubtitle]) {
         l.backgroundColor = [UIColor clearColor];
-        l.textColor = l == gTitle ? [CBTheme text] : [CBTheme dim];
+        l.textColor = l == gTitle ? [CBTheme text] : CBRGB(0xA9B1BE);
         l.lineBreakMode = NSLineBreakByTruncatingTail;
-        l.autoresizingMask = UIViewAutoresizingFlexibleWidth;
         [bar addSubview:l];
     }
     gPlayButton = [self barButton:@"pause" action:@selector(playTapped)];
-    gPlayButton.frame = CGRectMake(W - 2 * kBarButtonW, 0, kBarButtonW, kBarH);
     UIButton *close = [self barButton:@"close" action:@selector(closeTapped)];
-    close.frame = CGRectMake(W - kBarButtonW, 0, kBarButtonW, kBarH);
-    for (UIButton *b in @[gPlayButton, close]) {
-        b.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin;
-        [bar addSubview:b];
-    }
-    // Mép trên: đường kẻ mảnh; phim thì vạch tiến độ màu app đè lên
-    UIView *line = [[UIView alloc] initWithFrame:CGRectMake(0, 0, W, 1)];
-    line.backgroundColor = [UIColor colorWithWhite:1 alpha:0.12];
-    line.autoresizingMask = UIViewAutoresizingFlexibleWidth;
-    [bar addSubview:line];
+    [bar addSubview:gPlayButton];
+    [bar addSubview:close];
+    // Mép dưới trong viên kính: vạch tiến độ mảnh (phim)
+    gTrack = [[UIView alloc] init];
+    gTrack.backgroundColor = [UIColor colorWithWhite:1 alpha:0.16];
+    gTrack.userInteractionEnabled = NO;
+    [bar addSubview:gTrack];
     gProgress = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 0, 2)];
-    gProgress.backgroundColor = [CBTheme brand];
-    [bar addSubview:gProgress];
+    gProgress.backgroundColor = [CBTheme accent];
+    [gTrack addSubview:gProgress];
+    bar.slot = slot;
+    bar.title = gTitle;
+    bar.subtitle = gSubtitle;
+    bar.play = gPlayButton;
+    bar.close = close;
+    bar.track = gTrack;
 
     UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc] initWithTarget:gMini action:@selector(tapped)];
     tap.delegate = gMini;
@@ -357,6 +400,7 @@ static UIImage *CBMiniIcon(NSString *kind) {
     gSlot = nil;
     gTitle = gSubtitle = nil;
     gProgress = nil;
+    gTrack = nil;
     gVideo = nil;
     gPlayButton = nil;
     gDragging = NO;
@@ -458,8 +502,8 @@ static UIImage *CBMiniIcon(NSString *kind) {
     if (![gTitle.text isEqualToString:title ?: @""]) gTitle.text = title ?: @"";
     if (![gSubtitle.text isEqualToString:sub ?: @""]) gSubtitle.text = sub ?: @"";
     double p = [gPlayer respondsToSelector:@selector(miniProgress)] ? [gPlayer miniProgress] : -1;
-    gProgress.hidden = !(p >= 0);
-    if (p >= 0) gProgress.frame = CGRectMake(0, 0, round(gBar.bounds.size.width * MIN(1, p)), 2);
+    gTrack.hidden = !(p >= 0);
+    if (p >= 0) gProgress.frame = CGRectMake(0, 0, round(gTrack.bounds.size.width * MIN(1, p)), 2);
 }
 
 /// Kéo khung; thả ra thì bám vào góc gần nhất. iPhone: kéo khung xuống quá mép dưới (hoặc hất mạnh xuống ở nửa dưới) = về thanh

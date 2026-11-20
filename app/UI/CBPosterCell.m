@@ -1,18 +1,19 @@
 #import "CBPosterCell.h"
 #import "CBImages.h"
 #import "CBJSON.h"
+#import "CBGlass.h"
 #import "CBTheme.h"
 
-/// Góc bo của ảnh bìa (điểm)
-static const CGFloat kPosterRadius = 6;
+/// Góc bo của ảnh bìa (điểm) — kiểu iOS 26 bo lớn
+#define kPosterRadius ([CBTheme isPad] ? 14.0 : 12.0)
 
 @implementation CBPosterCell {
     CBCoverView *_poster;
     UILabel *_title;
     UILabel *_sub;
     UILabel *_badge;
-    UIView *_track;
-    UIView *_bar;
+    UIImageView *_track;
+    UIImageView *_bar;
     UILabel *_placeholder;
     double _progress;
     NSString *_posterUrl;
@@ -46,23 +47,23 @@ static const CGFloat kPosterRadius = 6;
         _poster.contentMode = UIViewContentModeScaleToFill;  // ảnh đã cắt đúng khổ ô
         [self.contentView addSubview:_poster];
 
-        _badge = [CBTheme roundLabel:[CBTheme brand] radius:3];
-        _badge.textColor = [CBTheme onBrand];
+        // Nhãn trên ảnh bìa: viên thuốc tối mờ, chữ trắng (kiểu iOS 26) — không còn nhãn xanh vuông
+        _badge = [CBTheme roundLabel:[UIColor colorWithRed:8 / 255.0 green:10 / 255.0 blue:14 / 255.0 alpha:0.7] radius:9];
+        _badge.textColor = [UIColor whiteColor];
         _badge.font = [CBTheme bold:10];
         _badge.textAlignment = NSTextAlignmentCenter;
         [self.contentView addSubview:_badge];
 
-        _track = [[UIView alloc] init];
-        _track.backgroundColor = [UIColor colorWithWhite:0 alpha:0.6];
+        // Vạch đã xem: viên thuốc mảnh nằm trong mép dưới ảnh bìa (ảnh kéo giãn — không bo góc lớp)
+        _track = [[UIImageView alloc] initWithImage:[CBGlass pill:2 color:[UIColor colorWithWhite:1 alpha:0.3] sheen:NO]];
         [self.contentView addSubview:_track];
-        _bar = [[UIView alloc] init];
-        _bar.backgroundColor = [CBTheme brand];
+        _bar = [[UIImageView alloc] initWithImage:[CBGlass pill:2 color:[CBTheme brand] sheen:NO]];
         [_track addSubview:_bar];
 
         _title = [[UILabel alloc] init];
         _title.backgroundColor = [UIColor clearColor];
         _title.textColor = [CBTheme text];
-        _title.font = [CBTheme font:[CBTheme isPad] ? 13 : 12];
+        _title.font = [CBTheme medium:[CBTheme isPad] ? 13 : 12];
         _title.numberOfLines = 2;
         [self.contentView addSubview:_title];
 
@@ -83,7 +84,7 @@ static const CGFloat kPosterRadius = 6;
     _title.text = CBStr(item, @"title");
     _sub.text = CBStr(item, @"sub");
     NSString *badge = CBStr(item, @"badge");
-    _badge.text = badge ? [NSString stringWithFormat:@" %@ ", badge] : nil;
+    _badge.text = badge ? [NSString stringWithFormat:@"  %@  ", badge] : nil;
     _badge.hidden = !badge;
     _placeholder.text = CBStr(item, @"title");
     _progress = CBNum(item, @"progress", -1);
@@ -136,14 +137,14 @@ static const CGFloat kPosterRadius = 6;
     _poster.frame = CGRectMake(0, 0, w, ph);
     _placeholder.frame = _poster.frame;
     [_badge sizeToFit];
-    _badge.frame = CGRectMake(4, 4, MIN(_badge.bounds.size.width, w - 8), 16);
+    _badge.frame = CGRectMake(6, 6, MIN(_badge.bounds.size.width, w - 12), 18);
     _track.hidden = _progress < 0;
-    _track.frame = CGRectMake(0, ph - 4, w, 4);
-    _bar.frame = CGRectMake(0, 0, w * MAX(0, MIN(1, _progress)), 4);
+    _track.frame = CGRectMake(8, ph - 10, w - 16, 4);
+    _bar.frame = CGRectMake(0, 0, MAX(4, (w - 16) * MAX(0, MIN(1, _progress))), 4);
     CGFloat th = [CBTheme heightOf:_title.text font:_title.font width:w];
     th = MIN(th, ceil(_title.font.lineHeight * 2));
-    _title.frame = CGRectMake(0, ph + 4, w, th);
-    _sub.frame = CGRectMake(0, ph + 4 + th, w, 15);
+    _title.frame = CGRectMake(0, ph + 6, w, th);
+    _sub.frame = CGRectMake(0, ph + 6 + th, w, 15);
 }
 
 @end

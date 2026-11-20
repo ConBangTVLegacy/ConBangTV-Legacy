@@ -9,6 +9,10 @@
 #import "CBPrefs.h"
 #import "CBTVGuideViewController.h"
 #import "CBTVSettingsViewController.h"
+#import "CBSheet.h"
+#import "CBTabHeader.h"
+#import "CBGlass.h"
+#import "CBIcon.h"
 #import "CBTheme.h"
 #import <objc/runtime.h>
 
@@ -44,7 +48,7 @@
         _card = [[UIImageView alloc] initWithFrame:self.contentView.bounds];
         _card.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
         [self.contentView addSubview:_card];
-        _logoBox = [[UIImageView alloc] initWithImage:[CBTheme imageWithColor:CBRGB(0x262B32) radius:6]];
+        _logoBox = [[UIImageView alloc] initWithImage:[CBTheme imageWithColor:CBRGB(0x262B32) radius:12]];
         [self.contentView addSubview:_logoBox];
         _abbr = [[UILabel alloc] init];
         _abbr.backgroundColor = [UIColor clearColor];
@@ -57,7 +61,7 @@
         _logo.placeholder = _abbr;
         _logo.contentMode = UIViewContentModeScaleAspectFit;
         [_logoBox addSubview:_logo];
-        _live = [CBTheme roundLabel:CBRGB(0xD93A3F) radius:3];
+        _live = [CBTheme roundLabel:CBRGB(0xD93A3F) radius:8];
         _live.textColor = [UIColor whiteColor];
         _live.font = [CBTheme bold:9];
         _live.textAlignment = NSTextAlignmentCenter;
@@ -76,8 +80,7 @@
         [_track addSubview:_fill];
         [self.contentView addSubview:_track];
         _star = [UIButton buttonWithType:UIButtonTypeCustom];
-        _star.titleLabel.font = [CBTheme font:20];
-        [_star setTitle:@"★" forState:UIControlStateNormal];
+        _star.accessibilityLabel = @"Yêu thích";
         [_star addTarget:self action:@selector(starTapped) forControlEvents:UIControlEventTouchUpInside];
         [self.contentView addSubview:_star];
     }
@@ -95,7 +98,7 @@
 
 - (void)updateCard {
     UIColor *c = self.highlighted ? CBRGB(0x2A3037) : (_compact ? nil : CBRGB(0x1A1D22));
-    _card.image = c ? [CBTheme imageWithColor:c radius:10] : nil;
+    _card.image = c ? [CBTheme imageWithColor:c radius:18] : nil;
 }
 
 - (void)prepareForReuse {
@@ -115,7 +118,7 @@
     _num.text = CBStr(c, @"num");
     _name.text = CBStr(c, @"n");
     BOOL fav = [CBIPTV isFavorite:c];
-    [_star setTitleColor:fav ? [CBTheme focus] : CBRGB(0x4A5058) forState:UIControlStateNormal];
+    [_star setImage:[CBIcon named:@"star" size:18 color:fav ? [CBTheme focus] : CBRGB(0x5A616B) filled:fav] forState:UIControlStateNormal];
     double s = CBNum(p, @"s", 0), e = CBNum(p, @"e", 0);
     double f = p && e > s ? MAX(0, MIN(1, (now - s) / (e - s))) : 0;
     // Kênh trận đấu (danh sách thể thao): dòng trạng thái trận thay cho lịch phát sóng
@@ -283,6 +286,7 @@
     NSTimer *_timer;
     NSDictionary *_sheetChannel;
     BOOL _favsChosen, _appeared, _onScreen;
+    CBTabHeader *_header;   // màn gốc của tab: tiêu đề lớn + nút «+» / «Cài đặt truyền hình»
 }
 
 - (instancetype)init {
@@ -304,8 +308,15 @@
 - (void)viewDidLoad {
     [super viewDidLoad];
     self.view.backgroundColor = [CBTheme bg];
-    self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"Cài đặt" style:UIBarButtonItemStyleBordered
-                                                                             target:self action:@selector(openSettings)];
+    if (self.navigationController.viewControllers.firstObject == self) {
+        _header = [[CBTabHeader alloc] initWithTitle:self.title];
+        _header.rightItems = @[[CBTabHeader groupWithIcons:@[@"plus", @"sliders"] target:self actions:@[@"addList", @"openSettings"]
+                                                    labels:@[@"Thêm danh sách kênh", @"Cài đặt truyền hình"]]];
+        [self.view addSubview:_header];
+    } else {
+        self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"Cài đặt" style:UIBarButtonItemStyleBordered
+                                                                                 target:self action:@selector(openSettings)];
+    }
     _info = [[UILabel alloc] init];
     _info.backgroundColor = [UIColor clearColor];
     _info.textColor = [CBTheme dim];
@@ -327,7 +338,7 @@
     _search = [[UISearchBar alloc] init];
     _search.placeholder = @"Tìm kênh hoặc gõ số kênh";
     _search.delegate = self;
-    _search.tintColor = [CBTheme surface];
+    [CBTheme darkKeyboard:_search];
     _search.autocorrectionType = UITextAutocorrectionTypeNo;
     _search.autocapitalizationType = UITextAutocapitalizationTypeNone;
     [self.view addSubview:_search];
@@ -396,9 +407,11 @@
     [super viewDidLayoutSubviews];
     CGFloat w = self.view.bounds.size.width, h = self.view.bounds.size.height;
     BOOL hasList = [CBIPTV activeList] != nil;
-    _changeButton.frame = CGRectMake(w - 132, 4, 120, 26);
-    _info.frame = CGRectMake(12, 4, w - 150, 26);
-    CGFloat y = 32;
+    CGFloat top = _header ? [CBTabHeader height] : 0;
+    _header.frame = CGRectMake(0, 0, w, top);
+    _changeButton.frame = CGRectMake(w - 132, top + 4, 120, 26);
+    _info.frame = CGRectMake(16, top + 4, w - 154, 26);
+    CGFloat y = top + 32;
     _chips.frame = CGRectMake(0, y, w, hasList ? 48 : 0);
     y += _chips.frame.size.height;
     _search.frame = CGRectMake(0, y, w, hasList ? 44 : 0);
@@ -509,8 +522,9 @@
         [chips addObject:@{@"id": CBStr(g, @"name"), @"title": [NSString stringWithFormat:@"%@  %@", CBStr(g, @"name"), g[@"count"]]}];
     }
     CGFloat x = 12, h = 34;
-    UIFont *font = [CBTheme font:[CBTheme isPad] ? 15 : 14];
+    UIFont *font = [CBTheme medium:[CBTheme isPad] ? 14 : 13];
     UIButton *selected = nil;
+    if (x < 16) x = 16;
     for (NSUInteger i = 0; i < chips.count; i++) {
         NSString *t = chips[i][@"title"];
         BOOL on = [chips[i][@"id"] isEqualToString:_group];
@@ -518,10 +532,11 @@
         b.tag = (NSInteger)i;
         b.titleLabel.font = font;
         [b setTitle:t forState:UIControlStateNormal];
-        UIColor *fg = on ? [CBTheme onBrand] : (i == 0 ? [CBTheme focus] : [CBTheme text]);
+        UIColor *fg = on ? [CBTheme bg] : (i == 0 ? [CBTheme focus] : [CBTheme text]);
+        if (on) b.titleLabel.font = [CBTheme bold:font.pointSize];
         [b setTitleColor:fg forState:UIControlStateNormal];
-        [b setBackgroundImage:[CBTheme imageWithColor:on ? [CBTheme brand] : [CBTheme surface] radius:h / 2] forState:UIControlStateNormal];
-        [b setBackgroundImage:[CBTheme imageWithColor:[CBTheme surface2] radius:h / 2] forState:UIControlStateHighlighted];
+        [b setBackgroundImage:[CBGlass pill:h / 2 color:on ? [CBTheme text] : [CBTheme fill] sheen:NO] forState:UIControlStateNormal];
+        [b setBackgroundImage:[CBGlass pill:h / 2 color:[UIColor colorWithWhite:1 alpha:0.18] sheen:NO] forState:UIControlStateHighlighted];
         CGFloat bw = ceil([t sizeWithFont:font].width) + 28;
         b.frame = CGRectMake(x, 7, bw, h);
         [b addTarget:self action:@selector(chipTapped:) forControlEvents:UIControlEventTouchUpInside];
@@ -561,6 +576,18 @@
 - (void)searchBar:(UISearchBar *)bar textDidChange:(NSString *)text {
     _query = text;
     [self rebuild];
+}
+
+- (void)searchBarTextDidBeginEditing:(UISearchBar *)bar {
+    [bar setShowsCancelButton:YES animated:YES];
+}
+
+- (void)searchBarTextDidEndEditing:(UISearchBar *)bar {
+    [bar setShowsCancelButton:NO animated:YES];
+}
+
+- (void)searchBarCancelButtonClicked:(UISearchBar *)bar {
+    [bar resignFirstResponder];
 }
 
 - (void)searchBarSearchButtonClicked:(UISearchBar *)bar {
@@ -667,7 +694,7 @@
     if (!ip || ip.item >= (NSInteger)_visible.count) return;
     _sheetChannel = _visible[ip.item];
     BOOL fav = [CBIPTV isFavorite:_sheetChannel];
-    UIActionSheet *sheet = [[UIActionSheet alloc] initWithTitle:CBStr(_sheetChannel, @"n") delegate:self cancelButtonTitle:nil
+    UIActionSheet *sheet = [[CBSheet alloc] initWithTitle:CBStr(_sheetChannel, @"n") delegate:self cancelButtonTitle:nil
                                          destructiveButtonTitle:nil otherButtonTitles:nil];
     [sheet addButtonWithTitle:@"Xem"];
     CBMatchState ms = [CBIPTV matchState:_sheetChannel at:[[NSDate date] timeIntervalSince1970]];

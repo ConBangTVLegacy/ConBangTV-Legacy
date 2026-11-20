@@ -9,6 +9,8 @@
 #import "CBParental.h"
 #import "CBPrefs.h"
 #import "CBSync.h"
+#import "CBGlass.h"
+#import "CBIcon.h"
 #import "CBTheme.h"
 #import "CBCompat.h"
 #import <objc/message.h>
@@ -96,7 +98,8 @@ static void CBForceOrientation(UIInterfaceOrientation o) {
     UIImageView *_bg;
 }
 - (void)setCurrent:(BOOL)current {
-    _bg.image = [CBTheme imageWithColor:[UIColor colorWithWhite:1 alpha:0.12] radius:6 border:current ? [CBTheme focus] : nil width:2];
+    _bg.image = [CBTheme imageWithColor:current ? [UIColor colorWithRed:0.25 green:0.79 blue:0.61 alpha:0.16] : [UIColor colorWithWhite:1 alpha:0.1]
+                                 radius:20 border:current ? [CBTheme accent] : nil width:1.5];
 }
 - (instancetype)initWithFrame:(CGRect)frame {
     if ((self = [super initWithFrame:frame])) {
@@ -109,7 +112,7 @@ static void CBForceOrientation(UIInterfaceOrientation o) {
         _label.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
         _label.backgroundColor = [UIColor clearColor];
         _label.textAlignment = NSTextAlignmentCenter;
-        _label.font = [CBTheme font:15];
+        _label.font = [CBTheme medium:15];
         _label.adjustsFontSizeToFitWidth = YES;
         _label.minimumScaleFactor = 0.6;
         [self.contentView addSubview:_label];
@@ -121,6 +124,20 @@ static void CBForceOrientation(UIInterfaceOrientation o) {
     self.contentView.alpha = highlighted ? 0.6 : 1;
 }
 @end
+
+/// Dải tối mờ dần trên / dưới hình (chữ, nút kính dễ đọc trên cảnh sáng) — ảnh 1 × 64 giãn ra
+static UIImage *CBScrim(BOOL top) {
+    UIGraphicsBeginImageContextWithOptions(CGSizeMake(1, 64), NO, 1);
+    CGColorSpaceRef space = CGColorSpaceCreateDeviceRGB();
+    CGFloat comps[] = {0, 0, 0, top ? 0.55 : 0, 0, 0, 0, top ? 0 : 0.6};
+    CGGradientRef g = CGGradientCreateWithColorComponents(space, comps, NULL, 2);
+    CGContextDrawLinearGradient(UIGraphicsGetCurrentContext(), g, CGPointZero, CGPointMake(0, 64), 0);
+    CGGradientRelease(g);
+    CGColorSpaceRelease(space);
+    UIImage *img = UIGraphicsGetImageFromCurrentImageContext();
+    UIGraphicsEndImageContext();
+    return img;
+}
 
 @interface CBPlayerViewController () <CBMiniPlayable, CBFloatPlayable, UIGestureRecognizerDelegate, CBCollectionViewDataSource,
                                       CBCollectionViewDelegate>
@@ -167,6 +184,7 @@ static void CBForceOrientation(UIInterfaceOrientation o) {
     UIButton *_floatButton;     // «Hình nổi»: khung nổi trên màn hình chính / app khác (tinh chỉnh CBFloat, iOS 6 – 8 đã jailbreak)
     // Bảng chọn tự vẽ (server, menu «⋯», tốc độ, hẹn giờ): UIActionSheet của iOS 6 ở iPhone ngang thành danh sách cuộn, che mục
     UIView *_menuPanel;
+    CBGlassView *_menuCard;       // thẻ kính chứa danh sách mục (_menuBox)
     UIScrollView *_menuBox;
     UILabel *_menuTitle;
     NSMutableArray *_menuButtons;
@@ -200,6 +218,10 @@ static void CBForceOrientation(UIInterfaceOrientation o) {
     BOOL _observing;
     // Giao diện
     UIView *_top, *_bottom;
+    UIView *_center;            // giữa hình: tập trước, lùi, phát / tạm dừng, tới, tập sau (nút tròn kính)
+    CBGlassView *_topGroup;     // góc phải trên: Hình nổi, Thu nhỏ, ⋯ chung một viên kính
+    CBGlassView *_bar;          // viên kính ở đáy: giờ, thanh tua, thời lượng, «Tập»
+    UIImageView *_scrimTop, *_scrimBottom;
     UILabel *_titleLabel, *_timeLabel, *_durLabel, *_status, *_toast;
     UIButton *_episodesButton;   // «☰ Tập»: bảng chọn tập
     UIView *_epPanel;
@@ -270,63 +292,103 @@ static void CBForceOrientation(UIInterfaceOrientation o) {
                                                                        : AVLayerVideoGravityResizeAspect];
     [self.view addSubview:_video];
 
+    // Kiểu iOS 26: không còn thanh nền tối — nút kính nổi trên hình, dải tối mờ ở mép trên / dưới
     UIColor *shade = [UIColor colorWithWhite:0 alpha:0.6];
     _top = [[UIView alloc] init];
-    _top.backgroundColor = shade;
+    _top.backgroundColor = [UIColor clearColor];
+    _top.clipsToBounds = NO;
     [self.view addSubview:_top];
-    _closeButton = [self barButton:@"✕ Đóng" action:@selector(close)];
+    _scrimTop = [[UIImageView alloc] initWithImage:CBScrim(YES)];
+    _scrimTop.userInteractionEnabled = NO;
+    [_top addSubview:_scrimTop];
+    _closeButton = [CBPillButton circle:@"close" diameter:40];
+    [(CBPillButton *)_closeButton setIcon:@"close" size:16];
+    _closeButton.accessibilityLabel = @"Đóng";
+    [_closeButton addTarget:self action:@selector(close) forControlEvents:UIControlEventTouchUpInside];
     [_top addSubview:_closeButton];
-    _miniButton = [self barButton:@"Thu nhỏ" action:@selector(minimize)];
-    _miniButton.hidden = ![CBMiniPlayer available];
-    [_top addSubview:_miniButton];
-    _floatButton = [self barButton:@"Hình nổi" action:@selector(floatOut)];
+    _topGroup = [[CBGlassView alloc] initWithFrame:CGRectMake(0, 0, 42, 40) radius:-1 style:CBGlassBar];
+    [_top addSubview:_topGroup];
+    UIButton *(^groupButton)(NSString *, NSString *, SEL) = ^UIButton *(NSString *icon, NSString *label, SEL action) {
+        UIButton *b = [UIButton buttonWithType:UIButtonTypeCustom];
+        [b setImage:[CBIcon named:icon size:19 color:[CBTheme text]] forState:UIControlStateNormal];
+        [b setImage:[CBIcon named:icon size:19 color:[CBTheme dim]] forState:UIControlStateHighlighted];
+        b.accessibilityLabel = label;
+        [b addTarget:self action:action forControlEvents:UIControlEventTouchUpInside];
+        [self->_topGroup addSubview:b];
+        return b;
+    };
+    _floatButton = groupButton(@"float", @"Hình nổi", @selector(floatOut));
     _floatButton.hidden = ![CBFloatBridge available];
-    [_top addSubview:_floatButton];
-    if (![CBTheme isPad]) {   // iPhone ngang chỉ rộng 480–568 pt: hai nút này là biểu tượng, chừa chỗ cho tên phim
-        for (UIButton *b in @[_miniButton, _floatButton]) {
-            b.accessibilityLabel = [b titleForState:UIControlStateNormal];
-            [b setTitle:nil forState:UIControlStateNormal];
-            [b setImage:[CBMiniPlayer barIcon:b == _miniButton ? @"mini" : @"float"] forState:UIControlStateNormal];
-            b.showsTouchWhenHighlighted = YES;
-        }
-    }
-    _serverButton = [self barButton:@"Server" action:@selector(showServers)];
+    _miniButton = groupButton(@"down", @"Thu nhỏ", @selector(minimize));
+    _miniButton.hidden = ![CBMiniPlayer available];
+    _moreButton = groupButton(@"more", @"Thêm", @selector(showMenu));
+    _serverButton = [CBPillButton pill:@"Server" style:CBPillGlass];
+    _serverButton.titleLabel.font = [CBTheme medium:14];
+    _serverButton.contentEdgeInsets = UIEdgeInsetsMake(0, 14, 0, 14);
+    [_serverButton addTarget:self action:@selector(showServers) forControlEvents:UIControlEventTouchUpInside];
     _serverButton.titleLabel.lineBreakMode = NSLineBreakByTruncatingTail;
     _serverButton.titleLabel.adjustsFontSizeToFitWidth = YES;
     _serverButton.titleLabel.minimumScaleFactor = 0.75;
     [_top addSubview:_serverButton];
-    _episodesButton = [self barButton:@"☰ Tập" action:@selector(toggleEpisodes)];
-    _episodesButton.hidden = YES;
-    [_top addSubview:_episodesButton];
-    _moreButton = [self barButton:@"⋯" action:@selector(showMenu)];
-    _moreButton.titleLabel.font = [CBTheme bold:24];
-    [_top addSubview:_moreButton];
     _titleLabel = [self overlayLabel:[CBTheme bold:15]];
-    _titleLabel.textAlignment = NSTextAlignmentCenter;
+    _titleLabel.textAlignment = NSTextAlignmentLeft;
+    _titleLabel.shadowColor = [UIColor colorWithWhite:0 alpha:0.5];
+    _titleLabel.shadowOffset = CGSizeMake(0, 1);
     [_top addSubview:_titleLabel];
 
+    _center = [[UIView alloc] init];
+    _center.backgroundColor = [UIColor clearColor];
+    [self.view addSubview:_center];
+    _prevButton = [CBPillButton circle:@"prev" diameter:44];
+    [(CBPillButton *)_prevButton setIcon:@"prev" size:17];
+    _prevButton.accessibilityLabel = @"Tập trước";
+    [_prevButton addTarget:self action:@selector(previousEpisode) forControlEvents:UIControlEventTouchUpInside];
+    long step = (long)[CBPrefs seekStep];
+    _backButton = [CBPillButton circle:nil diameter:54];
+    [(CBPillButton *)_backButton setIcon:[NSString stringWithFormat:@"back%ld", step] size:27];
+    _backButton.accessibilityLabel = [NSString stringWithFormat:@"Lùi %ld giây", step];
+    [_backButton addTarget:self action:@selector(backTapped) forControlEvents:UIControlEventTouchUpInside];
+    _playButton = [CBPillButton circle:nil diameter:68];
+    [self setPlayIcon:YES];
+    [_playButton addTarget:self action:@selector(togglePlay) forControlEvents:UIControlEventTouchUpInside];
+    _fwdButton = [CBPillButton circle:nil diameter:54];
+    [(CBPillButton *)_fwdButton setIcon:[NSString stringWithFormat:@"fwd%ld", step] size:27];
+    _fwdButton.accessibilityLabel = [NSString stringWithFormat:@"Tới %ld giây", step];
+    [_fwdButton addTarget:self action:@selector(fwdTapped) forControlEvents:UIControlEventTouchUpInside];
+    _nextButton = [CBPillButton circle:@"next" diameter:44];
+    [(CBPillButton *)_nextButton setIcon:@"next" size:17];
+    _nextButton.accessibilityLabel = @"Tập sau";
+    [_nextButton addTarget:self action:@selector(nextEpisode) forControlEvents:UIControlEventTouchUpInside];
+    for (UIButton *b in @[_prevButton, _backButton, _playButton, _fwdButton, _nextButton]) [_center addSubview:b];
+
     _bottom = [[UIView alloc] init];
-    _bottom.backgroundColor = shade;
+    _bottom.backgroundColor = [UIColor clearColor];
+    _bottom.clipsToBounds = NO;
     [self.view addSubview:_bottom];
-    _prevButton = [self barButton:@"« Tập trước" action:@selector(previousEpisode)];
-    _backButton = [self barButton:[NSString stringWithFormat:@"−%lds", (long)[CBPrefs seekStep]] action:@selector(backTapped)];
-    _playButton = [self barButton:@"Tạm dừng" action:@selector(togglePlay)];
-    _fwdButton = [self barButton:[NSString stringWithFormat:@"+%lds", (long)[CBPrefs seekStep]] action:@selector(fwdTapped)];
-    _nextButton = [self barButton:@"Tập sau »" action:@selector(nextEpisode)];
-    for (UIButton *b in @[_prevButton, _backButton, _playButton, _fwdButton, _nextButton]) [_bottom addSubview:b];
+    _scrimBottom = [[UIImageView alloc] initWithImage:CBScrim(NO)];
+    _scrimBottom.userInteractionEnabled = NO;
+    [_bottom addSubview:_scrimBottom];
+    _bar = [[CBGlassView alloc] initWithFrame:CGRectMake(0, 0, 100, 48) radius:-1 style:CBGlassBar];
+    [_bottom addSubview:_bar];
     _slider = [[UISlider alloc] init];
-    _slider.minimumTrackTintColor = [CBTheme brand];
-    _slider.maximumTrackTintColor = [UIColor colorWithWhite:1 alpha:0.3];
     [_slider addTarget:self action:@selector(sliderDown) forControlEvents:UIControlEventTouchDown];
     [_slider addTarget:self action:@selector(sliderMoved) forControlEvents:UIControlEventValueChanged];
     [_slider addTarget:self action:@selector(sliderUp) forControlEvents:UIControlEventTouchUpInside | UIControlEventTouchUpOutside |
                                                                        UIControlEventTouchCancel];
-    [_bottom addSubview:_slider];
-    _timeLabel = [self overlayLabel:[CBTheme font:13]];
-    _durLabel = [self overlayLabel:[CBTheme font:13]];
+    [_bar addSubview:_slider];
+    _timeLabel = [self overlayLabel:[CBTheme medium:12]];
+    _durLabel = [self overlayLabel:[CBTheme medium:12]];
+    _durLabel.textColor = CBRGB(0xC4CAD4);
     _durLabel.textAlignment = NSTextAlignmentRight;
-    [_bottom addSubview:_timeLabel];
-    [_bottom addSubview:_durLabel];
+    [_bar addSubview:_timeLabel];
+    [_bar addSubview:_durLabel];
+    _episodesButton = [CBPillButton pill:@"Tập" style:CBPillSubtle];
+    _episodesButton.titleLabel.font = [CBTheme medium:13];
+    _episodesButton.contentEdgeInsets = UIEdgeInsetsMake(0, 12, 0, 14);
+    [(CBPillButton *)_episodesButton setIcon:@"list" size:15];
+    [_episodesButton addTarget:self action:@selector(toggleEpisodes) forControlEvents:UIControlEventTouchUpInside];
+    _episodesButton.hidden = YES;
+    [_bar addSubview:_episodesButton];
 
     _subLabel = [CBTheme roundLabel:[UIColor colorWithWhite:0 alpha:0.45] radius:4];   // nền bo vẽ vào nhãn (không lớp bo góc đè lên video)
     _subLabel.textColor = [UIColor whiteColor];
@@ -467,40 +529,55 @@ static void CBForceOrientation(UIInterfaceOrientation o) {
     [super viewDidLayoutSubviews];
     CGFloat w = self.view.bounds.size.width, h = self.view.bounds.size.height;
     BOOL pad = [CBTheme isPad];
-    CGFloat topH = 44;
+    // Hàng trên: ✕ tròn, tên phim, viên «server», nhóm nút kính (Hình nổi · Thu nhỏ · ⋯)
+    CGFloat m = 12, topH = 64;
     _top.frame = CGRectMake(0, 0, w, topH);
-    _closeButton.frame = CGRectMake(4, 0, 90, topH);
-    // Nút server rộng theo tên server (vd «HLS (bỏ quảng cáo)» — trước bị cắt còn «HLS…cáo)»), tối đa ~1/3 màn
-    CGFloat sw = MIN(MIN(w * 0.32, 240), MAX(90, ceil([_serverButton.titleLabel.text sizeWithFont:_serverButton.titleLabel.font].width) + 20));
-    CGFloat x = w - sw - 4;
-    _serverButton.frame = CGRectMake(x, 0, sw, topH);
-    if (!_episodesButton.hidden) {
-        x -= 90;
-        _episodesButton.frame = CGRectMake(x, 0, 86, topH);
-    }
-    x -= 48;
-    _moreButton.frame = CGRectMake(x, 0, 44, topH);
-    CGFloat titleX = 98, bx = 94;
-    for (UIButton *b in @[_miniButton, _floatButton]) {
+    _scrimTop.frame = CGRectMake(0, 0, w, 96);
+    _closeButton.frame = CGRectMake(m, m, 40, 40);
+    CGFloat gx = 0;
+    for (UIButton *b in @[_floatButton, _miniButton, _moreButton]) {
         if (b.hidden) continue;
-        NSString *t = [b titleForState:UIControlStateNormal];
-        CGFloat mw = t.length ? ceil([t sizeWithFont:b.titleLabel.font].width) + 20 : 40;   // iPhone: biểu tượng
-        b.frame = CGRectMake(bx, 0, mw, topH);
-        bx += mw;
-        titleX = bx + 4;
+        b.frame = CGRectMake(gx, 0, 42, 40);
+        gx += 42;
     }
-    _titleLabel.frame = CGRectMake(titleX, 0, MAX(0, x - titleX - 4), topH);
+    _topGroup.frame = CGRectMake(w - m - gx, m, gx, 40);
+    CGFloat sw = MIN(MIN(w * 0.3, 220), MAX(80, ceil([_serverButton.titleLabel.text sizeWithFont:_serverButton.titleLabel.font].width) + 30));
+    CGFloat x = w - m - gx - 8 - sw;
+    _serverButton.frame = CGRectMake(x, m, sw, 40);
+    CGFloat titleX = m + 40 + 10;
+    _titleLabel.frame = CGRectMake(titleX, m, MAX(0, x - titleX - 8), 40);
     [self layoutEpisodePanel];
-    CGFloat bottomH = 88;
-    _bottom.frame = CGRectMake(0, h - bottomH, w, bottomH);
-    _timeLabel.frame = CGRectMake(10, 8, 64, 28);
-    _durLabel.frame = CGRectMake(w - 74, 8, 64, 28);
-    _slider.frame = CGRectMake(78, 8, w - 156, 28);
+    // Giữa: nút tròn kính
+    CGFloat cy = h / 2;
+    _center.frame = CGRectMake(0, cy - 40, w, 80);
+    CGFloat gap = pad ? 28 : (w < 500 ? 12 : 20);
+    CGFloat rowW = 44 + 54 + 68 + 54 + 44 + gap * 4, cx = (w - rowW) / 2;
     NSArray *row = @[_prevButton, _backButton, _playButton, _fwdButton, _nextButton];
-    CGFloat bw = MIN(pad ? 140 : 110, w / row.count);
-    CGFloat x0 = (w - bw * row.count) / 2;
-    for (NSUInteger i = 0; i < row.count; i++) [row[i] setFrame:CGRectMake(x0 + bw * i, 40, bw, 44)];
-    _spinner.center = CGPointMake(w / 2, h / 2 - 30);
+    for (UIButton *b in row) {
+        CGFloat d = b.bounds.size.width;
+        b.frame = CGRectMake(round(cx), round(40 - d / 2), d, d);
+        cx += d + gap;
+    }
+    // Đáy: viên kính có giờ / thanh tua / thời lượng / «Tập»
+    CGFloat bottomH = 72;
+    _bottom.frame = CGRectMake(0, h - bottomH, w, bottomH);
+    _scrimBottom.frame = CGRectMake(0, -40, w, bottomH + 40);
+    CGFloat barW = MIN(w - m * 2, pad ? 760 : 10000);
+    _bar.frame = CGRectMake(round((w - barW) / 2), bottomH - m - 48, barW, 48);
+    CGFloat ex = barW - 6;
+    if (!_episodesButton.hidden) {
+        CGFloat ew = [_episodesButton sizeThatFits:CGSizeMake(140, 36)].width + 6;
+        ex -= ew;
+        _episodesButton.frame = CGRectMake(ex, 6, ew, 36);
+        ex -= 8;
+    } else {
+        ex -= 10;
+    }
+    _timeLabel.frame = CGRectMake(18, 0, 52, 48);
+    _durLabel.frame = CGRectMake(ex - 56, 0, 56, 48);
+    _slider.frame = CGRectMake(74, 10, MAX(40, ex - 56 - 6 - 74), 28);
+    // Đang tải lại giữa chừng (không chữ trạng thái): vòng xoay ngay trên hàng nút tròn
+    _spinner.center = CGPointMake(w / 2, _status.hidden ? h / 2 - 68 : h / 2 - 30);
     _status.frame = CGRectMake(30, h / 2 - 10, w - 60, [CBTheme heightOf:_status.text font:_status.font width:w - 60] + 4);
     CGSize rs = [_retryButton sizeThatFits:CGSizeMake(300, 44)];
     _retryButton.frame = CGRectMake((w - rs.width) / 2, CGRectGetMaxY(_status.frame) + 14, rs.width, 44);
@@ -516,6 +593,12 @@ static void CBForceOrientation(UIInterfaceOrientation o) {
     [self layoutMenuPanel];
 }
 
+/// Nút giữa: biểu tượng tạm dừng (đang phát) / phát
+- (void)setPlayIcon:(BOOL)playing {
+    [(CBPillButton *)_playButton setIcon:playing ? @"pause" : @"play" size:28];
+    _playButton.accessibilityLabel = playing ? @"Tạm dừng" : @"Phát";
+}
+
 - (void)setServerTitle:(NSString *)title {
     [_serverButton setTitle:title ?: @"Server" forState:UIControlStateNormal];
     [self.view setNeedsLayout];
@@ -528,6 +611,7 @@ static void CBForceOrientation(UIInterfaceOrientation o) {
     [UIView animateWithDuration:0.2 animations:^{
         self->_top.alpha = visible ? 1 : 0;
         self->_bottom.alpha = visible ? 1 : 0;
+        self->_center.alpha = visible ? 1 : 0;
         [self layoutSubtitle];
     }];
     if (visible && _player.rate > 0) {
@@ -561,12 +645,14 @@ static void CBForceOrientation(UIInterfaceOrientation o) {
     _retryButton.hidden = YES;
     _waitButton.hidden = YES;
     _venetiumButton.hidden = YES;
+    _center.hidden = YES;   // chữ trạng thái nằm giữa màn — chỗ của hàng nút tròn
     [_spinner startAnimating];
     [self.view setNeedsLayout];
 }
 
 - (void)hideStatus {
     _status.hidden = YES;
+    _center.hidden = NO;
     _retryButton.hidden = YES;
     _waitButton.hidden = YES;
     _venetiumButton.hidden = YES;
@@ -584,6 +670,7 @@ static void CBForceOrientation(UIInterfaceOrientation o) {
     [_spinner stopAnimating];
     _status.text = text;
     _status.hidden = NO;
+    _center.hidden = YES;
     [_retryButton removeTarget:nil action:NULL forControlEvents:UIControlEventAllEvents];
     if (title && action) {
         [_retryButton setTitle:title forState:UIControlStateNormal];
@@ -701,8 +788,7 @@ static void CBForceOrientation(UIInterfaceOrientation o) {
     }
     NSArray *groups = CBArr(_detail, @"groups");
     _panelGroup = _groupIndex;
-    _epPanel = [[UIView alloc] init];
-    _epPanel.backgroundColor = [UIColor colorWithWhite:0 alpha:0.85];
+    _epPanel = [[CBGlassView alloc] initWithFrame:CGRectZero radius:24 style:CBGlassHeavy];
     if (groups.count > 1) {
         NSMutableArray *names = [NSMutableArray array];
         for (id g in groups) [names addObject:CBStr(g, @"name") ?: @"?"];
@@ -730,7 +816,7 @@ static void CBForceOrientation(UIInterfaceOrientation o) {
     [self layoutEpisodePanel];
     [_epGrid reloadData];
     [self scrollPanelToCurrent];
-    [_episodesButton setTitle:@"✕ Tập" forState:UIControlStateNormal];
+    [(CBPillButton *)_episodesButton setIcon:@"close" size:13];
 }
 
 - (void)hideEpisodes {
@@ -739,15 +825,16 @@ static void CBForceOrientation(UIInterfaceOrientation o) {
     _epGrid = nil;
     _epGroups = nil;
     _epGroupsStrip = nil;
-    [_episodesButton setTitle:@"☰ Tập" forState:UIControlStateNormal];
+    [(CBPillButton *)_episodesButton setIcon:@"list" size:15];
     [self setControlsVisible:YES];
 }
 
 - (void)layoutEpisodePanel {
     if (!_epPanel) return;
-    // Giữa thanh trên (44) và thanh dưới (88) — thanh nút luôn hiện khi bảng mở
-    CGFloat w = self.view.bounds.size.width, h = self.view.bounds.size.height, y = 44;
-    _epPanel.frame = CGRectMake(0, y, w, h - y - 88);
+    // Thẻ kính giữa hàng nút trên (64) và viên kính ở đáy (72) — nút luôn hiện khi bảng mở
+    CGFloat w = self.view.bounds.size.width, h = self.view.bounds.size.height, y = 64;
+    _epPanel.frame = CGRectMake(12, y, w - 24, h - y - 72 - 4);
+    w -= 24;
     CGFloat gy = 0;
     if (_epGroups) {
         [CBTheme layoutSegments:_epGroups inStrip:_epGroupsStrip
@@ -1257,7 +1344,7 @@ static void CBForceOrientation(UIInterfaceOrientation o) {
     [(AVPlayerLayer *)_video.layer setPlayer:nil];
     _player = nil;
     _item = nil;
-    [_playButton setTitle:@"Phát" forState:UIControlStateNormal];  // không còn gì đang phát (đổi server, lỗi)
+    [self setPlayIcon:NO];  // không còn gì đang phát (đổi server, lỗi)
 }
 
 - (void)observeValueForKeyPath:(NSString *)keyPath ofObject:(id)object change:(NSDictionary *)change context:(void *)context {
@@ -1283,7 +1370,7 @@ static void CBForceOrientation(UIInterfaceOrientation o) {
             if (self->_item.playbackLikelyToKeepUp || self->_player.rate > 0) [self->_spinner stopAnimating];
             else if (self->_started) [self->_spinner startAnimating];
         } else if ([keyPath isEqualToString:@"rate"]) {
-            [self->_playButton setTitle:self->_player.rate > 0 ? @"Tạm dừng" : @"Phát" forState:UIControlStateNormal];
+            [self setPlayIcon:self->_player.rate > 0];
             [self updateNowPlaying];
         }
     });
@@ -1705,30 +1792,47 @@ static void CBForceOrientation(UIInterfaceOrientation o) {
     for (NSArray *it in items) [copied addObject:@[it[0], [it[1] copy]]];
     _menuItems = copied;
     _menuPanel = [[UIView alloc] initWithFrame:self.view.bounds];
-    _menuPanel.backgroundColor = [UIColor colorWithWhite:0 alpha:0.55];
+    _menuPanel.backgroundColor = [UIColor colorWithWhite:0 alpha:0.35];
     _menuPanel.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     UITapGestureRecognizer *outside = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(hideMenuPanel)];
     outside.delegate = self;
     [_menuPanel addGestureRecognizer:outside];
+    _menuCard = [[CBGlassView alloc] initWithFrame:CGRectZero radius:24 style:CBGlassHeavy];
+    [_menuPanel addSubview:_menuCard];
     _menuBox = [[UIScrollView alloc] init];
-    _menuBox.backgroundColor = [CBTheme surface];
-    _menuBox.layer.cornerRadius = 12;
+    _menuBox.backgroundColor = [UIColor clearColor];
     _menuBox.alwaysBounceVertical = NO;
-    [_menuPanel addSubview:_menuBox];
-    _menuTitle = [self overlayLabel:[CBTheme bold:15]];
+    _menuBox.indicatorStyle = UIScrollViewIndicatorStyleWhite;
+    [_menuCard addSubview:_menuBox];
+    _menuTitle = [self overlayLabel:[CBTheme medium:13]];
     _menuTitle.textColor = [CBTheme dim];
-    _menuTitle.textAlignment = NSTextAlignmentCenter;
+    _menuTitle.textAlignment = NSTextAlignmentLeft;
     _menuTitle.text = title;
     [_menuBox addSubview:_menuTitle];
     _menuButtons = [NSMutableArray array];
     for (NSUInteger i = 0; i <= _menuItems.count; i++) {
         BOOL cancel = i == _menuItems.count;
-        UIButton *b = [CBTheme button:cancel ? @"Huỷ" : _menuItems[i][0] primary:NO];
+        NSString *t = cancel ? @"Huỷ" : _menuItems[i][0];
+        BOOL checked = [t hasPrefix:@"✓ "];
+        if (checked) t = [t substringFromIndex:2];
+        UIButton *b = [UIButton buttonWithType:UIButtonTypeCustom];
+        [b setTitle:t forState:UIControlStateNormal];
         b.tag = cancel ? -1 : (NSInteger)i;
         b.titleLabel.font = cancel ? [CBTheme bold:16] : [CBTheme font:16];
         b.titleLabel.adjustsFontSizeToFitWidth = YES;
         b.titleLabel.minimumScaleFactor = 0.7;
+        b.contentHorizontalAlignment = cancel ? UIControlContentHorizontalAlignmentCenter : UIControlContentHorizontalAlignmentLeft;
+        b.contentEdgeInsets = UIEdgeInsetsMake(0, 14, 0, checked ? 40 : 14);
+        [b setTitleColor:[CBTheme text] forState:UIControlStateNormal];
         if (cancel) [b setTitleColor:[CBTheme dim] forState:UIControlStateNormal];
+        [b setBackgroundImage:[CBGlass pill:18 color:[UIColor colorWithWhite:1 alpha:cancel ? 0.08 : 0.12] sheen:NO]
+                     forState:UIControlStateHighlighted];
+        if (cancel) [b setBackgroundImage:[CBGlass pill:18 color:[UIColor colorWithWhite:1 alpha:0.06] sheen:NO] forState:UIControlStateNormal];
+        if (checked) {
+            UIImageView *mark = [[UIImageView alloc] initWithImage:[CBIcon named:@"check" size:18 color:[CBTheme accent]]];
+            mark.tag = 77;
+            [b addSubview:mark];
+        }
         [b addTarget:self action:@selector(menuButtonTapped:) forControlEvents:UIControlEventTouchUpInside];
         [_menuBox addSubview:b];
         [_menuButtons addObject:b];
@@ -1740,19 +1844,21 @@ static void CBForceOrientation(UIInterfaceOrientation o) {
 - (void)layoutMenuPanel {
     if (!_menuPanel) return;
     CGFloat w = self.view.bounds.size.width, h = self.view.bounds.size.height;
-    CGFloat bw = MIN(400, w - 40), pad = 12, rowH = 44, gap = 6;
+    CGFloat bw = MIN(380, w - 40), pad = 6, rowH = 44, gap = 2;
     CGFloat y = pad;
-    _menuTitle.frame = CGRectMake(pad, y, bw - 2 * pad, _menuTitle.text.length ? 24 : 0);
-    y += _menuTitle.text.length ? 30 : 0;
+    _menuTitle.frame = CGRectMake(14, 10, bw - 2 * pad - 28, _menuTitle.text.length ? 20 : 0);
+    y += _menuTitle.text.length ? 34 : 0;
     for (UIButton *b in _menuButtons) {
-        if (b.tag < 0) y += 4;  // «Huỷ» tách khỏi các mục
-        b.frame = CGRectMake(pad, y, bw - 2 * pad, rowH);
+        if (b.tag < 0) y += 6;  // «Huỷ» tách khỏi các mục
+        b.frame = CGRectMake(0, y, bw - 2 * pad, rowH);
+        [b viewWithTag:77].frame = CGRectMake(bw - 2 * pad - 32, (rowH - 18) / 2, 18, 18);
         y += rowH + gap;
     }
     CGFloat contentH = y - gap + pad;
     CGFloat bh = MIN(contentH, h - 24);
-    _menuBox.frame = CGRectMake((w - bw) / 2, (h - bh) / 2, bw, bh);
-    _menuBox.contentSize = CGSizeMake(bw, contentH);
+    _menuCard.frame = CGRectMake(round((w - bw) / 2), round((h - bh) / 2), bw, bh);
+    _menuBox.frame = CGRectMake(pad, 0, bw - 2 * pad, bh);
+    _menuBox.contentSize = CGSizeMake(bw - 2 * pad, contentH);
 }
 
 - (void)menuButtonTapped:(UIButton *)b {
@@ -1770,6 +1876,7 @@ static void CBForceOrientation(UIInterfaceOrientation o) {
 - (void)hideMenuPanel {
     [_menuPanel removeFromSuperview];
     _menuPanel = nil;
+    _menuCard = nil;
     _menuBox = nil;
     _menuTitle = nil;
     _menuButtons = nil;
@@ -2373,7 +2480,7 @@ NSString *CBPlaylistUndecodable(NSString *m3u8) {
     CGSize one = [_subLabel.text sizeWithFont:_subLabel.font];
     CGFloat lw = MIN(maxW, ceil(one.width) + 16);
     // Trên thanh nút dưới khi thanh đang hiện
-    CGFloat bottom = _bottom.alpha > 0.5 ? 88 + 8 : 16;
+    CGFloat bottom = _bottom.alpha > 0.5 ? 72 + 4 : 16;
     _subLabel.frame = CGRectMake((w - lw) / 2, h - bottom - th - 8, lw, th + 8);
 }
 

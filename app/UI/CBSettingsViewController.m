@@ -13,6 +13,9 @@
 #import "CBIPTV.h"
 #import "CBTVSettingsViewController.h"
 #import "CBUpdate.h"
+#import "CBSheet.h"
+#import "CBTabHeader.h"
+#import "CBGlass.h"
 #import "CBTheme.h"
 
 typedef NS_ENUM(NSInteger, CBSection) { CBSecProfile, CBSecSites, CBSecPlayer, CBSecNet, CBSecData, CBSecAbout, CBSecCount };
@@ -46,6 +49,12 @@ typedef NS_ENUM(NSInteger, CBSettingsAlert) {
     [super viewDidLoad];
     self.tableView.backgroundView = nil;
     self.tableView.backgroundColor = [CBTheme bg];
+    // Màn gốc của tab «Cài đặt»: tiêu đề lớn cuộn cùng bảng (thanh điều hướng ẩn)
+    if (self.navigationController.viewControllers.firstObject == self) {
+        CBTabHeader *h = [[CBTabHeader alloc] initWithTitle:self.title];
+        h.frame = CGRectMake(0, 0, self.tableView.bounds.size.width, [CBTabHeader height]);
+        self.tableView.tableHeaderView = h;
+    }
     self.tableView.separatorColor = [CBTheme surface2];
 }
 
@@ -110,6 +119,26 @@ typedef NS_ENUM(NSInteger, CBSettingsAlert) {
     return nil;
 }
 
+/// Ô vuông màu đầu dòng (kiểu Cài đặt iOS 26) theo chữ của dòng; dòng trang phim (tên trang) = quả địa cầu
+- (UIImage *)iconFor:(NSString *)text {
+    static NSArray *map;
+    if (!map) map = @[
+        @[@"Đang xem", @"person", @0x3B82F6], @[@"Thêm người xem", @"plus", @0x2BAF85], @[@"Đổi tên", @"pencil", @0x6B7280],
+        @[@"Mã PIN", @"lock", @0x3B82F6], @[@"Hỏi người xem", @"people", @0x2BAF85], @[@"Giới hạn giờ xem", @"clock", @0xF59E0B],
+        @[@"Xoá người xem", @"trash", @0xDC4A35], @[@"Trang chủ tổng hợp", @"grid", @0x0891B2], @[@"Hồ sơ trẻ em", @"smile", @0xDB2777],
+        @[@"Đo tốc độ", @"gauge", @0x7C3AED], @[@"Tự chuyển tập", @"next", @0xDC4A35], @[@"Bước tua", @"fwd10", @0x4F46E5],
+        @[@"Lấp đầy", @"expand", @0x475569], @[@"Xem riêng", @"eyeoff", @0x6B7280], @[@"Server dự phòng", @"server", @0x2563EB],
+        @[@"Đặt lại server", @"reload", @0xEA580C], @[@"DNS mã hoá", @"shield", @0x16A34A], @[@"Vượt chặn", @"globe", @0xEA580C],
+        @[@"Proxy", @"server", @0x7C3AED], @[@"Đồng bộ", @"sync", @0x0D9488], @[@"Truyền hình", @"tv", @0xE11D48],
+        @[@"Xoá ảnh", @"photo", @0x64748B], @[@"Xoá lịch sử", @"history", @0x64748B], @[@"Phiên bản", @"info", @0x64748B],
+        @[@"Miễn trừ", @"doc", @0x64748B], @[@"Tự kiểm tra bản mới", @"download", @0x2563EB], @[@"Liên hệ", @"send", @0x0EA5E9],
+    ];
+    for (NSArray *m in map) {
+        if ([text hasPrefix:m[0]]) return [CBGroupedTableViewController rowIcon:m[1] color:CBRGB([m[2] unsignedIntValue])];
+    }
+    return [CBGroupedTableViewController rowIcon:@"globe" color:CBRGB(0x0E9F8E)];
+}
+
 - (UITableViewCell *)cell:(UITableView *)tv text:(NSString *)text detail:(NSString *)detail {
     UITableViewCell *c = [tv dequeueReusableCellWithIdentifier:@"c"];
     if (!c) {
@@ -126,6 +155,7 @@ typedef NS_ENUM(NSInteger, CBSettingsAlert) {
     c.textLabel.text = text;
     c.textLabel.textColor = [CBTheme text];
     c.textLabel.font = [CBTheme font:16];
+    c.imageView.image = [self iconFor:text];
     c.detailTextLabel.text = detail;
     c.detailTextLabel.textColor = [CBTheme dim];
     c.accessoryType = UITableViewCellAccessoryNone;
@@ -136,7 +166,7 @@ typedef NS_ENUM(NSInteger, CBSettingsAlert) {
 
 - (UITableViewCell *)switchCell:(UITableView *)tv text:(NSString *)text on:(BOOL)on tag:(NSInteger)tag {
     UITableViewCell *c = [self cell:tv text:text detail:nil];
-    UISwitch *sw = [[UISwitch alloc] init];
+    UISwitch *sw = (UISwitch *)[[CBSwitch alloc] init];   // công tắc kiểu iOS 26 (CBGlass)
     sw.on = on;
     sw.tag = tag;
     [sw addTarget:self action:@selector(switched:) forControlEvents:UIControlEventValueChanged];
@@ -167,7 +197,7 @@ typedef NS_ENUM(NSInteger, CBSettingsAlert) {
                 }
                 default: {
                     UITableViewCell *c = [self cell:tv text:@"Xoá người xem này…" detail:nil];
-                    c.textLabel.textColor = CBRGB(0xE5533D);
+                    c.textLabel.textColor = [CBTheme dangerText];
                     return c;
                 }
             }
@@ -181,7 +211,7 @@ typedef NS_ENUM(NSInteger, CBSettingsAlert) {
             if (ip.row == 1) return [self switchCell:tv text:@"Hồ sơ trẻ em" on:[CBPrefs kids] tag:7];
             if (ip.row == 2 + (NSInteger)_sites.count) {
                 UITableViewCell *c = [self cell:tv text:@"Đo tốc độ các trang" detail:nil];
-                c.textLabel.textColor = [CBTheme brand];
+                c.textLabel.textColor = [CBTheme accent];
                 return c;
             }
             NSString *url = _sites[ip.row - 2];
@@ -236,12 +266,12 @@ typedef NS_ENUM(NSInteger, CBSettingsAlert) {
             if (ip.row == 2) {
                 UITableViewCell *c = [self cell:tv text:@"Xoá ảnh đã lưu…"
                                           detail:[NSString stringWithFormat:@"%.1f MB", _imageBytes / 1048576.0]];
-                c.textLabel.textColor = CBRGB(0xE5533D);
+                c.textLabel.textColor = [CBTheme dangerText];
                 return c;
             }
             UITableViewCell *c = [self cell:tv text:@"Xoá lịch sử xem…" detail:[NSString stringWithFormat:@"%lu phim",
                                                                                 (unsigned long)[CBPrefs history].count]];
-            c.textLabel.textColor = CBRGB(0xE5533D);
+            c.textLabel.textColor = [CBTheme dangerText];
             return c;
         }
         default: {
@@ -402,7 +432,7 @@ typedef NS_ENUM(NSInteger, CBSettingsAlert) {
                          : @"Chưa có server nào được nhớ."];
         [tv reloadData];
     } else if (ip.section == CBSecNet && ip.row == 1) {
-        UIActionSheet *s = [[UIActionSheet alloc] initWithTitle:@"Vượt chặn nhà mạng" delegate:self cancelButtonTitle:nil
+        UIActionSheet *s = [[CBSheet alloc] initWithTitle:@"Vượt chặn nhà mạng" delegate:self cancelButtonTitle:nil
                                          destructiveButtonTitle:nil otherButtonTitles:nil];
         NSInteger cur = [CBPrefs unblockLevel];
         NSArray *names = @[@"Tắt", @"Mức 1 — chia nhỏ gói bắt tay", @"Mức 2 — chia nhỏ hơn nữa"];

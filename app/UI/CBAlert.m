@@ -1,15 +1,10 @@
 #import "CBAlert.h"
+#import "CBGlass.h"
 #import "CBTheme.h"
 
-/// iOS 7+ dùng hộp tự vẽ (xem CBAlert.h)
+/// Từ giao diện iOS 26 (20/11/2026) mọi bản iOS dùng hộp tự vẽ (xem CBAlert.h)
 static BOOL CBOwnDialogs(void) {
-    static BOOL own;
-    static dispatch_once_t once;
-    // CBOwnDialogs = YES (lệnh gỡ lỗi «owndialogs 1», mở lại app): dùng hộp tự vẽ cả trên iOS 5 / 6 để thử
-    dispatch_once(&once, ^{
-        own = [[UIDevice currentDevice].systemVersion floatValue] >= 7 || [[NSUserDefaults standardUserDefaults] boolForKey:@"CBOwnDialogs"];
-    });
-    return own;
+    return YES;
 }
 
 /// Hộp tự vẽ đang hiện (giữ sống tới khi đóng hẳn), cái mở sau ở cuối
@@ -58,6 +53,10 @@ static UIViewController *CBTopController(void) {
     UIViewController *top = CBTopController();
     return top ? [top supportedInterfaceOrientations] : UIInterfaceOrientationMaskAll;
 }
+// iOS 5 hỏi hàm này
+- (BOOL)shouldAutorotateToInterfaceOrientation:(UIInterfaceOrientation)o {
+    return ([self supportedInterfaceOrientations] & (1u << o)) != 0;
+}
 - (UIStatusBarStyle)preferredStatusBarStyle {
     return [UIApplication sharedApplication].statusBarStyle;
 }
@@ -79,8 +78,8 @@ static UIViewController *CBTopController(void) {
     UIAlertViewStyle _style;
     NSMutableArray *_fields;
     UIWindow *_window;
-    UIView *_dim, *_box;
-    UIImageView *_boxBg;
+    UIView *_dim;
+    CBGlassView *_box;
     UIScrollView *_textScroll;
     UILabel *_titleLabel, *_messageLabel;
     NSMutableArray *_buttonViews;
@@ -164,8 +163,8 @@ static UIViewController *CBTopController(void) {
         f.font = [CBTheme font:16];
         f.textColor = [CBTheme text];
         f.borderStyle = UITextBorderStyleNone;
-        f.background = [CBTheme imageWithColor:[CBTheme bg] radius:6 border:[UIColor colorWithWhite:1 alpha:0.12] width:1];
-        f.leftView = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 10, 10)];
+        f.background = [CBTheme imageWithColor:[UIColor colorWithWhite:0 alpha:0.28] radius:12 border:[UIColor colorWithWhite:1 alpha:0.12] width:1];
+        f.leftView = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 12, 10)];
         f.leftViewMode = UITextFieldViewModeAlways;
         f.clearButtonMode = UITextFieldViewModeWhileEditing;
         f.contentVerticalAlignment = UIControlContentVerticalAlignmentCenter;
@@ -212,7 +211,7 @@ static UIViewController *CBTopController(void) {
     l.font = font;
     l.textColor = color;
     l.numberOfLines = 0;
-    l.textAlignment = NSTextAlignmentCenter;
+    l.textAlignment = NSTextAlignmentLeft;   // iOS 26: hộp thoại canh trái
     [_textScroll addSubview:l];
     return l;
 }
@@ -237,42 +236,33 @@ static UIViewController *CBTopController(void) {
     root.backgroundColor = [UIColor clearColor];
     _dim = [[UIView alloc] initWithFrame:root.bounds];
     _dim.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-    _dim.backgroundColor = [UIColor colorWithWhite:0 alpha:0.5];
+    _dim.backgroundColor = [UIColor colorWithWhite:0 alpha:0.4];
     [root addSubview:_dim];
 
-    // Khung: ảnh bo góc kéo giãn (không layer.cornerRadius — xem CBTheme imageWithColor:radius:)
-    _box = [[UIView alloc] init];
-    // (khung ảnh đặt lại mỗi lần bố cục — initWithImage: cho khổ ảnh gốc 25 × 25, tự giãn theo khung từ 0 × 0 thì dư 25 điểm)
-    _boxBg = [[UIImageView alloc] initWithImage:[CBTheme imageWithColor:[CBTheme surface] radius:12
-                                                                  border:[UIColor colorWithWhite:1 alpha:0.1] width:1]];
-    [_box addSubview:_boxBg];
+    // Khung kính (ảnh kéo giãn — không layer.cornerRadius, xem CBGlass)
+    _box = [[CBGlassView alloc] initWithFrame:CGRectZero radius:28 style:CBGlassHeavy];
     _textScroll = [[UIScrollView alloc] init];
     _textScroll.backgroundColor = [UIColor clearColor];
     _textScroll.indicatorStyle = UIScrollViewIndicatorStyleWhite;
     [_box addSubview:_textScroll];
     _titleLabel = [self label:[CBTheme bold:17] color:[CBTheme text]];
     _titleLabel.text = self.title;
-    _messageLabel = [self label:[CBTheme font:14] color:[CBTheme dim]];
+    _messageLabel = [self label:[CBTheme font:14] color:[UIColor colorWithRed:0.95 green:0.96 blue:0.97 alpha:0.82]];
     _messageLabel.text = self.message;
     for (UITextField *f in _fields) [_box addSubview:f];
 
     _buttonViews = [NSMutableArray array];
     NSInteger main = [self preferredIndex];
     for (NSInteger i = 0; i < self.numberOfButtons; i++) {
-        BOOL preferred = i == main, cancel = i == self.cancelButtonIndex;
-        UIButton *b = [UIButton buttonWithType:UIButtonTypeCustom];
+        BOOL preferred = i == main;
+        NSString *t = [self buttonTitleAtIndex:i];
+        // Nút chính xoá / bỏ dữ liệu → đỏ; nút chính khác → xanh; còn lại (huỷ…) nền trắng mờ
+        BOOL danger = preferred && ([t hasPrefix:@"Xoá"] || [t hasPrefix:@"Xóa"] || [t hasPrefix:@"Bỏ"] || [t hasPrefix:@"Quên"]);
+        CBPillButton *b = [CBPillButton pill:t style:danger ? CBPillDanger : (preferred ? CBPillProminent : CBPillSubtle)];
         b.tag = i;
-        [b setTitle:[self buttonTitleAtIndex:i] forState:UIControlStateNormal];
-        b.titleLabel.font = preferred ? [CBTheme bold:16] : [CBTheme font:16];
+        b.contentEdgeInsets = UIEdgeInsetsMake(0, 12, 0, 12);
         b.titleLabel.adjustsFontSizeToFitWidth = YES;
         b.titleLabel.minimumScaleFactor = 0.7;
-        b.titleLabel.lineBreakMode = NSLineBreakByTruncatingTail;
-        b.contentEdgeInsets = UIEdgeInsetsMake(0, 10, 0, 10);
-        UIColor *fill = preferred ? [CBTheme brand] : [CBTheme surface2];
-        UIColor *down = preferred ? CBRGB(0x1F8A68) : CBRGB(0x343B48);
-        [b setBackgroundImage:[CBTheme imageWithColor:fill radius:8] forState:UIControlStateNormal];
-        [b setBackgroundImage:[CBTheme imageWithColor:down radius:8] forState:UIControlStateHighlighted];
-        [b setTitleColor:preferred ? [CBTheme onBrand] : (cancel ? [CBTheme dim] : [CBTheme text]) forState:UIControlStateNormal];
         [b addTarget:self action:@selector(buttonTapped:) forControlEvents:UIControlEventTouchUpInside];
         [_box addSubview:b];
         [_buttonViews addObject:b];
@@ -289,9 +279,9 @@ static UIViewController *CBTopController(void) {
     [self layoutBox];
     _dim.alpha = 0;
     _box.alpha = 0;
-    _box.transform = CGAffineTransformMakeScale(1.1, 1.1);
+    _box.transform = CGAffineTransformMakeScale(1.08, 1.08);
     UIView *dim = _dim, *box = _box;
-    [UIView animateWithDuration:0.18 delay:0 options:UIViewAnimationOptionCurveEaseOut animations:^{
+    [UIView animateWithDuration:0.2 delay:0 options:UIViewAnimationOptionCurveEaseOut animations:^{
         dim.alpha = 1;
         box.alpha = 1;
         box.transform = CGAffineTransformIdentity;
@@ -319,54 +309,54 @@ static UIViewController *CBTopController(void) {
     if (!root || !_box) return;
     CGRect area = root.bounds;
     if (_keyboardTop > 0) area.size.height = MIN(area.size.height, _keyboardTop);
-    CGFloat w = MIN([CBTheme isPad] ? 360 : 290, root.bounds.size.width - 32), pad = 16, inner = w - pad * 2;
+    CGFloat w = MIN([CBTheme isPad] ? 340 : 288, root.bounds.size.width - 28), pad = 20, inner = w - pad * 2;
     // Chữ: tiêu đề + nội dung, cuộn được khi dài (ghi chú bản mới…)
     CGFloat th = [CBTheme heightOf:_titleLabel.text font:_titleLabel.font width:inner];
     CGFloat mh = [CBTheme heightOf:_messageLabel.text font:_messageLabel.font width:inner];
     CGFloat gap = th && mh ? 6 : 0, textH = th + gap + mh;
     _titleLabel.frame = CGRectMake(0, 0, inner, th);
     _messageLabel.frame = CGRectMake(0, th + gap, inner, mh);
-    // Nội dung dài (ghi chú bản mới…) canh trái cho dễ đọc; ngắn thì canh giữa như hộp thoại hệ thống
-    _messageLabel.textAlignment = mh > _messageLabel.font.lineHeight * 4 ? NSTextAlignmentLeft : NSTextAlignmentCenter;
     _textScroll.contentSize = CGSizeMake(inner, textH);
-    CGFloat fieldsH = _fields.count ? _fields.count * 38 + (_fields.count - 1) * 8 : 0;
+    CGFloat fieldsH = _fields.count ? _fields.count * 40 + (_fields.count - 1) * 8 : 0;
     NSArray *buttons = [self orderedButtons];
     BOOL row = buttons.count == 2;
-    CGFloat buttonsH = buttons.count ? (row ? 42 : buttons.count * 42 + (buttons.count - 1) * 8) : 0;
-    CGFloat fixed = pad + (fieldsH ? 14 + fieldsH : 0) + (buttonsH ? 18 + buttonsH : 0) + pad;
+    CGFloat buttonsH = buttons.count ? (row ? 44 : buttons.count * 44 + (buttons.count - 1) * 8) : 0;
+    CGFloat top = pad + 2, bottom = 14;
+    CGFloat fixed = top + (fieldsH ? 14 + fieldsH : 0) + (buttonsH ? 18 + buttonsH : 0) + bottom;
     CGFloat textMax = MAX(44, area.size.height - 40 - fixed);
     CGFloat shownText = MIN(textH, textMax);
-    _textScroll.frame = CGRectMake(pad, pad, inner, shownText);
+    _textScroll.frame = CGRectMake(pad, top, inner, shownText);
     _textScroll.scrollEnabled = textH > shownText;
-    CGFloat y = pad + shownText;
+    CGFloat y = top + shownText;
     if (fieldsH) {
         y += 14;
         for (UITextField *f in _fields) {
-            f.frame = CGRectMake(pad, y, inner, 38);
-            y += 46;
+            f.frame = CGRectMake(pad, y, inner, 40);
+            y += 48;
         }
         y -= 8;
     }
+    // Nút: cách mép hộp 14 điểm (góc nút đồng tâm với góc hộp)
+    CGFloat bpad = 14, binner = w - bpad * 2;
     if (buttonsH) {
         y += 18;
         if (row) {
-            CGFloat bw = floor((inner - 8) / 2);
-            [buttons[0] setFrame:CGRectMake(pad, y, bw, 42)];
-            [buttons[1] setFrame:CGRectMake(pad + inner - bw, y, bw, 42)];
-            y += 42;
+            CGFloat bw = floor((binner - 10) / 2);
+            [buttons[0] setFrame:CGRectMake(bpad, y, bw, 44)];
+            [buttons[1] setFrame:CGRectMake(bpad + binner - bw, y, bw, 44)];
+            y += 44;
         } else {
             for (UIButton *b in buttons) {
-                b.frame = CGRectMake(pad, y, inner, 42);
-                y += 50;
+                b.frame = CGRectMake(bpad, y, binner, 44);
+                y += 52;
             }
             y -= 8;
         }
     }
-    CGFloat h = y + pad;
+    CGFloat h = y + bottom;
     CGAffineTransform t = _box.transform;
     _box.transform = CGAffineTransformIdentity;
     _box.frame = CGRectMake(round((root.bounds.size.width - w) / 2), round(area.origin.y + MAX(10, (area.size.height - h) / 2)), w, h);
-    _boxBg.frame = CGRectMake(0, 0, w, h);
     _box.transform = t;
 }
 

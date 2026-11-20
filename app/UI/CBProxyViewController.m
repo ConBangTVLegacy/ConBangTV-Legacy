@@ -4,6 +4,8 @@
 #import "CBLog.h"
 #import "CBParental.h"
 #import "CBPrefs.h"
+#import "CBSheet.h"
+#import "CBGlass.h"
 #import "CBTheme.h"
 
 typedef NS_ENUM(NSInteger, CBProxySec) { CBProxyMain, CBProxyServer, CBProxyOptions, CBProxyTest, CBProxySecCount };
@@ -144,7 +146,7 @@ static void CBSetSecret(NSString *name, NSString *value) {
 
 - (UITableViewCell *)switchCell:(UITableView *)tv text:(NSString *)text on:(BOOL)on tag:(NSInteger)tag {
     UITableViewCell *c = [self cell:tv text:text detail:nil];
-    UISwitch *sw = [[UISwitch alloc] init];
+    UISwitch *sw = (UISwitch *)[[CBSwitch alloc] init];   // công tắc kiểu iOS 26 (CBGlass)
     sw.on = on;
     sw.tag = tag;
     [sw addTarget:self action:@selector(switched:) forControlEvents:UIControlEventValueChanged];
@@ -267,7 +269,7 @@ static void CBSetSecret(NSString *name, NSString *value) {
                 [weakSelf setPortKey:key text:t];
             }];
         } else if (ss && r == 3) {
-            UIActionSheet *sheet = [[UIActionSheet alloc] initWithTitle:@"Kiểu mã hoá" delegate:self cancelButtonTitle:nil
+            UIActionSheet *sheet = [[CBSheet alloc] initWithTitle:@"Kiểu mã hoá" delegate:self cancelButtonTitle:nil
                                                  destructiveButtonTitle:nil otherButtonTitles:nil];
             for (NSString *m in CBSsMethods()) [sheet addButtonWithTitle:m];
             sheet.cancelButtonIndex = [sheet addButtonWithTitle:@"Huỷ"];

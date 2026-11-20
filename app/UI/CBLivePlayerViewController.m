@@ -12,6 +12,7 @@
 #import "CBPrefs.h"
 #import "CBSync.h"
 #import "CBTVGuideViewController.h"
+#import "CBGlass.h"
 #import "CBTheme.h"
 #import "CBWatchLimit.h"
 #import <AVFoundation/AVFoundation.h>
@@ -101,14 +102,33 @@ static void CBLiveForceOrientation(UIInterfaceOrientation o) {
 
 #pragma mark - Giao diện
 
+/// Nút kính viên thuốc (kiểu iOS 26) — nổi trên hình, có biểu tượng (CBIcon) nếu cho
 - (UIButton *)barButton:(NSString *)title action:(SEL)action {
-    UIButton *b = [UIButton buttonWithType:UIButtonTypeCustom];
-    [b setTitle:title forState:UIControlStateNormal];
-    [b setTitleColor:[CBTheme text] forState:UIControlStateNormal];
-    [b setTitleColor:[CBTheme dim] forState:UIControlStateHighlighted];
-    b.titleLabel.font = [CBTheme bold:[CBTheme isPad] ? 17 : 15];
+    return [self barButton:title icon:nil action:action];
+}
+
+- (UIButton *)barButton:(NSString *)title icon:(NSString *)icon action:(SEL)action {
+    CBPillButton *b = [CBPillButton pill:title style:CBPillGlass];
+    b.titleLabel.font = [CBTheme medium:[CBTheme isPad] ? 15 : 14];
+    b.contentEdgeInsets = UIEdgeInsetsMake(0, title.length ? 8 : 0, 0, title.length ? 8 : 0);
+    if (icon) [b setIcon:icon size:16];
+    if (!title.length) b.accessibilityLabel = icon;
     [b addTarget:self action:action forControlEvents:UIControlEventTouchUpInside];
     return b;
+}
+
+/// Dải tối mờ dần trên / dưới hình — thay thanh nền tối liền
+static UIImage *CBLiveScrim(BOOL top) {
+    UIGraphicsBeginImageContextWithOptions(CGSizeMake(1, 64), NO, 1);
+    CGColorSpaceRef space = CGColorSpaceCreateDeviceRGB();
+    CGFloat comps[] = {0, 0, 0, top ? 0.6 : 0, 0, 0, 0, top ? 0 : 0.72};
+    CGGradientRef g = CGGradientCreateWithColorComponents(space, comps, NULL, 2);
+    CGContextDrawLinearGradient(UIGraphicsGetCurrentContext(), g, CGPointZero, CGPointMake(0, 64), 0);
+    CGGradientRelease(g);
+    CGColorSpaceRelease(space);
+    UIImage *img = UIGraphicsGetImageFromCurrentImageContext();
+    UIGraphicsEndImageContext();
+    return img;
 }
 
 - (UILabel *)label:(UIFont *)font {
@@ -159,30 +179,29 @@ static void CBLiveForceOrientation(UIInterfaceOrientation o) {
     for (UIView *v in @[_radioLogo, _radioIcon, _radioName, _radioSong, _radioInfo]) [_radioCard addSubview:v];
     [_video addSubview:_radioCard];
 
-    UIColor *shade = [UIColor colorWithWhite:0 alpha:0.62];
     _top = [[UIView alloc] init];
-    _top.backgroundColor = shade;
+    _top.backgroundColor = [UIColor clearColor];
     [self.view addSubview:_top];
-    _closeButton = [self barButton:@"✕ Đóng" action:@selector(close)];
-    _miniButton = [self barButton:@"Thu nhỏ" action:@selector(minimize)];
+    UIImageView *scrimTop = [[UIImageView alloc] initWithImage:CBLiveScrim(YES)];
+    scrimTop.frame = CGRectMake(0, 0, 10, 90);
+    scrimTop.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    scrimTop.userInteractionEnabled = NO;
+    [_top addSubview:scrimTop];
+    _closeButton = [self barButton:nil icon:@"close" action:@selector(close)];
+    _closeButton.accessibilityLabel = @"Đóng";
+    _miniButton = [self barButton:nil icon:@"down" action:@selector(minimize)];
+    _miniButton.accessibilityLabel = @"Thu nhỏ";
     _miniButton.hidden = ![CBMiniPlayer available];
-    _floatButton = [self barButton:@"Hình nổi" action:@selector(floatOut)];
+    _floatButton = [self barButton:nil icon:@"float" action:@selector(floatOut)];
+    _floatButton.accessibilityLabel = @"Hình nổi";
     _floatButton.hidden = ![CBFloatBridge available];
-    if (!pad) {   // iPhone ngang hẹp: hai nút này là biểu tượng, chừa chỗ cho tên kênh
-        for (UIButton *b in @[_miniButton, _floatButton]) {
-            b.accessibilityLabel = [b titleForState:UIControlStateNormal];
-            [b setTitle:nil forState:UIControlStateNormal];
-            [b setImage:[CBMiniPlayer barIcon:b == _miniButton ? @"mini" : @"float"] forState:UIControlStateNormal];
-            b.showsTouchWhenHighlighted = YES;
-        }
-    }
-    _guideButton = [self barButton:@"Lịch" action:@selector(openGuide)];
+    _guideButton = [self barButton:@"Lịch" icon:@"calendar" action:@selector(openGuide)];
     _sourceButton = [self barButton:@"Nguồn 1/1" action:@selector(nextSource)];
-    _channelsButton = [self barButton:@"☰ Kênh" action:@selector(toggleChannels)];
+    _channelsButton = [self barButton:@"Kênh" icon:@"list" action:@selector(toggleChannels)];
     _titleLabel = [self label:[CBTheme bold:pad ? 16 : 14]];
     _titleLabel.textAlignment = NSTextAlignmentCenter;
     _titleLabel.lineBreakMode = NSLineBreakByTruncatingTail;
-    _badge = [CBTheme roundLabel:nil radius:4];   // màu nền gán sau (đỏ = đang phát); nền bo vẽ vào nhãn, không lớp bo góc trên video
+    _badge = [CBTheme roundLabel:nil radius:10];   // màu nền gán sau (đỏ = đang phát); nền bo vẽ vào nhãn, không lớp bo góc trên video
     _badge.font = [CBTheme bold:11];
     _badge.textAlignment = NSTextAlignmentCenter;
     _badge.textColor = [UIColor whiteColor];
@@ -190,8 +209,13 @@ static void CBLiveForceOrientation(UIInterfaceOrientation o) {
         [_top addSubview:v];
 
     _bottom = [[UIView alloc] init];
-    _bottom.backgroundColor = shade;
+    _bottom.backgroundColor = [UIColor clearColor];
     [self.view addSubview:_bottom];
+    UIImageView *scrimBottom = [[UIImageView alloc] initWithImage:CBLiveScrim(NO)];
+    scrimBottom.frame = CGRectMake(0, -40, 10, 200);
+    scrimBottom.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    scrimBottom.userInteractionEnabled = NO;
+    [_bottom addSubview:scrimBottom];
     _progLabel = [self label:[CBTheme bold:pad ? 18 : 15]];
     _timeLabel = [self label:[CBTheme font:13]];
     _timeLabel.textColor = [CBTheme dim];
@@ -203,9 +227,9 @@ static void CBLiveForceOrientation(UIInterfaceOrientation o) {
     _fill = [[UIView alloc] init];
     _fill.backgroundColor = [CBTheme brand];
     [_track addSubview:_fill];
-    _prevButton = [self barButton:@"« Kênh trước" action:@selector(previousChannel)];
+    _prevButton = [self barButton:@"Kênh trước" icon:@"prev" action:@selector(previousChannel)];
     _playButton = [self barButton:@"Tạm dừng" action:@selector(togglePlay)];
-    _nextButton = [self barButton:@"Kênh sau »" action:@selector(nextChannel)];
+    _nextButton = [self barButton:@"Kênh sau" icon:@"next" action:@selector(nextChannel)];
     _liveButton = [CBTheme button:@"Về trực tiếp" primary:YES];
     _liveButton.titleLabel.font = [CBTheme bold:14];
     [_liveButton addTarget:self action:@selector(goLive) forControlEvents:UIControlEventTouchUpInside];
@@ -317,15 +341,13 @@ static void CBLiveForceOrientation(UIInterfaceOrientation o) {
     CGFloat topH = pad ? 52 : 44;
     _top.frame = CGRectMake(0, 0, cw, topH);
     CGFloat x = 6;
-    CGSize cs = [_closeButton sizeThatFits:CGSizeMake(200, topH)];
-    _closeButton.frame = CGRectMake(x, 0, cs.width + 16, topH);
+    _closeButton.frame = CGRectMake(x + 4, 6, topH - 12, topH - 12);
     CGFloat leftEnd = CGRectGetMaxX(_closeButton.frame);
     _miniButton.hidden = ![CBMiniPlayer available] || _radio;   // radio: không có hình, nghe tiếp khi ra ngoài sẵn rồi
     _floatButton.hidden = ![CBFloatBridge available] || _radio;
     for (UIButton *b in @[_miniButton, _floatButton]) {
         if (b.hidden) continue;
-        CGSize ms = [b sizeThatFits:CGSizeMake(200, topH)];
-        b.frame = CGRectMake(leftEnd, 0, MAX(40, ms.width + 16), topH);
+        b.frame = CGRectMake(leftEnd + 8, 6, topH - 12, topH - 12);
         leftEnd = CGRectGetMaxX(b.frame);
     }
     CGFloat right = cw - 6;
@@ -333,7 +355,8 @@ static void CBLiveForceOrientation(UIInterfaceOrientation o) {
         if (b.hidden) continue;
         CGSize s = [b sizeThatFits:CGSizeMake(200, topH)];
         right -= s.width + 16;
-        b.frame = CGRectMake(right, 0, s.width + 16, topH);
+        b.frame = CGRectMake(right, 6, s.width + 12, topH - 12);
+        right -= 4;
     }
     CGFloat titleL = leftEnd + 8, titleR = right - 8;
     CGSize bs = [_badge.text ?: @"" sizeWithFont:_badge.font];
@@ -359,8 +382,8 @@ static void CBLiveForceOrientation(UIInterfaceOrientation o) {
     // Chỗ hẹp (bảng kênh mở khi máy dọc / iPhone): chữ ngắn «« Trước» / «Sau »», khoảng cách co lại cho vừa
     for (int pass = 0; pass < 2; pass++) {
         BOOL shortTitles = pass == 1;
-        [_prevButton setTitle:shortTitles ? @"« Trước" : @"« Kênh trước" forState:UIControlStateNormal];
-        [_nextButton setTitle:shortTitles ? @"Sau »" : @"Kênh sau »" forState:UIControlStateNormal];
+        [_prevButton setTitle:shortTitles ? @"Trước" : @"Kênh trước" forState:UIControlStateNormal];
+        [_nextButton setTitle:shortTitles ? @"Sau" : @"Kênh sau" forState:UIControlStateNormal];
         CGFloat sum = liveW;
         for (UIButton *b in btns) sum += [b sizeThatFits:CGSizeMake(200, bH)].width + 16;
         if (sum + 3 * 12 <= cw - 16) break;
@@ -373,7 +396,7 @@ static void CBLiveForceOrientation(UIInterfaceOrientation o) {
     CGFloat bx = MAX(8, (cw - total) / 2);
     for (UIButton *b in btns) {
         CGFloat bw = [b sizeThatFits:CGSizeMake(200, bH)].width + 16;
-        b.frame = CGRectMake(bx, by, bw, bH);
+        b.frame = CGRectMake(bx, by + 4, bw, MIN(bH - 8, 40));
         bx += bw + gap;
     }
     if (liveW) _liveButton.frame = CGRectMake(bx, by + (bH - 34) / 2, liveW, 34);
